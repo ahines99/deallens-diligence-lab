@@ -1,0 +1,53 @@
+# DealLens Diligence Lab — local production-shaped stack (Postgres + pgvector).
+# For a zero-dependency run, use SQLite + local dev instead (see README Option B).
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: deallens
+      POSTGRES_PASSWORD: deallens
+      POSTGRES_DB: deallens
+    ports:
+      - "5432:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U deallens -d deallens"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: ./apps/api
+    environment:
+      LLM_MODE: ${LLM_MODE:-mock}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.anthropic.com/v1}
+      LLM_MODEL: ${LLM_MODEL:-claude-opus-4-8}
+      DATABASE_URL: postgresql+psycopg://deallens:deallens@db:5432/deallens
+      CORS_ORIGINS: http://localhost:3000,http://127.0.0.1:3000
+      AUTO_SEED: "true"
+      SEC_USER_AGENT: ${SEC_USER_AGENT:-DealLens Diligence Lab (portfolio project) contact@example.com}
+      FRED_API_KEY: ${FRED_API_KEY:-}
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  web:
+    build:
+      context: ./apps/web
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:8000
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+
+volumes:
+  db_data:

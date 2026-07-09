@@ -1,0 +1,81 @@
+{
+  "_note": "Red-flag taxonomy used by the risk extraction engine. Each category defines the human label, default owning workstream, and signal phrases the (mock/live) scanner looks for in filings and data-room text.",
+  "categories": [
+    {
+      "slug": "customer_concentration",
+      "label": "Customer concentration",
+      "workstream_owner": "commercial",
+      "description": "Revenue dependence on a small number of customers.",
+      "signals": ["top customer", "largest customers", "concentration", "% of revenue", "key account", "major customer"]
+    },
+    {
+      "slug": "supplier_concentration",
+      "label": "Supplier / vendor concentration",
+      "workstream_owner": "product_technology",
+      "description": "Dependence on key suppliers, vendors, or single cloud/infrastructure providers.",
+      "signals": ["single supplier", "key vendor", "sole source", "cloud provider", "hosting", "third-party dependency"]
+    },
+    {
+      "slug": "demand_weakness",
+      "label": "Demand weakness",
+      "workstream_owner": "commercial",
+      "description": "Slowing growth, softening bookings, lengthening sales cycles, pipeline weakness.",
+      "signals": ["slowing", "decline", "softening demand", "bookings", "pipeline", "sales cycle", "elongated"]
+    },
+    {
+      "slug": "margin_pressure",
+      "label": "Margin pressure",
+      "workstream_owner": "financial",
+      "description": "Rising costs, pricing pressure, unfavorable mix shift, compute/hosting cost inflation.",
+      "signals": ["pricing pressure", "cost increase", "margin", "discounting", "mix shift", "gross margin decline"]
+    },
+    {
+      "slug": "debt_liquidity",
+      "label": "Debt & liquidity",
+      "workstream_owner": "financial",
+      "description": "Covenant pressure, refinancing risk, cash runway, working-capital strain.",
+      "signals": ["covenant", "refinanc", "liquidity", "runway", "going concern", "revolver", "leverage"]
+    },
+    {
+      "slug": "legal_regulatory",
+      "label": "Legal & regulatory",
+      "workstream_owner": "legal_regulatory",
+      "description": "Litigation, investigations, compliance exposure, regulatory-regime dependence.",
+      "signals": ["litigation", "investigation", "lawsuit", "regulatory", "compliance", "penalt", "enforcement"]
+    },
+    {
+      "slug": "cyber_security",
+      "label": "Cyber & data security",
+      "workstream_owner": "cybersecurity",
+      "description": "Breach history, security posture gaps, data-handling risk.",
+      "signals": ["breach", "cybersecurity", "data security", "vulnerability", "incident", "ransomware", "PII"]
+    },
+    {
+      "slug": "integration_ma",
+      "label": "Integration & M&A",
+      "workstream_owner": "commercial",
+      "description": "Acquisition integration risk, platform roll-up complexity, tech debt from prior deals.",
+      "signals": ["acquisition", "integration", "acquired", "roll-up", "carve-out", "synergy"]
+    },
+    {
+      "slug": "ai_tech_disruption",
+      "label": "AI / technology disruption",
+      "workstream_owner": "product_technology",
+      "description": "Automation/AI threat to the moat, platform dependency, model/vendor lock-in.",
+      "signals": ["artificial intelligence", "AI", "automation", "machine learning", "platform dependency", "disruption"]
+    },
+    {
+      "slug": "govcon_risk",
+      "label": "GovCon / contract risk",
+      "workstream_owner": "govcon",
+      "description": "Federal contract concentration, recompete risk, agency budget exposure (extension).",
+      "signals": ["government contract", "recompete", "agency", "federal", "GSA", "set-aside", "appropriation"]
+    }
+  ],
+  "severity_scale": {
+    "low": [1, 3],
+    "medium": [4, 6],
+    "high": [7, 8],
+    "critical": [9, 10]
+  }
+}

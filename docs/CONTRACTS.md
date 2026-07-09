@@ -1,0 +1,197 @@
+# DealLens API Contract (single source of truth)
+
+This document defines the data model and the exact HTTP API shapes shared by the FastAPI backend
+(`apps/api`) and the Next.js frontend (`apps/web`). Both sides MUST match these shapes. TypeScript
+mirrors live in `apps/web/src/lib/types.ts`; the API client in `apps/web/src/lib/api.ts`.
+
+All IDs are UUID strings. All timestamps are ISO-8601 strings (UTC). Money is in USD (raw dollars,
+e.g. `55000000`). Ratios/margins are decimals in `[0,1]` (e.g. `0.72` = 72%).
+
+Base URL: `NEXT_PUBLIC_API_URL` (default `http://localhost:8000`). All app routes are under `/api`.
+
+---
+
+## Enums
+
+- `deal_type`: `buyout` | `growth_equity` | `private_credit` | `public_equity` | `govcon` | `software_platform`
+- `workspace_status`: `draft` | `in_progress` | `complete`
+- `target_type`: `public_company` | `synthetic_private`
+- `severity`: `low` | `medium` | `high` | `critical`
+- `priority`: `low` | `medium` | `high`
+- `claim_type`: `fact` | `calculation` | `inference` | `assumption`
+- `memo_type`: `ic_memo` | `bear_case`
+- `risk_category` (slug): `customer_concentration` | `supplier_concentration` | `demand_weakness` |
+  `margin_pressure` | `debt_liquidity` | `legal_regulatory` | `cyber_security` | `integration_ma` |
+  `ai_tech_disruption` | `govcon_risk`
+- `workstream`: `commercial` | `product_technology` | `financial` | `customer` | `market` |
+  `legal_regulatory` | `cybersecurity` | `ai_data` | `management` | `govcon`
+
+---
+
+## Objects (response shapes)
+
+### Workspace
+```json
+{ "id","name","target_id"|null,"deal_type","investment_question","status","created_at","updated_at" }
+```
+
+### Target (real, from SEC EDGAR XBRL for public companies)
+```json
+{ "id","name","target_type","ticker"|null,"cik"|null,"sector","description",
+  "revenue"|null,"revenue_growth"|null,"gross_margin"|null,"operating_margin"|null,
+  "net_income"|null,"net_margin"|null,"rnd_pct"|null,"rule_of_40"|null,
+  "cash"|null,"total_debt"|null,"headcount"|null,"fiscal_year_end"|null,
+  "data_source","is_synthetic","created_at","updated_at" }
+```
+
+### Filing
+```json
+{ "id","workspace_id","company_name","ticker"|null,"cik"|null,"form_type","filing_date",
+  "accession_number"|null,"document_url"|null,"section_count","is_synthetic","created_at" }
+```
+
+### ComparableCompany (real peers, from SEC XBRL; market multiples omitted)
+```json
+{ "id","workspace_id","ticker","company_name","sector","business_description",
+  "revenue"|null,"gross_margin"|null,"operating_margin"|null,"net_margin"|null,
+  "revenue_growth"|null,"rnd_pct"|null,"market_cap"|null,"enterprise_value"|null,
+  "ev_revenue_multiple"|null,"notes","data_source","is_illustrative" }
+```
+`market_cap`/`enterprise_value`/`ev_revenue_multiple` are null (no free market-data source).
+
+### Evidence
+```json
+{ "id","workspace_id","ref","claim","claim_type","source_name","source_type","source_url"|null,
+  "source_date"|null,"source_section"|null,"evidence_text","confidence","agent_name","created_at" }
+```
+`ref` is a stable human key like `"EV-001"`. `confidence` is a decimal in `[0,1]`.
+
+### RiskFinding
+```json
+{ "id","workspace_id","risk_category","risk_category_label","title","finding","severity",
+  "severity_score","likelihood","confidence","evidence_ref"|null,"follow_up_question",
+  "workstream_owner","created_at" }
+```
+`severity_score` is 1–10. `risk_category_label` is the human label. `evidence_ref` points to an Evidence `ref`.
+
+### DiligenceQuestion
+```json
+{ "id","workspace_id","workstream","workstream_label","question","rationale","priority",
+  "evidence_ref"|null,"created_at" }
+```
+
+### DiligencePlan
+```json
+{ "workspace_id","investment_question","summary",
+  "workstreams": [ { "workstream","workstream_label","objective",
+                     "key_questions": [string], "evidence_needed": [string],
+                     "status": "planned"|"in_progress"|"complete" } ],
+  "generated_at" }
+```
+
+### FinancialBenchmark
+```json
+{ "workspace_id","target_name","peer_count","summary",
+  "metrics": [ { "key","label","unit"("pct"|"x"|"usd"|"ratio"),
+                 "target_value"|null,"peer_median"|null,"peer_min"|null,"peer_max"|null,
+                 "assessment": "above"|"in_line"|"below"|"n/a","commentary" } ],
+  "notes": [string], "generated_at" }
+```
+
+### Memo
+```json
+{ "id","workspace_id","memo_type","title","markdown_content","created_at","updated_at" }
+```
+
+### RedTeam
+```json
+{ "id","workspace_id","bear_case_markdown","summary",
+  "unsupported_claims": [ { "claim","why_weak","recommended_action" } ],
+  "missing_evidence": [ { "item","why_it_matters","workstream" } ],
+  "high_priority_questions": [ { "workstream","workstream_label","question","rationale","priority" } ],
+  "created_at" }
+```
+
+### WorkspaceOverview (aggregate for the workspace detail page)
+```json
+{ "workspace": Workspace, "target": Target|null,
+  "counts": { "filings","comps","risks","questions","evidence" },
+  "artifacts": { "plan": bool, "risks": bool, "questions": bool, "ic_memo": bool, "bear_case": bool },
+  "top_risks": [RiskFinding] }
+```
+
+---
+
+## Endpoints
+
+| Method | Path | Body → Returns |
+|---|---|---|
+| GET  | `/api/health` | → `{ "status":"ok","llm_mode","database" }` |
+| POST | `/api/workspaces` | `{ticker?,name?,deal_type,investment_question?}` → `Workspace` (a `ticker` triggers real SEC ingestion + full analysis; unknown ticker → 404, network failure → 502) |
+| GET  | `/api/workspaces` | → `Workspace[]` |
+| GET  | `/api/workspaces/{id}` | → `WorkspaceOverview` |
+| GET  | `/api/workspaces/{id}/target` | → `Target` (404 if none) |
+| POST | `/api/workspaces/{id}/target` | `Target`-create fields → `Target` |
+| GET  | `/api/sec/search?q=` | → `[{ "cik","ticker","name" }]` (EDGAR company search; mock fixtures offline) |
+| POST | `/api/sec/ingest` | `{workspace_id,ticker?,cik?,form_types?:[string],limit?:int}` → `Filing[]` |
+| GET  | `/api/workspaces/{id}/filings` | → `Filing[]` |
+| POST | `/api/workspaces/{id}/comps` | `{tickers?:[string], comps?:ComparableCompany[]}` → `ComparableCompany[]` (tickers fetched from SEC XBRL; re-runs analysis so the memo benchmark updates) |
+| GET  | `/api/workspaces/{id}/comps` | → `ComparableCompany[]` |
+| GET  | `/api/workspaces/{id}/benchmark` | → `FinancialBenchmark` |
+| POST | `/api/workspaces/{id}/plan/generate` | → `DiligencePlan` |
+| GET  | `/api/workspaces/{id}/plan` | → `DiligencePlan` (404 if not generated) |
+| POST | `/api/workspaces/{id}/risks/generate` | → `RiskFinding[]` |
+| GET  | `/api/workspaces/{id}/risks` | → `RiskFinding[]` |
+| POST | `/api/workspaces/{id}/questions/generate` | → `DiligenceQuestion[]` |
+| GET  | `/api/workspaces/{id}/questions` | → `DiligenceQuestion[]` |
+| POST | `/api/workspaces/{id}/memo/generate` | → `Memo` (memo_type=ic_memo) |
+| GET  | `/api/workspaces/{id}/memo` | → `Memo` (ic_memo; 404 if not generated) |
+| POST | `/api/workspaces/{id}/red-team/generate` | → `RedTeam` (also persists a bear_case Memo) |
+| GET  | `/api/workspaces/{id}/red-team` | → `RedTeam` (404 if not generated) |
+| GET  | `/api/workspaces/{id}/evidence` | → `Evidence[]` |
+| GET  | `/api/workspaces/{id}/trends` | → `FinancialTrends` (multi-year XBRL; 404 if unavailable) |
+| GET  | `/api/workspaces/{id}/macro` | → `MacroOverlay` (FRED series relevant to the target's sector) |
+| POST | `/api/workspaces/{id}/govcon` | `{recipient_name?}` → `GovConProfile` (fetches USAspending federal awards, re-runs analysis; 502 on upstream failure) |
+| GET  | `/api/workspaces/{id}/govcon` | → `GovConProfile` (404 if not fetched) |
+
+### FinancialTrends / MacroOverlay / GovConProfile
+```json
+FinancialTrends: { "workspace_id","target_name","years":[string],
+  "rows":[{ "year","revenue"|null,"gross_margin"|null,"operating_margin"|null,"net_margin"|null,"rnd_pct"|null }],
+  "revenue_cagr"|null,"generated_at" }
+MacroOverlay: { "workspace_id","target_name","sector","commentary",
+  "series":[{ "series_id","label","unit","note","latest_value","latest_date","yoy_change"|null,
+              "points":[{ "date","value" }] }],"generated_at" }
+GovConProfile: { "id","workspace_id","recipient_name","total_obligations","award_count",
+  "top_agency"|null,"top_agency_pct"|null,
+  "agency_concentration":[{ "agency"|null,"amount","pct"|null }],
+  "top_awards":[{ "award_id","recipient","agency","sub_agency","amount"|null,"description","pop_end"|null,"pop_start"|null }],
+  "recompete":{ "count","value","awards":[{ "award_id","agency","amount"|null,"pop_end"|null }] },"created_at" }
+```
+
+Notes:
+- `generate` endpoints are idempotent: they (re)build the artifact from mock seed (or live LLM) and
+  upsert. Calling GET before generate returns 404 with `{ "detail": "..." }`.
+- All POST/GET that reference `{id}` return 404 if the workspace doesn't exist.
+- Generating risks/questions/memo/red-team also creates the Evidence rows they cite.
+
+## Frontend pages (App Router)
+```
+/                                     landing + disclaimer + "New workspace"
+/workspaces                           list of workspaces
+/workspaces/new                       create form (enter a ticker → real SEC ingest)
+/workspaces/[workspaceId]             overview: plan, progress, top risks, generate actions
+/workspaces/[workspaceId]/target      target profile
+/workspaces/[workspaceId]/filings     filings table + SEC ingest
+/workspaces/[workspaceId]/comps       comps table + financial benchmark
+/workspaces/[workspaceId]/risks       red-flag matrix
+/workspaces/[workspaceId]/questions   diligence questions by workstream
+/workspaces/[workspaceId]/memo        IC memo viewer
+/workspaces/[workspaceId]/red-team    bear case + unsupported claims + missing evidence
+/workspaces/[workspaceId]/evidence    evidence & audit table
+```
+
+Components: `WorkspaceCard`, `TargetProfile`, `FilingTable`, `CompsTable`, `RiskMatrix`,
+`QuestionList`, `MemoViewer`, `RedTeamViewer`, `EvidenceTable`, `ClaimBadge`, `SourceCitation`,
+plus shared UI in `components/ui/`. Charts use Recharts. Every claim surfaces a `ClaimBadge`
+(fact/calculation/inference/assumption) and links to its evidence `ref`.

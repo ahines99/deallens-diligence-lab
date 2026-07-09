@@ -1,0 +1,33 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg: #f8fafc;
+  --panel: #ffffff;
+  --border: #e2e8f0;
+  --text: #0f172a;
+  --muted: #64748b;
+}
+
+html,
+body {
+  background: var(--bg);
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Prose defaults for rendered memos (react-markdown output). */
+.memo-prose h1 { font-size: 1.6rem; font-weight: 700; margin: 1.2rem 0 0.6rem; }
+.memo-prose h2 { font-size: 1.25rem; font-weight: 700; margin: 1.4rem 0 0.5rem; border-bottom: 1px solid var(--border); padding-bottom: 0.25rem; }
+.memo-prose h3 { font-size: 1.05rem; font-weight: 600; margin: 1rem 0 0.4rem; }
+.memo-prose p { margin: 0.6rem 0; line-height: 1.65; }
+.memo-prose ul { list-style: disc; margin: 0.6rem 0 0.6rem 1.4rem; }
+.memo-prose ol { list-style: decimal; margin: 0.6rem 0 0.6rem 1.4rem; }
+.memo-prose li { margin: 0.25rem 0; }
+.memo-prose blockquote { border-left: 3px solid var(--border); padding: 0.4rem 0.9rem; color: var(--muted); background: #f1f5f9; border-radius: 0 6px 6px 0; margin: 0.8rem 0; }
+.memo-prose table { border-collapse: collapse; margin: 0.8rem 0; width: 100%; font-size: 0.9rem; }
+.memo-prose th, .memo-prose td { border: 1px solid var(--border); padding: 0.4rem 0.6rem; text-align: left; }
+.memo-prose th { background: #f1f5f9; }
+.memo-prose code { background: #f1f5f9; padding: 0.1rem 0.3rem; border-radius: 4px; font-size: 0.85em; }
+.memo-prose a { color: #4338ca; text-decoration: underline; }

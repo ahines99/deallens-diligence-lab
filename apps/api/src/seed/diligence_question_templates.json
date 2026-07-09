@@ -1,0 +1,99 @@
+{
+  "_note": "Diligence question templates by workstream. The question service uses these plus target/risk context to assemble the workspace's question list. `{target}` is substituted with the target name.",
+  "workstreams": [
+    {
+      "slug": "commercial",
+      "label": "Commercial diligence",
+      "questions": [
+        "How does {target} win against Descartes, SPS Commerce, and in-house/GRC point solutions in competitive deals?",
+        "What is the split of new-logo vs. expansion ARR over the last 8 quarters?",
+        "How durable is the regulatory tailwind (UFLPA, CBAM, conflict minerals) driving demand, and what happens if enforcement softens?",
+        "What is win rate by segment and how has average sales cycle trended?"
+      ]
+    },
+    {
+      "slug": "product_technology",
+      "label": "Product & technology diligence",
+      "questions": [
+        "What is the architecture's dependency on a single cloud provider, and what is the migration cost/risk?",
+        "How much of the screening/matching engine is proprietary vs. reliant on third-party watchlist data feeds?",
+        "What is the technical debt profile and the state of test coverage and release cadence?",
+        "How defensible is the product against AI-native entrants that can automate counterparty screening?"
+      ]
+    },
+    {
+      "slug": "financial",
+      "label": "Financial diligence",
+      "questions": [
+        "Confirm quality of earnings: how much of the 16% EBITDA margin is sustainable vs. one-time cost deferral?",
+        "What is the bridge from GAAP revenue to ARR, and how is ARR defined and recognized?",
+        "What are S&M and R&D as a percentage of revenue vs. peers, and what is the path to Rule-of-40 improvement?",
+        "What is the cash conversion / free-cash-flow margin, and are there working-capital seasonality effects?"
+      ]
+    },
+    {
+      "slug": "customer",
+      "label": "Customer diligence",
+      "questions": [
+        "What percentage of ARR comes from the top 10 customers, and what is the contractual lock-in?",
+        "How has gross and net revenue retention trended by cohort and by segment?",
+        "Are compliance-review workflows mission-critical or discretionary for customers?",
+        "What is the average implementation time by customer segment, and how does it affect churn in year one?"
+      ]
+    },
+    {
+      "slug": "market",
+      "label": "Market diligence",
+      "questions": [
+        "What is the credible TAM/SAM for supply-chain compliance software, and what is the growth rate?",
+        "How sensitive is demand to industrial production and global-trade volume cycles?",
+        "Which adjacent regulatory regimes could expand or contract the addressable market over 3–5 years?"
+      ]
+    },
+    {
+      "slug": "legal_regulatory",
+      "label": "Legal & regulatory diligence",
+      "questions": [
+        "Are there any open investigations, litigation, or customer disputes?",
+        "What is {target}'s own regulatory/data-handling exposure (GDPR, cross-border data, watchlist licensing terms)?",
+        "What are the IP ownership and open-source license positions for the core screening engine?"
+      ]
+    },
+    {
+      "slug": "cybersecurity",
+      "label": "Cybersecurity diligence",
+      "questions": [
+        "What is the incident/breach history, and what were remediation outcomes?",
+        "What certifications are held (SOC 2 Type II, ISO 27001), and when were they last audited?",
+        "How is customer PII and counterparty data segregated, encrypted, and retained?"
+      ]
+    },
+    {
+      "slug": "ai_data",
+      "label": "AI / data diligence",
+      "questions": [
+        "What data rights underpin the screening/matching models, and are watchlist data licenses transferable on change of control?",
+        "Where is AI/ML used in the product, and what is the model-governance and false-positive/negative posture?",
+        "What is the exposure to AI-native competitors and to foundation-model vendor pricing?"
+      ]
+    },
+    {
+      "slug": "management",
+      "label": "Management diligence",
+      "questions": [
+        "What is the depth of the leadership team below the CEO/CTO, and what are key-person risks?",
+        "What is the equity/retention plan for critical talent post-close?",
+        "What is management's operating plan and how credible is the 3-year model?"
+      ]
+    },
+    {
+      "slug": "govcon",
+      "label": "GovCon diligence (if applicable)",
+      "questions": [
+        "What share of ARR is federal, and what is the recompete schedule and incumbency position?",
+        "What is agency and program concentration, and what is budget/appropriation exposure?",
+        "Are contract vehicles (GSA, IDIQ) transferable on change of control?"
+      ]
+    }
+  ]
+}
