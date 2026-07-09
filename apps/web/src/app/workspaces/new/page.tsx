@@ -16,7 +16,9 @@ const DEAL_TYPES = Object.keys(DEAL_TYPE_LABELS) as DealType[];
 const TICKER_CHIPS = ["MSFT", "NVDA", "CRWD", "ORCL", "CRM", "SPSC"];
 
 const inputClass =
-  "w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm placeholder:text-slate-400 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/40";
+  "w-full rounded border border-line-strong bg-panel px-3 py-2 text-sm text-ink shadow-xs placeholder:text-faint focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/25";
+
+const labelClass = "mb-1.5 block text-2xs font-semibold uppercase tracking-eyebrow text-muted";
 
 export default function NewWorkspacePage() {
   const router = useRouter();
@@ -66,15 +68,16 @@ export default function NewWorkspacePage() {
   return (
     <div className="mx-auto max-w-2xl space-y-6">
       <PageHeader
-        title="New workspace"
+        eyebrow="New workspace"
+        title="Create a diligence workspace"
         subtitle="Enter a public-company ticker. We resolve it on SEC EDGAR, pull its XBRL financials and recent filings, and build a source-grounded diligence pack."
       />
 
       <Card>
         <form onSubmit={onSubmit} className="space-y-5">
           <div>
-            <label htmlFor="ticker" className="mb-1 block text-sm font-medium text-slate-700">
-              Ticker <span className="text-red-500">*</span>
+            <label htmlFor="ticker" className={labelClass}>
+              Ticker <span className="text-severity-high">*</span>
             </label>
             <input
               id="ticker"
@@ -97,10 +100,10 @@ export default function NewWorkspacePage() {
                     setTicker(t);
                     setError(null);
                   }}
-                  className={`rounded-full border px-3 py-1 font-mono text-xs font-medium transition-colors ${
+                  className={`rounded-sm border px-2.5 py-1 font-mono text-2xs font-semibold uppercase tracking-wide transition-colors ${
                     ticker === t
-                      ? "border-brand-500 bg-brand-50 text-brand-700"
-                      : "border-slate-300 bg-white text-slate-600 hover:bg-slate-50"
+                      ? "border-accent bg-accent-soft text-accent"
+                      : "border-line bg-panel text-muted hover:border-accent hover:text-accent"
                   }`}
                 >
                   {t}
@@ -110,7 +113,7 @@ export default function NewWorkspacePage() {
           </div>
 
           <div>
-            <label htmlFor="deal_type" className="mb-1 block text-sm font-medium text-slate-700">
+            <label htmlFor="deal_type" className={labelClass}>
               Deal type
             </label>
             <select
@@ -128,8 +131,9 @@ export default function NewWorkspacePage() {
           </div>
 
           <div>
-            <label htmlFor="name" className="mb-1 block text-sm font-medium text-slate-700">
-              Workspace name <span className="font-normal text-slate-400">(optional)</span>
+            <label htmlFor="name" className={labelClass}>
+              Workspace name{" "}
+              <span className="font-normal normal-case tracking-normal text-faint">(optional)</span>
             </label>
             <input
               id="name"
@@ -142,8 +146,9 @@ export default function NewWorkspacePage() {
           </div>
 
           <div>
-            <label htmlFor="question" className="mb-1 block text-sm font-medium text-slate-700">
-              Investment question <span className="font-normal text-slate-400">(optional)</span>
+            <label htmlFor="question" className={labelClass}>
+              Investment question{" "}
+              <span className="font-normal normal-case tracking-normal text-faint">(optional)</span>
             </label>
             <textarea
               id="question"
@@ -181,7 +186,7 @@ export default function NewWorkspacePage() {
           </div>
 
           {submitting && (
-            <p className="text-xs text-slate-500">
+            <p className="text-xs leading-relaxed text-muted">
               Resolving the ticker and pulling real filings + XBRL financials from SEC EDGAR — this
               can take a few seconds.
             </p>

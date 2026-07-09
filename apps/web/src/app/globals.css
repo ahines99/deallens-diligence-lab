@@ -3,31 +3,143 @@
 @tailwind utilities;
 
 :root {
-  --bg: #f8fafc;
+  --paper: #f4f6f8;
   --panel: #ffffff;
-  --border: #e2e8f0;
-  --text: #0f172a;
-  --muted: #64748b;
+  --ink: #0a2a43;
+  --body: #22333f;
+  --muted: #5e7284;
+  --line: #e2e7ec;
+  --accent: #0b4f82;
+
+  /* Validated categorical chart series (fixed order) */
+  --chart-1: #2e6fa8;
+  --chart-2: #1fa089;
+  --chart-3: #c98a2c;
+  --chart-4: #8a5cb0;
+  --chart-grid: #e6ebf0;
+  --chart-axis: #7a8b99;
 }
 
-html,
-body {
-  background: var(--bg);
-  color: var(--text);
-  -webkit-font-smoothing: antialiased;
+@layer base {
+  html {
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  body {
+    background: var(--paper);
+    color: var(--body);
+    font-feature-settings: "cv05", "ss01";
+  }
+  /* Numbers read as tabular everywhere by default for column alignment. */
+  .tnum,
+  table td,
+  table th {
+    font-variant-numeric: tabular-nums;
+  }
+  h1, h2, h3, h4 {
+    color: var(--ink);
+    font-family: var(--font-serif), Georgia, serif;
+    letter-spacing: -0.01em;
+  }
+  ::selection {
+    background: #cfe0ee;
+    color: #06263d;
+  }
+  a {
+    color: var(--accent);
+  }
 }
 
-/* Prose defaults for rendered memos (react-markdown output). */
-.memo-prose h1 { font-size: 1.6rem; font-weight: 700; margin: 1.2rem 0 0.6rem; }
-.memo-prose h2 { font-size: 1.25rem; font-weight: 700; margin: 1.4rem 0 0.5rem; border-bottom: 1px solid var(--border); padding-bottom: 0.25rem; }
-.memo-prose h3 { font-size: 1.05rem; font-weight: 600; margin: 1rem 0 0.4rem; }
-.memo-prose p { margin: 0.6rem 0; line-height: 1.65; }
-.memo-prose ul { list-style: disc; margin: 0.6rem 0 0.6rem 1.4rem; }
-.memo-prose ol { list-style: decimal; margin: 0.6rem 0 0.6rem 1.4rem; }
-.memo-prose li { margin: 0.25rem 0; }
-.memo-prose blockquote { border-left: 3px solid var(--border); padding: 0.4rem 0.9rem; color: var(--muted); background: #f1f5f9; border-radius: 0 6px 6px 0; margin: 0.8rem 0; }
-.memo-prose table { border-collapse: collapse; margin: 0.8rem 0; width: 100%; font-size: 0.9rem; }
-.memo-prose th, .memo-prose td { border: 1px solid var(--border); padding: 0.4rem 0.6rem; text-align: left; }
-.memo-prose th { background: #f1f5f9; }
-.memo-prose code { background: #f1f5f9; padding: 0.1rem 0.3rem; border-radius: 4px; font-size: 0.85em; }
-.memo-prose a { color: #4338ca; text-decoration: underline; }
+@layer components {
+  /* Kicker / eyebrow label used above section titles */
+  .eyebrow {
+    @apply text-2xs font-semibold uppercase text-accent;
+    letter-spacing: 0.12em;
+  }
+  /* Hairline horizontal rule */
+  .rule {
+    @apply border-0 border-t border-line;
+  }
+}
+
+/* ---- Rendered IC memo / bear-case (editorial report look) ---------------- */
+.memo-prose {
+  color: var(--body);
+  font-size: 0.95rem;
+  line-height: 1.72;
+  max-width: 74ch;
+}
+.memo-prose h1 {
+  font-family: var(--font-serif), Georgia, serif;
+  font-size: 1.7rem;
+  font-weight: 600;
+  line-height: 1.15;
+  margin: 0 0 0.5rem;
+  letter-spacing: -0.015em;
+}
+.memo-prose h2 {
+  font-family: var(--font-serif), Georgia, serif;
+  font-size: 1.15rem;
+  font-weight: 600;
+  margin: 1.9rem 0 0.6rem;
+  padding-bottom: 0.35rem;
+  border-bottom: 1px solid var(--line);
+  color: var(--ink);
+}
+.memo-prose h3 {
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  margin: 1.1rem 0 0.4rem;
+  font-family: var(--font-sans);
+}
+.memo-prose p { margin: 0.7rem 0; }
+.memo-prose ul { list-style: disc; margin: 0.6rem 0 0.6rem 1.3rem; }
+.memo-prose ol { list-style: decimal; margin: 0.6rem 0 0.6rem 1.3rem; }
+.memo-prose li { margin: 0.3rem 0; }
+.memo-prose strong { color: var(--ink); font-weight: 650; }
+.memo-prose blockquote {
+  border-left: 2px solid var(--accent);
+  background: #f7f9fb;
+  padding: 0.7rem 1rem;
+  margin: 1rem 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+.memo-prose table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 1rem 0;
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+}
+.memo-prose thead th {
+  text-align: left;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  border-bottom: 1.5px solid var(--ink);
+  padding: 0.45rem 0.7rem;
+  font-family: var(--font-sans);
+}
+.memo-prose tbody td {
+  border-bottom: 1px solid var(--line);
+  padding: 0.45rem 0.7rem;
+}
+.memo-prose code {
+  font-family: var(--font-mono);
+  font-size: 0.78em;
+  background: #eef2f6;
+  color: #0a426c;
+  padding: 0.05rem 0.35rem;
+  border-radius: 3px;
+}
+.memo-prose a { text-decoration: underline; text-underline-offset: 2px; }
+
+/* Custom scrollbar for a more finished feel */
+* {
+  scrollbar-color: #c4cfd8 transparent;
+}

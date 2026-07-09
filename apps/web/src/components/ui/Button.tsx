@@ -4,15 +4,16 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 
 export type ButtonVariant = "primary" | "secondary" | "ghost";
+type Variant = ButtonVariant;
 
-const VARIANTS: Record<ButtonVariant, string> = {
-  primary: "border-transparent bg-brand-600 text-white hover:bg-brand-700",
-  secondary: "border-slate-300 bg-white text-slate-700 hover:bg-slate-50",
-  ghost: "border-transparent bg-transparent text-slate-600 hover:bg-slate-100",
+const VARIANTS: Record<Variant, string> = {
+  primary: "bg-accent text-white hover:bg-accent-hover shadow-xs",
+  secondary: "border border-line-strong bg-panel text-ink hover:bg-panel2",
+  ghost: "text-accent hover:bg-accent-soft",
 };
 
-const BASE =
-  "inline-flex items-center justify-center gap-2 rounded-lg border px-4 py-2 text-sm font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-1 disabled:cursor-not-allowed disabled:opacity-50";
+const base =
+  "inline-flex items-center justify-center gap-1.5 rounded font-medium text-sm px-3.5 py-2 transition-colors disabled:cursor-not-allowed disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent-ring/40";
 
 export function Button({
   children,
@@ -26,13 +27,13 @@ export function Button({
   children: ReactNode;
   onClick?: () => void;
   href?: string;
-  variant?: ButtonVariant;
+  variant?: Variant;
   type?: "button" | "submit" | "reset";
   disabled?: boolean;
   className?: string;
 }) {
-  const cls = `${BASE} ${VARIANTS[variant]} ${className}`;
-  if (href && !disabled) {
+  const cls = `${base} ${VARIANTS[variant]} ${className}`;
+  if (href) {
     return (
       <Link href={href} className={cls}>
         {children}
@@ -45,5 +46,3 @@ export function Button({
     </button>
   );
 }
-
-export default Button;

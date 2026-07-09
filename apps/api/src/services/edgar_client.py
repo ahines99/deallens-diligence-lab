@@ -150,22 +150,27 @@ _ANNUAL_DURATION = re.compile(r"^CY\d{4}$")
 _ANNUAL_INSTANT = re.compile(r"^CY\d{4}Q4I$")
 
 
-def annual_points(facts: dict, concept: str, instant: bool = False) -> list[dict]:
-    """Return de-duplicated annual XBRL points (via 'frame') for a us-gaap concept, oldest first."""
+def annual_points(facts: dict, concept: str, instant: bool = False, unit: str = "USD") -> list[dict]:
+    """Return de-duplicated annual XBRL points (via 'frame') for a us-gaap concept, oldest first.
+
+    `unit` defaults to "USD"; pass "shares" for share-count concepts (which live under units.shares).
+    """
     node = facts.get("facts", {}).get("us-gaap", {}).get(concept)
     if not node:
         return []
-    usd = node.get("units", {}).get("USD", [])
+    series = node.get("units", {}).get(unit, [])
     pat = _ANNUAL_INSTANT if instant else _ANNUAL_DURATION
-    pts = [u for u in usd if pat.match(u.get("frame", ""))]
+    pts = [u for u in series if pat.match(u.get("frame", ""))]
     pts.sort(key=lambda u: u["end"])
     return pts
 
 
-def pick_concept(facts: dict, concepts: list[str], instant: bool = False) -> tuple[str | None, list[dict]]:
+def pick_concept(
+    facts: dict, concepts: list[str], instant: bool = False, unit: str = "USD"
+) -> tuple[str | None, list[dict]]:
     """Return (concept, annual_points) for the first concept that has annual data."""
     for c in concepts:
-        pts = annual_points(facts, c, instant=instant)
+        pts = annual_points(facts, c, instant=instant, unit=unit)
         if pts:
             return c, pts
     return None, []

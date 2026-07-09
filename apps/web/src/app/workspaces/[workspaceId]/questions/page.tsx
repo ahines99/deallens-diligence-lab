@@ -31,6 +31,7 @@ export default async function QuestionsPage({
     return (
       <div className="space-y-6">
         <PageHeader
+          eyebrow="Analysis"
           title="Diligence questions"
           subtitle="Prioritized questions to put to management and advisors, organized by workstream."
         />
@@ -46,6 +47,7 @@ export default async function QuestionsPage({
   return (
     <div className="space-y-6">
       <PageHeader
+        eyebrow="Analysis"
         title="Diligence questions"
         subtitle={`${questions.length} question${questions.length === 1 ? "" : "s"} to put to management and advisors, grouped by workstream.`}
         actions={

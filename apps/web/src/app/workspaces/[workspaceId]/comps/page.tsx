@@ -6,6 +6,7 @@ import { Callout } from "@/components/ui/Callout";
 import { Badge, type BadgeTone } from "@/components/ui/Badge";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/Table";
 import { AddPeersForm } from "@/components/AddPeersForm";
+import { AutoCompsButton } from "@/components/AutoCompsButton";
 import { CompsTable } from "@/components/CompsTable";
 import { BenchmarkChart } from "@/components/BenchmarkChart";
 import { formatMultiple, formatPct, formatUsd } from "@/lib/formatting";
@@ -62,12 +63,18 @@ export default async function CompsPage({
   return (
     <div className="space-y-6">
       <PageHeader
+        eyebrow="Analysis"
         title="Comps & benchmark"
         subtitle="Add real public-company peers by ticker to benchmark the target's financials against the peer set."
       />
 
       <Card title="Add peer companies" subtitle="Pulled live from SEC XBRL company facts">
-        <AddPeersForm workspaceId={id} />
+        <div className="space-y-4">
+          <AddPeersForm workspaceId={id} />
+          <div className="border-t border-line-faint pt-4">
+            <AutoCompsButton workspaceId={id} />
+          </div>
+        </div>
       </Card>
 
       {error ? (
@@ -87,20 +94,16 @@ export default async function CompsPage({
             >
               <div className="space-y-6">
                 {benchmark.summary && (
-                  <p className="text-sm leading-relaxed text-slate-700">{benchmark.summary}</p>
+                  <p className="max-w-measure text-sm leading-relaxed text-body">{benchmark.summary}</p>
                 )}
 
                 <div>
-                  <h4 className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500">
-                    Target vs. peer median (margins & growth)
-                  </h4>
+                  <h4 className="eyebrow mb-3">Target vs. peer median (margins &amp; growth)</h4>
                   <BenchmarkChart metrics={benchmark.metrics} />
                 </div>
 
                 <div>
-                  <h4 className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500">
-                    Metric detail
-                  </h4>
+                  <h4 className="eyebrow mb-3">Metric detail</h4>
                   <Table>
                     <THead>
                       <TR>
@@ -115,8 +118,8 @@ export default async function CompsPage({
                     </THead>
                     <TBody>
                       {benchmark.metrics.map((m) => (
-                        <TR key={m.key} className="hover:bg-slate-50">
-                          <TD className="font-medium text-slate-800">{m.label}</TD>
+                        <TR key={m.key} className="hover:bg-panel2">
+                          <TD className="font-medium text-ink">{m.label}</TD>
                           <TD align="right" className="tabular-nums">
                             {formatByUnit(m.unit, m.target_value)}
                           </TD>
@@ -134,7 +137,7 @@ export default async function CompsPage({
                               {ASSESSMENT_LABEL[m.assessment] ?? m.assessment}
                             </Badge>
                           </TD>
-                          <TD className="max-w-xs text-xs text-slate-500">{m.commentary}</TD>
+                          <TD className="max-w-xs text-xs text-muted">{m.commentary}</TD>
                         </TR>
                       ))}
                     </TBody>

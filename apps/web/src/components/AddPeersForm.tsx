@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/Button";
 import { Callout } from "@/components/ui/Callout";
 
 const inputClass =
-  "w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm placeholder:text-slate-400 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/40";
+  "w-full rounded border border-line-strong bg-panel px-3 py-2 text-sm text-ink shadow-xs placeholder:text-faint focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent-ring/40";
 
 export function AddPeersForm({ workspaceId }: { workspaceId: string }) {
   const router = useRouter();
@@ -91,7 +91,7 @@ export function AddPeersForm({ workspaceId }: { workspaceId: string }) {
           )}
         </Button>
       </div>
-      <p className="text-xs text-slate-500">
+      <p className="text-xs text-muted">
         Real public-company tickers, comma or space separated. Financials are pulled from SEC XBRL and
         the benchmark re-runs automatically.
       </p>

@@ -1,33 +1,51 @@
 import type { ReactNode } from "react";
 
-export type StatTone = "neutral" | "green" | "amber" | "red" | "indigo";
+export type StatTone =
+  | "default"
+  | "positive"
+  | "negative"
+  | "accent"
+  // legacy semantic aliases (mapped below)
+  | "neutral"
+  | "slate"
+  | "green"
+  | "red"
+  | "amber"
+  | "indigo";
 
 const VALUE_TONE: Record<StatTone, string> = {
-  neutral: "text-slate-900",
-  green: "text-green-700",
-  amber: "text-amber-700",
-  red: "text-red-700",
-  indigo: "text-brand-700",
+  default: "text-ink",
+  positive: "text-severity-low",
+  negative: "text-negative",
+  accent: "text-accent",
+  neutral: "text-ink",
+  slate: "text-ink",
+  green: "text-severity-low",
+  red: "text-negative",
+  amber: "text-severity-medium",
+  indigo: "text-accent",
 };
 
 export function StatTile({
   label,
   value,
   sub,
-  tone = "neutral",
+  tone = "default",
+  className = "",
 }: {
   label: ReactNode;
   value: ReactNode;
   sub?: ReactNode;
   tone?: StatTone;
+  className?: string;
 }) {
   return (
-    <div className="rounded-lg border border-slate-200 bg-white px-4 py-3">
-      <div className="text-xs font-medium uppercase tracking-wide text-slate-500">{label}</div>
-      <div className={`mt-1 text-2xl font-semibold tabular-nums ${VALUE_TONE[tone]}`}>{value}</div>
-      {sub && <div className="mt-0.5 text-xs text-slate-500">{sub}</div>}
+    <div className={`min-w-0 ${className}`}>
+      <div className="text-2xs font-semibold uppercase tracking-eyebrow text-muted">{label}</div>
+      <div className={`mt-1 font-sans text-[1.6rem] font-semibold leading-none tabular-nums ${VALUE_TONE[tone]}`}>
+        {value}
+      </div>
+      {sub && <div className="mt-1.5 text-xs leading-snug text-muted">{sub}</div>}
     </div>
   );
 }
-
-export default StatTile;

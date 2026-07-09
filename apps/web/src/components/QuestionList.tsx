@@ -1,4 +1,5 @@
 import { Badge, type BadgeTone } from "@/components/ui/Badge";
+import { Eyebrow } from "@/components/ui/Eyebrow";
 import { SourceCitation } from "@/components/SourceCitation";
 import { titleCase } from "@/lib/formatting";
 import type { DiligenceQuestion, Priority, Workstream } from "@/lib/types";
@@ -52,9 +53,9 @@ export function QuestionList({
     <div className="space-y-8">
       {groups.map((g) => (
         <section key={g.workstream}>
-          <div className="mb-3 flex items-center justify-between gap-3 border-b border-slate-200 pb-2">
-            <h2 className="text-sm font-semibold text-slate-900">{g.label}</h2>
-            <span className="text-xs text-slate-400">
+          <div className="mb-3 flex items-center justify-between gap-3 border-b border-line pb-2">
+            <Eyebrow>{g.label}</Eyebrow>
+            <span className="text-2xs uppercase tracking-eyebrow text-faint">
               {g.items.length} question{g.items.length === 1 ? "" : "s"}
             </span>
           </div>
@@ -63,20 +64,20 @@ export function QuestionList({
             {g.items.map((q) => (
               <li
                 key={q.id}
-                className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm"
+                className="rounded-md border border-line bg-panel p-4 shadow-panel"
               >
                 <div className="flex items-start justify-between gap-3">
-                  <p className="text-sm font-medium leading-relaxed text-slate-900">
+                  <p className="text-sm font-medium leading-relaxed text-ink">
                     {q.question}
                   </p>
                   <Badge tone={PRIORITY_TONE[q.priority]}>{titleCase(q.priority)}</Badge>
                 </div>
                 {q.rationale && (
-                  <p className="mt-1.5 text-sm leading-relaxed text-slate-500">{q.rationale}</p>
+                  <p className="mt-1.5 text-sm leading-relaxed text-muted">{q.rationale}</p>
                 )}
                 {q.evidence_ref && (
-                  <div className="mt-2 flex items-center gap-1.5 text-xs text-slate-500">
-                    <span className="text-slate-400">Evidence</span>
+                  <div className="mt-2 flex items-center gap-1.5 text-xs text-muted">
+                    <span className="text-faint">Evidence</span>
                     <SourceCitation evidenceRef={q.evidence_ref} workspaceId={workspaceId} />
                   </div>
                 )}

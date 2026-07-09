@@ -6,13 +6,14 @@ import { Callout } from "@/components/ui/Callout";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { GenerateButton } from "@/components/GenerateButton";
 import { RiskMatrix } from "@/components/RiskMatrix";
-import type { RiskFinding, Severity } from "@/lib/types";
+import { ThemeScanPanel } from "@/components/ThemeScanPanel";
+import type { RiskFinding, Severity, ThemeScan } from "@/lib/types";
 
 const SEVERITY_TILE_TONE: Record<Severity, StatTone> = {
-  critical: "red",
-  high: "red",
+  critical: "negative",
+  high: "negative",
   medium: "amber",
-  low: "green",
+  low: "positive",
 };
 
 const SEVERITY_LABEL: Record<Severity, string> = {
@@ -48,6 +49,7 @@ export default async function RisksPage({
     return (
       <div className="space-y-6">
         <PageHeader
+          eyebrow="Analysis"
           title="Red-flag matrix"
           subtitle="AI-screened risks across the deal, ranked by severity and tied to evidence."
         />
@@ -65,9 +67,13 @@ export default async function RisksPage({
     count: risks.filter((r) => r.severity === sev).length,
   }));
 
+  // Best-effort live theme scan; never let it break the risk matrix.
+  const themes: ThemeScan | null = await api.getThemes(id).catch(() => null);
+
   return (
     <div className="space-y-6">
       <PageHeader
+        eyebrow="Analysis"
         title="Red-flag matrix"
         subtitle={`${risks.length} finding${risks.length === 1 ? "" : "s"}, ranked by severity and tied to evidence.`}
         actions={
@@ -80,14 +86,15 @@ export default async function RisksPage({
         }
       />
 
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+      <div className="grid grid-cols-2 gap-px overflow-hidden rounded-md border border-line bg-line shadow-panel sm:grid-cols-4">
         {counts.map(({ sev, count }) => (
-          <StatTile
-            key={sev}
-            label={SEVERITY_LABEL[sev]}
-            value={count}
-            tone={count > 0 ? SEVERITY_TILE_TONE[sev] : "neutral"}
-          />
+          <div key={sev} className="bg-panel px-5 py-4">
+            <StatTile
+              label={SEVERITY_LABEL[sev]}
+              value={count}
+              tone={count > 0 ? SEVERITY_TILE_TONE[sev] : "neutral"}
+            />
+          </div>
         ))}
       </div>
 
@@ -97,6 +104,8 @@ export default async function RisksPage({
       </Callout>
 
       <RiskMatrix risks={risks} workspaceId={id} />
+
+      {themes && themes.themes.length > 0 && <ThemeScanPanel data={themes} />}
     </div>
   );
 }

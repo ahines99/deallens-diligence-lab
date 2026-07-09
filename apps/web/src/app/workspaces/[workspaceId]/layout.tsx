@@ -1,58 +1,64 @@
-"use client";
-
 import type { ReactNode } from "react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { api } from "@/lib/api";
+import { WorkspaceNav } from "@/components/WorkspaceNav";
+import { Badge, type BadgeTone } from "@/components/ui/Badge";
+import type { WorkspaceOverview } from "@/lib/types";
 
-const TABS: { label: string; seg: string }[] = [
-  { label: "Overview", seg: "" },
-  { label: "Target", seg: "target" },
-  { label: "Trends", seg: "trends" },
-  { label: "Macro", seg: "macro" },
-  { label: "Filings", seg: "filings" },
-  { label: "Comps", seg: "comps" },
-  { label: "GovCon", seg: "govcon" },
-  { label: "Risks", seg: "risks" },
-  { label: "Questions", seg: "questions" },
-  { label: "IC Memo", seg: "memo" },
-  { label: "Red-Team", seg: "red-team" },
-  { label: "Evidence", seg: "evidence" },
-];
+const STATUS_TONE: Record<string, BadgeTone> = {
+  draft: "slate",
+  in_progress: "amber",
+  complete: "green",
+};
 
-export default function WorkspaceLayout({
+export default async function WorkspaceLayout({
   children,
   params,
 }: {
   children: ReactNode;
   params: { workspaceId: string };
 }) {
-  const pathname = usePathname();
-  const base = `/workspaces/${params.workspaceId}`;
+  const id = params.workspaceId;
+  const base = `/workspaces/${id}`;
+
+  let ov: WorkspaceOverview | null = null;
+  try {
+    ov = await api.getWorkspace(id);
+  } catch {
+    ov = null;
+  }
+  const ws = ov?.workspace;
+  const target = ov?.target;
 
   return (
-    <div className="space-y-6">
-      <div className="overflow-x-auto border-b border-slate-200">
-        <nav className="flex min-w-max gap-1">
-          {TABS.map((t) => {
-            const href = t.seg ? `${base}/${t.seg}` : base;
-            const active = t.seg ? pathname === href || pathname.startsWith(`${href}/`) : pathname === base;
-            return (
-              <Link
-                key={t.label}
-                href={href}
-                className={`-mb-px whitespace-nowrap border-b-2 px-3 py-2.5 text-sm transition-colors ${
-                  active
-                    ? "border-brand-600 font-medium text-brand-700"
-                    : "border-transparent text-slate-500 hover:text-slate-800"
-                }`}
-              >
-                {t.label}
-              </Link>
-            );
-          })}
-        </nav>
-      </div>
-      {children}
+    <div className="grid gap-8 lg:grid-cols-[248px_minmax(0,1fr)]">
+      <aside className="lg:sticky lg:top-[4.5rem] lg:self-start">
+        <Link
+          href="/workspaces"
+          className="mb-4 inline-flex items-center gap-1 text-2xs font-semibold uppercase tracking-eyebrow text-muted transition hover:text-accent"
+        >
+          ← All workspaces
+        </Link>
+
+        <div className="mb-5 rounded-md border border-line bg-panel p-3.5 shadow-panel">
+          <div className="flex flex-wrap items-center gap-1.5">
+            {target?.ticker && <Badge tone="indigo">{target.ticker}</Badge>}
+            {ws && (
+              <Badge tone={STATUS_TONE[ws.status] ?? "slate"}>{ws.status.replace("_", " ")}</Badge>
+            )}
+          </div>
+          <div className="mt-2 font-serif text-[0.95rem] font-semibold leading-tight text-ink line-clamp-2">
+            {target?.name ?? ws?.name ?? "Workspace"}
+          </div>
+          {target?.sector && (
+            <div className="mt-1 text-2xs leading-snug text-muted line-clamp-2">{target.sector}</div>
+          )}
+        </div>
+
+        <WorkspaceNav base={base} />
+      </aside>
+
+      <div className="min-w-0 space-y-6">{children}</div>
     </div>
   );
 }

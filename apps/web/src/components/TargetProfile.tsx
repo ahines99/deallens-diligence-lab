@@ -6,6 +6,19 @@ import { formatNumber, formatPct, formatUsd } from "@/lib/formatting";
 import type { Target } from "@/lib/types";
 
 export function TargetProfile({ target }: { target: Target }) {
+  const kpis = [
+    { label: "Revenue", value: formatUsd(target.revenue) },
+    { label: "Rev. growth", value: formatPct(target.revenue_growth) },
+    { label: "Gross margin", value: formatPct(target.gross_margin) },
+    { label: "Operating margin", value: formatPct(target.operating_margin) },
+    { label: "Net margin", value: formatPct(target.net_margin) },
+    { label: "R&D %", value: formatPct(target.rnd_pct) },
+    { label: "Rule of 40", value: formatPct(target.rule_of_40) },
+    { label: "Cash", value: formatUsd(target.cash) },
+    { label: "Total debt", value: formatUsd(target.total_debt) },
+    { label: "Headcount", value: formatNumber(target.headcount) },
+  ];
+
   return (
     <div className="space-y-6">
       <Card
@@ -21,14 +34,14 @@ export function TargetProfile({ target }: { target: Target }) {
           </span>
         }
       >
-        <div className="space-y-4">
+        <div className="space-y-5">
           {target.is_synthetic ? (
             <Callout tone="synthetic" title="Synthetic target">
               {target.name} is a synthetic company profile. Every financial figure below is
               illustrative and is not investment advice.
             </Callout>
           ) : (
-            <Callout tone="info">
+            <Callout tone="info" title="SEC XBRL company facts">
               Financials are real, from SEC EDGAR XBRL company facts
               {target.fiscal_year_end ? ` (FY ${target.fiscal_year_end})` : ""}. Qualitative flags are
               drawn from the latest 10-K. Auto-generated draft — not investment advice.
@@ -36,25 +49,20 @@ export function TargetProfile({ target }: { target: Target }) {
           )}
 
           {target.description && (
-            <p className="text-sm leading-relaxed text-slate-700">{target.description}</p>
+            <p className="max-w-measure text-sm leading-relaxed text-body">{target.description}</p>
           )}
 
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
-            <StatTile label="Revenue" value={formatUsd(target.revenue)} />
-            <StatTile label="Rev. growth" value={formatPct(target.revenue_growth)} />
-            <StatTile label="Gross margin" value={formatPct(target.gross_margin)} />
-            <StatTile label="Operating margin" value={formatPct(target.operating_margin)} />
-            <StatTile label="Net margin" value={formatPct(target.net_margin)} />
-            <StatTile label="R&D %" value={formatPct(target.rnd_pct)} />
-            <StatTile label="Rule of 40" value={formatPct(target.rule_of_40)} />
-            <StatTile label="Cash" value={formatUsd(target.cash)} />
-            <StatTile label="Total debt" value={formatUsd(target.total_debt)} />
-            <StatTile label="Headcount" value={formatNumber(target.headcount)} />
+          <div className="grid grid-cols-2 gap-px overflow-hidden rounded-md border border-line bg-line md:grid-cols-5">
+            {kpis.map((k) => (
+              <div key={k.label} className="bg-panel p-4">
+                <StatTile label={k.label} value={k.value} />
+              </div>
+            ))}
           </div>
 
-          <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-3 text-xs text-slate-500">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-t border-line-faint pt-3 text-xs text-faint">
             <span>
-              Data source: <span className="font-medium text-slate-600">{target.data_source}</span>
+              Data source: <span className="font-medium text-muted">{target.data_source}</span>
             </span>
             <span>AI-assisted draft for human review — not investment advice.</span>
           </div>

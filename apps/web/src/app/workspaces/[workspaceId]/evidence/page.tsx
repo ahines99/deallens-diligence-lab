@@ -24,7 +24,8 @@ export default async function EvidencePage({
   return (
     <div className="space-y-6">
       <PageHeader
-        title="Evidence"
+        eyebrow="Deliverable"
+        title="Evidence & audit trail"
         subtitle="The audit trail behind the pack — every claim, its source, claim type, and confidence."
       />
 

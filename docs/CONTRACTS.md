@@ -153,6 +153,21 @@ Base URL: `NEXT_PUBLIC_API_URL` (default `http://localhost:8000`). All app route
 | GET  | `/api/workspaces/{id}/macro` | → `MacroOverlay` (FRED series relevant to the target's sector) |
 | POST | `/api/workspaces/{id}/govcon` | `{recipient_name?}` → `GovConProfile` (fetches USAspending federal awards, re-runs analysis; 502 on upstream failure) |
 | GET  | `/api/workspaces/{id}/govcon` | → `GovConProfile` (404 if not fetched) |
+| GET  | `/api/workspaces/{id}/forensics` | → `Forensics` (Altman Z″, Piotroski F, Beneish M, accruals + QoE metrics; from XBRL) |
+| GET  | `/api/workspaces/{id}/valuation` | → `Valuation` (WACC from FRED, DCF-lite; assumptions labeled) |
+| POST | `/api/workspaces/{id}/lbo` | `LboInputs` → `LboResult` (IRR/MOIC + entry×exit sensitivity grid) |
+| GET  | `/api/workspaces/{id}/events` | → `EventTimeline` (8-K item-code material events; 4.02 flagged significant) |
+| GET  | `/api/workspaces/{id}/insiders` | → `InsiderActivity` (Form 4 buys/sells) |
+| GET  | `/api/workspaces/{id}/themes` | → `ThemeScan` (SEC full-text red-flag theme scan) |
+| GET  | `/api/workspaces/{id}/news` | → `NewsSignals` (GDELT media — unverified, not evidence) |
+| GET  | `/api/workspaces/{id}/filing-watch` | → `FilingWatch` (new filings since last analysis) |
+| POST | `/api/workspaces/{id}/refresh` | → `WorkspaceOverview` (re-ingest latest + re-run analysis) |
+| POST | `/api/workspaces/{id}/comps/auto` | → `ComparableCompany[]` (SIC-based auto peer discovery) |
+
+Wave-2 object shapes (`Forensics`, `Valuation`, `LboInputs`/`LboResult`, `EventTimeline`, `InsiderActivity`,
+`ThemeScan`, `NewsSignals`, `FilingWatch`) are defined in `apps/web/src/lib/types.ts`. Forensics/valuation
+compute from `target.financials["forensic_inputs"]` (XBRL, extracted at ingestion); events/insiders/themes/news
+fetch live (SEC EFTS / Form 4 / GDELT, keyless). All degrade to `n/a` rather than imputing.
 
 ### FinancialTrends / MacroOverlay / GovConProfile
 ```json

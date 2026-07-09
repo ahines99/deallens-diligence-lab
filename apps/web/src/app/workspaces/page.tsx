@@ -19,6 +19,7 @@ export default async function WorkspacesPage() {
   return (
     <div className="space-y-6">
       <PageHeader
+        eyebrow="Portfolio"
         title="Workspaces"
         subtitle="Each workspace is one diligence engagement — a target, its evidence, and the artifacts you generate."
         actions={<Button href="/workspaces/new">New workspace</Button>}

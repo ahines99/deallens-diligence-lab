@@ -75,10 +75,84 @@ def _ratio(num: Point | None, den: Point | None) -> float | None:
     return round(num.value / den.value, 4)
 
 
-def _annual_by_year(facts: dict, concepts: list[str], instant: bool = False) -> dict[str, float]:
+def _annual_by_year(
+    facts: dict, concepts: list[str], instant: bool = False, unit: str = "USD"
+) -> dict[str, float]:
     """Map fiscal-year (YYYY) -> value for the first concept with annual data."""
-    _, pts = edgar_client.pick_concept(facts, concepts, instant=instant)
+    _, pts = edgar_client.pick_concept(facts, concepts, instant=instant, unit=unit)
     return {p["end"][:4]: float(p["val"]) for p in pts}
+
+
+# --- Extended concepts for Quality-of-Earnings / forensics / valuation ------
+# Balance-sheet (instant) concepts.
+_BAL = {
+    "assets": ["Assets"],
+    "current_assets": ["AssetsCurrent"],
+    "current_liabilities": ["LiabilitiesCurrent"],
+    "total_liabilities": ["Liabilities"],
+    "receivables": ["AccountsReceivableNetCurrent", "ReceivablesNetCurrent"],
+    "inventory": ["InventoryNet"],
+    "payables": ["AccountsPayableCurrent", "AccountsPayableTradeCurrent"],
+    "retained_earnings": ["RetainedEarningsAccumulatedDeficit"],
+    "equity": [
+        "StockholdersEquity",
+        "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",
+    ],
+    "ppe_net": ["PropertyPlantAndEquipmentNet"],
+    "ltd_current": ["LongTermDebtCurrent", "LongTermDebtAndCapitalLeaseObligationsCurrent"],
+    "short_debt": ["ShortTermBorrowings", "DebtCurrent"],
+    "ltd": ["LongTermDebtNoncurrent", "LongTermDebt"],
+    "cash": CASH_CONCEPTS,
+}
+# Income-statement / cash-flow (duration) concepts.
+_FLOW = {
+    "revenue": REVENUE_CONCEPTS,
+    "cogs": COST_OF_REVENUE_CONCEPTS,
+    "gross_profit": GROSS_PROFIT_CONCEPTS,
+    "operating_income": OPERATING_INCOME_CONCEPTS,
+    "net_income": NET_INCOME_CONCEPTS,
+    "cfo": [
+        "NetCashProvidedByUsedInOperatingActivities",
+        "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations",
+    ],
+    "capex": ["PaymentsToAcquirePropertyPlantAndEquipment", "PaymentsToAcquireProductiveAssets"],
+    # D&A is sparsely tagged — several fallbacks; may be absent (degrade gracefully).
+    "da": [
+        "DepreciationDepletionAndAmortization",
+        "DepreciationAmortizationAndAccretionNet",
+        "Depreciation",
+        "DepreciationAndAmortization",
+    ],
+    "tax": ["IncomeTaxExpenseBenefit"],
+    "interest": ["InterestExpense", "InterestExpenseDebt"],
+    "sga": ["SellingGeneralAndAdministrativeExpense", "GeneralAndAdministrativeExpense"],
+    "sbc": ["ShareBasedCompensation"],
+    "rnd": RND_CONCEPTS,
+}
+_SHARES_INSTANT = ["CommonStockSharesOutstanding", "EntityCommonStockSharesOutstanding"]
+_SHARES_DILUTED = ["WeightedAverageNumberOfDilutedSharesOutstanding"]
+
+
+def extract_forensic_inputs(facts: dict, n: int = 6) -> dict:
+    """Per-fiscal-year maps of the concepts needed for QoE, forensic scores, and valuation.
+
+    Returns {"years": [YYYY...], "by_year": {YYYY: {field: value|None}}}. Fields may be None when a
+    concept isn't tagged for that year (notably D&A) — downstream math must degrade gracefully.
+    """
+    maps: dict[str, dict[str, float]] = {}
+    for key, concepts in _BAL.items():
+        maps[key] = _annual_by_year(facts, concepts, instant=True)
+    for key, concepts in _FLOW.items():
+        maps[key] = _annual_by_year(facts, concepts, instant=False)
+    maps["shares_out"] = _annual_by_year(facts, _SHARES_INSTANT, instant=True, unit="shares")
+    maps["shares_diluted"] = _annual_by_year(facts, _SHARES_DILUTED, instant=False, unit="shares")
+
+    year_set: set[str] = set()
+    for m in maps.values():
+        year_set |= set(m.keys())
+    years = sorted(year_set)[-n:]
+    by_year = {y: {field: maps[field].get(y) for field in maps} for y in years}
+    return {"years": years, "by_year": by_year}
 
 
 def extract_trends(facts: dict, n: int = 5) -> dict:

@@ -13,15 +13,19 @@ from src.db.session import SessionLocal, engine, init_db
 from src.routers import (
     comps,
     evidence,
+    feeds,
     filings,
     financials,
+    forensics,
     govcon,
     memos,
     questions,
     red_team,
     risks,
     sec,
+    signals,
     targets,
+    valuation,
     workspaces,
 )
 from src.services.common import NotFound
@@ -82,5 +86,6 @@ def health() -> dict:
 for module in (
     workspaces, targets, sec, filings, comps, financials, risks, questions,
     memos, red_team, evidence, govcon,
+    forensics, valuation, feeds, signals,
 ):
     app.include_router(module.router)

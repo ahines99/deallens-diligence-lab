@@ -31,7 +31,7 @@ export function RedTeamViewer({
         its{" "}
         <Link
           href={`/workspaces/${workspaceId}/evidence`}
-          className="font-medium text-amber-900 underline"
+          className="font-medium text-severity-high underline underline-offset-2"
         >
           evidence trail
         </Link>
@@ -39,7 +39,7 @@ export function RedTeamViewer({
       </Callout>
 
       <Card title="Red-team summary">
-        <p className="text-sm leading-relaxed text-slate-700">{redTeam.summary}</p>
+        <p className="text-sm leading-relaxed text-body">{redTeam.summary}</p>
       </Card>
 
       <Card title="Bear case" subtitle="The strongest argument against proceeding">
@@ -65,8 +65,8 @@ export function RedTeamViewer({
             </THead>
             <TBody>
               {redTeam.unsupported_claims.map((c, i) => (
-                <TR key={i} className="hover:bg-slate-50">
-                  <TD className="font-medium text-slate-800">{c.claim}</TD>
+                <TR key={i} className="hover:bg-panel2">
+                  <TD className="font-medium text-ink">{c.claim}</TD>
                   <TD>{c.why_weak}</TD>
                   <TD>{c.recommended_action}</TD>
                 </TR>
@@ -74,7 +74,7 @@ export function RedTeamViewer({
             </TBody>
           </Table>
         ) : (
-          <p className="text-sm text-slate-500">No unsupported claims were flagged.</p>
+          <p className="text-sm text-muted">No unsupported claims were flagged.</p>
         )}
       </Card>
 
@@ -93,8 +93,8 @@ export function RedTeamViewer({
             </THead>
             <TBody>
               {redTeam.missing_evidence.map((m, i) => (
-                <TR key={i} className="hover:bg-slate-50">
-                  <TD className="font-medium text-slate-800">{m.item}</TD>
+                <TR key={i} className="hover:bg-panel2">
+                  <TD className="font-medium text-ink">{m.item}</TD>
                   <TD>{m.why_it_matters}</TD>
                   <TD>
                     <Badge tone="indigo">{titleCase(m.workstream)}</Badge>
@@ -104,7 +104,7 @@ export function RedTeamViewer({
             </TBody>
           </Table>
         ) : (
-          <p className="text-sm text-slate-500">No evidence gaps were identified.</p>
+          <p className="text-sm text-muted">No evidence gaps were identified.</p>
         )}
       </Card>
 
@@ -115,14 +115,14 @@ export function RedTeamViewer({
         {redTeam.high_priority_questions.length > 0 ? (
           <ul className="space-y-3">
             {redTeam.high_priority_questions.map((q, i) => (
-              <li key={i} className="rounded-lg border border-slate-200 p-4">
+              <li key={i} className="rounded-md border border-line p-4">
                 <div className="flex items-start justify-between gap-3">
-                  <p className="text-sm font-medium text-slate-800">{q.question}</p>
+                  <p className="text-sm font-medium text-ink">{q.question}</p>
                   <Badge tone={PRIORITY_TONE[q.priority] ?? "slate"}>
                     {titleCase(q.priority)}
                   </Badge>
                 </div>
-                <p className="mt-1 text-sm text-slate-600">{q.rationale}</p>
+                <p className="mt-1 text-sm text-muted">{q.rationale}</p>
                 <div className="mt-2">
                   <Badge tone="slate">{q.workstream_label}</Badge>
                 </div>
@@ -130,7 +130,7 @@ export function RedTeamViewer({
             ))}
           </ul>
         ) : (
-          <p className="text-sm text-slate-500">No high-priority questions were raised.</p>
+          <p className="text-sm text-muted">No high-priority questions were raised.</p>
         )}
       </Card>
     </div>

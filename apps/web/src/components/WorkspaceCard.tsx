@@ -19,18 +19,23 @@ export function WorkspaceCard({ workspace }: { workspace: Workspace }) {
   return (
     <Link
       href={`/workspaces/${workspace.id}`}
-      className="group flex h-full flex-col rounded-lg border border-slate-200 bg-white p-5 shadow-sm transition hover:border-brand-300 hover:shadow-md"
+      className="group flex h-full flex-col rounded-md border border-line bg-panel p-5 shadow-panel transition-colors hover:border-accent/40"
     >
-      <div className="flex items-start justify-between gap-3">
-        <h3 className="font-semibold text-slate-900 group-hover:text-brand-700">{workspace.name}</h3>
+      <div className="flex items-center justify-between gap-3">
+        <Badge tone="indigo">{DEAL_TYPE_LABELS[workspace.deal_type] ?? workspace.deal_type}</Badge>
         <Badge tone={STATUS_TONE[workspace.status]}>{STATUS_LABEL[workspace.status]}</Badge>
       </div>
-      <div className="mt-2">
-        <Badge tone="indigo">{DEAL_TYPE_LABELS[workspace.deal_type] ?? workspace.deal_type}</Badge>
-      </div>
-      <p className="mt-3 line-clamp-3 text-sm text-slate-600">{workspace.investment_question}</p>
-      <div className="mt-auto pt-4 text-xs text-slate-400">
-        Created {formatDate(workspace.created_at)}
+      <h3 className="mt-3 font-serif text-lg font-semibold leading-snug text-ink transition-colors group-hover:text-accent">
+        {workspace.name}
+      </h3>
+      <p className="mt-2 line-clamp-3 text-sm leading-relaxed text-muted">
+        {workspace.investment_question}
+      </p>
+      <div className="mt-auto flex items-center justify-between gap-2 border-t border-line-faint pt-3">
+        <span className="text-2xs uppercase tracking-eyebrow text-faint">Created</span>
+        <span className="font-mono text-2xs tabular-nums text-faint">
+          {formatDate(workspace.created_at)}
+        </span>
       </div>
     </Link>
   );

@@ -10,10 +10,11 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
+import { CHART, SERIES_COLOR, tickStyle } from "@/lib/chartTheme";
 import type { BenchmarkMetric } from "@/lib/types";
 
-const TARGET_COLOR = "#4338ca"; // brand-600
-const PEER_COLOR = "#94a3b8"; // slate-400
+const TARGET_COLOR = CHART.accent;
+const PEER_COLOR = SERIES_COLOR.peer;
 
 type ChartRow = {
   label: string;
@@ -48,7 +49,7 @@ export function BenchmarkChart({ metrics }: { metrics: BenchmarkMetric[] }) {
 
   if (data.length === 0) {
     return (
-      <p className="py-8 text-center text-sm text-slate-400">
+      <p className="py-8 text-center text-sm text-faint">
         No comparable percentage metrics available to chart.
       </p>
     );
@@ -58,38 +59,39 @@ export function BenchmarkChart({ metrics }: { metrics: BenchmarkMetric[] }) {
     <div className="h-72 w-full">
       <ResponsiveContainer width="100%" height="100%">
         <BarChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 8 }}>
-          <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" vertical={false} />
+          <CartesianGrid stroke={CHART.grid} vertical={false} />
           <XAxis
             dataKey="label"
-            tick={{ fontSize: 12, fill: "#64748b" }}
+            tick={tickStyle}
             tickLine={false}
-            axisLine={{ stroke: "#e2e8f0" }}
+            axisLine={{ stroke: CHART.axis }}
             interval={0}
           />
           <YAxis
             tickFormatter={pctTick}
-            tick={{ fontSize: 12, fill: "#64748b" }}
+            tick={tickStyle}
             tickLine={false}
-            axisLine={{ stroke: "#e2e8f0" }}
+            axisLine={{ stroke: CHART.axis }}
             width={44}
           />
           <Tooltip
             formatter={(value: number | string) => pctTooltip(value)}
-            cursor={{ fill: "rgba(148, 163, 184, 0.12)" }}
+            cursor={{ fill: "rgba(11, 79, 130, 0.06)" }}
             contentStyle={{
-              borderRadius: 8,
-              border: "1px solid #e2e8f0",
-              fontSize: 12,
+              borderRadius: 4,
+              border: `1px solid ${CHART.grid}`,
+              backgroundColor: CHART.surface,
+              fontSize: 11,
             }}
           />
-          <Legend wrapperStyle={{ fontSize: 12 }} />
-          <Bar name="Target" dataKey="target" fill={TARGET_COLOR} radius={[4, 4, 0, 0]} maxBarSize={48} />
+          <Legend wrapperStyle={{ fontSize: 11 }} />
+          <Bar name="Target" dataKey="target" fill={TARGET_COLOR} radius={[2, 2, 0, 0]} maxBarSize={44} />
           <Bar
             name="Peer median"
             dataKey="peer"
             fill={PEER_COLOR}
-            radius={[4, 4, 0, 0]}
-            maxBarSize={48}
+            radius={[2, 2, 0, 0]}
+            maxBarSize={44}
           />
         </BarChart>
       </ResponsiveContainer>

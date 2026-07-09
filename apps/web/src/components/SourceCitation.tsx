@@ -1,7 +1,7 @@
 import Link from "next/link";
 
 const CLS =
-  "inline-flex items-center rounded border border-slate-200 bg-slate-50 px-1.5 py-0.5 font-mono text-[11px] font-medium text-slate-600 transition-colors hover:border-brand-300 hover:text-brand-700";
+  "inline-flex items-center rounded-sm bg-accent-soft px-1.5 py-0.5 font-mono text-2xs font-semibold tracking-wide text-accent ring-1 ring-inset ring-[#cfe0ee] transition-colors hover:ring-accent/40";
 
 export function SourceCitation({
   evidenceRef,

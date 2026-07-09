@@ -24,7 +24,8 @@ export default async function MemoPage({
   return (
     <div className="space-y-6">
       <PageHeader
-        title="IC Memo"
+        eyebrow="Deliverable"
+        title="IC memo"
         subtitle="An investment-committee draft synthesized from the target, evidence, and risk work."
         actions={
           <GenerateButton
@@ -43,7 +44,7 @@ export default async function MemoPage({
         </Callout>
       ) : memo ? (
         <>
-          <Callout tone="warning" title="Draft for human review">
+          <Callout tone="info" title="Draft for human review">
             This memo is machine-generated for analyst review. Verify every claim against its evidence
             before relying on it. It is not investment advice.
           </Callout>

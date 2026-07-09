@@ -1,68 +1,58 @@
 import type { ReactNode } from "react";
 
 type Align = "left" | "right" | "center";
-
-function alignClass(align?: Align): string {
-  if (align === "right") return "text-right";
-  if (align === "center") return "text-center";
-  return "text-left";
-}
+const alignCls = (a?: Align) =>
+  a === "right" ? "text-right" : a === "center" ? "text-center" : "text-left";
 
 export function Table({ children, className = "" }: { children: ReactNode; className?: string }) {
   return (
-    <div className="overflow-x-auto">
+    <div className="-mx-5 overflow-x-auto px-5">
       <table className={`w-full border-collapse text-sm ${className}`}>{children}</table>
     </div>
   );
 }
 
 export function THead({ children }: { children: ReactNode }) {
+  return <thead>{children}</thead>;
+}
+export function TBody({ children }: { children: ReactNode }) {
+  return <tbody>{children}</tbody>;
+}
+export function TR({ children, className = "", id }: { children: ReactNode; className?: string; id?: string }) {
   return (
-    <thead className="border-b border-slate-200 bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
+    <tr id={id} className={`border-b border-line-faint last:border-0 ${className}`}>
       {children}
-    </thead>
+    </tr>
   );
 }
-
-export function TBody({ children }: { children: ReactNode }) {
-  return <tbody className="divide-y divide-slate-100">{children}</tbody>;
-}
-
-export function TR({ children, className = "" }: { children: ReactNode; className?: string }) {
-  return <tr className={className}>{children}</tr>;
-}
-
 export function TH({
   children,
-  className = "",
   align,
-  colSpan,
+  className = "",
 }: {
   children?: ReactNode;
-  className?: string;
   align?: Align;
-  colSpan?: number;
+  className?: string;
 }) {
   return (
-    <th colSpan={colSpan} className={`px-4 py-2.5 font-medium ${alignClass(align)} ${className}`}>
+    <th
+      className={`whitespace-nowrap border-b-[1.5px] border-ink/80 py-2 pr-4 text-2xs font-semibold uppercase tracking-eyebrow text-muted ${alignCls(align)} ${className}`}
+    >
       {children}
     </th>
   );
 }
-
 export function TD({
   children,
-  className = "",
   align,
-  colSpan,
+  className = "",
 }: {
   children?: ReactNode;
-  className?: string;
   align?: Align;
-  colSpan?: number;
+  className?: string;
 }) {
   return (
-    <td colSpan={colSpan} className={`px-4 py-2.5 align-top text-slate-700 ${alignClass(align)} ${className}`}>
+    <td className={`py-2.5 pr-4 align-top text-[0.82rem] text-body ${alignCls(align)} ${className}`}>
       {children}
     </td>
   );
@@ -73,23 +63,29 @@ export interface Column<T> {
   header: ReactNode;
   align?: Align;
   render: (row: T) => ReactNode;
+  className?: string;
 }
 
 export function DataTable<T>({
   columns,
   rows,
   getRowKey,
-  empty = "No rows yet.",
+  empty = "No rows.",
+  rowId,
 }: {
   columns: Column<T>[];
   rows: T[];
   getRowKey?: (row: T, i: number) => string;
   empty?: ReactNode;
+  rowId?: (row: T, i: number) => string | undefined;
 }) {
+  if (!rows.length) {
+    return <p className="py-6 text-center text-sm text-muted">{empty}</p>;
+  }
   return (
     <Table>
       <THead>
-        <TR>
+        <TR className="border-0">
           {columns.map((c) => (
             <TH key={c.key} align={c.align}>
               {c.header}
@@ -98,23 +94,15 @@ export function DataTable<T>({
         </TR>
       </THead>
       <TBody>
-        {rows.length === 0 ? (
-          <TR>
-            <TD colSpan={columns.length} align="center" className="py-8 text-slate-400">
-              {empty}
-            </TD>
+        {rows.map((row, i) => (
+          <TR key={getRowKey ? getRowKey(row, i) : i} id={rowId?.(row, i)}>
+            {columns.map((c) => (
+              <TD key={c.key} align={c.align} className={c.className}>
+                {c.render(row)}
+              </TD>
+            ))}
           </TR>
-        ) : (
-          rows.map((row, i) => (
-            <TR key={getRowKey ? getRowKey(row, i) : i} className="hover:bg-slate-50">
-              {columns.map((c) => (
-                <TD key={c.key} align={c.align}>
-                  {c.render(row)}
-                </TD>
-              ))}
-            </TR>
-          ))
-        )}
+        ))}
       </TBody>
     </Table>
   );

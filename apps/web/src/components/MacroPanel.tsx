@@ -3,10 +3,9 @@
 import { Line, LineChart, ResponsiveContainer, Tooltip, YAxis } from "recharts";
 import { Badge } from "@/components/ui/Badge";
 import { Callout } from "@/components/ui/Callout";
+import { CHART } from "@/lib/chartTheme";
 import { formatDate, formatNumber, formatPct } from "@/lib/formatting";
 import type { MacroOverlay, MacroSeries } from "@/lib/types";
-
-const LINE_COLOR = "#4338ca"; // brand-600
 
 function formatLatest(series: MacroSeries): string {
   const rounded = Math.round(series.latest_value * 100) / 100;
@@ -38,12 +37,17 @@ function Sparkline({ series }: { series: MacroSeries }) {
               series.label,
             ]}
             labelFormatter={(label) => formatDate(String(label))}
-            contentStyle={{ borderRadius: 8, border: "1px solid #e2e8f0", fontSize: 12 }}
+            contentStyle={{
+              borderRadius: 4,
+              border: `1px solid ${CHART.grid}`,
+              background: CHART.surface,
+              fontSize: 12,
+            }}
           />
           <Line
             type="monotone"
             dataKey="value"
-            stroke={LINE_COLOR}
+            stroke={CHART.accent}
             strokeWidth={2}
             dot={false}
             isAnimationActive={false}
@@ -67,12 +71,12 @@ export function MacroPanel({ macro }: { macro: MacroOverlay }) {
         {macro.series.map((s) => (
           <div
             key={s.series_id}
-            className="flex flex-col rounded-lg border border-slate-200 bg-white p-4 shadow-sm"
+            className="flex flex-col rounded-md border border-line bg-panel p-4 shadow-panel"
           >
             <div className="flex items-start justify-between gap-2">
               <div className="min-w-0">
-                <div className="text-sm font-semibold text-slate-900">{s.label}</div>
-                {s.note && <p className="mt-0.5 text-xs text-slate-500">{s.note}</p>}
+                <div className="text-sm font-semibold text-ink">{s.label}</div>
+                {s.note && <p className="mt-0.5 text-xs leading-snug text-muted">{s.note}</p>}
               </div>
               {s.yoy_change !== null && s.yoy_change !== undefined && (
                 <Badge tone={s.yoy_change <= 0 ? "green" : "amber"}>{formatYoy(s.yoy_change)} YoY</Badge>
@@ -80,10 +84,10 @@ export function MacroPanel({ macro }: { macro: MacroOverlay }) {
             </div>
 
             <div className="mt-3 flex items-baseline gap-2">
-              <span className="text-2xl font-semibold tabular-nums text-slate-900">
+              <span className="text-2xl font-semibold tabular-nums text-ink">
                 {formatLatest(s)}
               </span>
-              <span className="text-xs text-slate-400">as of {formatDate(s.latest_date)}</span>
+              <span className="text-xs text-faint">as of {formatDate(s.latest_date)}</span>
             </div>
 
             <div className="mt-3">
@@ -93,7 +97,7 @@ export function MacroPanel({ macro }: { macro: MacroOverlay }) {
         ))}
       </div>
 
-      <p className="text-xs text-slate-400">Source: FRED (St. Louis Fed).</p>
+      <p className="text-2xs text-faint">Source: FRED (St. Louis Fed).</p>
     </div>
   );
 }

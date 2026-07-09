@@ -23,7 +23,8 @@ export default async function MacroPage({
   return (
     <div className="space-y-6">
       <PageHeader
-        title="Macro overlay"
+        eyebrow="Company"
+        title="Macro sensitivity"
         subtitle={
           macro
             ? `FRED indicators relevant to ${macro.target_name}'s sector (${macro.sector}).`

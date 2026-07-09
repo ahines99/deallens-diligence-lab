@@ -24,7 +24,8 @@ export default async function RedTeamPage({
   return (
     <div className="space-y-6">
       <PageHeader
-        title="Red-Team"
+        eyebrow="Deliverable"
+        title="Red-team / bear case"
         subtitle="An adversarial bear case that stress-tests the thesis, flags unsupported claims, and finds evidence gaps."
         actions={
           <GenerateButton

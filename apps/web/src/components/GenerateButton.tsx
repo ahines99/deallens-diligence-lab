@@ -59,7 +59,7 @@ export function GenerateButton({
           label ?? action.label
         )}
       </Button>
-      {error && <span className="max-w-xs text-xs text-red-600">{error}</span>}
+      {error && <span className="max-w-xs text-xs text-negative">{error}</span>}
     </div>
   );
 }

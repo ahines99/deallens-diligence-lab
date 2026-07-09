@@ -1,28 +1,29 @@
 "use client";
 
+import type { ReactNode } from "react";
 import {
   Bar,
+  BarChart,
   CartesianGrid,
-  ComposedChart,
   Legend,
   Line,
+  LineChart,
   ResponsiveContainer,
   Tooltip,
   XAxis,
   YAxis,
 } from "recharts";
+import { CHART, SERIES_COLOR, tickStyle } from "@/lib/chartTheme";
 import { formatUsd } from "@/lib/formatting";
 import type { TrendPoint } from "@/lib/types";
 
-// House brand for the revenue magnitude; a CVD-safe trio for the three margin
-// lines (validated: worst adjacent ΔE 92.6, well clear of the ≥12 target).
-const REVENUE_COLOR = "#4338ca"; // brand-600
-const GROSS_COLOR = "#1baf7a"; // aqua
-const OPERATING_COLOR = "#eb6834"; // orange
-const NET_COLOR = "#2a78d6"; // blue
-
-const GRID = "#e2e8f0"; // slate-200
-const AXIS_TEXT = "#64748b"; // slate-500
+// Minimal, hairline-bordered tooltip shared by both panels.
+const TOOLTIP_STYLE = {
+  borderRadius: 4,
+  border: `1px solid ${CHART.grid}`,
+  background: CHART.surface,
+  fontSize: 12,
+} as const;
 
 type ChartRow = {
   year: string;
@@ -41,10 +42,10 @@ function pctTick(value: number): string {
   return `${Math.round(value)}%`;
 }
 
-function tooltipFormatter(value: number | string, name: string): [string, string] {
-  const n = typeof value === "number" ? value : Number(value);
-  if (name === "Revenue") return [formatUsd(n), name];
-  return [`${n.toFixed(1)}%`, name];
+function ChartLabel({ children }: { children: ReactNode }) {
+  return (
+    <p className="mb-2 text-2xs font-semibold uppercase tracking-eyebrow text-muted">{children}</p>
+  );
 }
 
 export function TrendChart({ rows }: { rows: TrendPoint[] }) {
@@ -58,86 +59,111 @@ export function TrendChart({ rows }: { rows: TrendPoint[] }) {
 
   if (data.length === 0) {
     return (
-      <p className="py-8 text-center text-sm text-slate-400">
+      <p className="py-8 text-center text-sm text-faint">
         No multi-year data points available to chart.
       </p>
     );
   }
 
   return (
-    <div className="h-80 w-full">
-      <ResponsiveContainer width="100%" height="100%">
-        <ComposedChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 8 }}>
-          <CartesianGrid strokeDasharray="3 3" stroke={GRID} vertical={false} />
-          <XAxis
-            dataKey="year"
-            tick={{ fontSize: 12, fill: AXIS_TEXT }}
-            tickLine={false}
-            axisLine={{ stroke: GRID }}
-          />
-          <YAxis
-            yAxisId="rev"
-            tickFormatter={(v: number) => formatUsd(v)}
-            tick={{ fontSize: 12, fill: AXIS_TEXT }}
-            tickLine={false}
-            axisLine={{ stroke: GRID }}
-            width={56}
-          />
-          <YAxis
-            yAxisId="pct"
-            orientation="right"
-            tickFormatter={pctTick}
-            tick={{ fontSize: 12, fill: AXIS_TEXT }}
-            tickLine={false}
-            axisLine={{ stroke: GRID }}
-            width={44}
-          />
-          <Tooltip
-            formatter={tooltipFormatter}
-            cursor={{ fill: "rgba(148, 163, 184, 0.12)" }}
-            contentStyle={{ borderRadius: 8, border: "1px solid #e2e8f0", fontSize: 12 }}
-          />
-          <Legend wrapperStyle={{ fontSize: 12 }} />
-          <Bar
-            yAxisId="rev"
-            name="Revenue"
-            dataKey="revenue"
-            fill={REVENUE_COLOR}
-            radius={[4, 4, 0, 0]}
-            maxBarSize={56}
-          />
-          <Line
-            yAxisId="pct"
-            name="Gross margin"
-            type="monotone"
-            dataKey="gross"
-            stroke={GROSS_COLOR}
-            strokeWidth={2}
-            dot={{ r: 3 }}
-            connectNulls={false}
-          />
-          <Line
-            yAxisId="pct"
-            name="Operating margin"
-            type="monotone"
-            dataKey="operating"
-            stroke={OPERATING_COLOR}
-            strokeWidth={2}
-            dot={{ r: 3 }}
-            connectNulls={false}
-          />
-          <Line
-            yAxisId="pct"
-            name="Net margin"
-            type="monotone"
-            dataKey="net"
-            stroke={NET_COLOR}
-            strokeWidth={2}
-            dot={{ r: 3 }}
-            connectNulls={false}
-          />
-        </ComposedChart>
-      </ResponsiveContainer>
+    <div className="space-y-6">
+      {/* Revenue — single-axis bar chart (USD) */}
+      <div>
+        <ChartLabel>Revenue</ChartLabel>
+        <div className="h-56 w-full">
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 4 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke={CHART.grid} vertical={false} />
+              <XAxis
+                dataKey="year"
+                tick={tickStyle}
+                tickLine={false}
+                axisLine={{ stroke: CHART.axis }}
+              />
+              <YAxis
+                tickFormatter={(v: number) => formatUsd(v)}
+                tick={tickStyle}
+                tickLine={false}
+                axisLine={{ stroke: CHART.axis }}
+                width={56}
+              />
+              <Tooltip
+                formatter={(value: number | string) => [formatUsd(Number(value)), "Revenue"]}
+                cursor={{ fill: "rgba(11, 79, 130, 0.06)" }}
+                contentStyle={TOOLTIP_STYLE}
+              />
+              <Bar
+                name="Revenue"
+                dataKey="revenue"
+                fill={CHART.accent}
+                radius={[2, 2, 0, 0]}
+                maxBarSize={48}
+              />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+
+      {/* Margins — single-axis line chart (percent) */}
+      <div>
+        <ChartLabel>Margins</ChartLabel>
+        <div className="h-56 w-full">
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 4 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke={CHART.grid} vertical={false} />
+              <XAxis
+                dataKey="year"
+                tick={tickStyle}
+                tickLine={false}
+                axisLine={{ stroke: CHART.axis }}
+              />
+              <YAxis
+                tickFormatter={pctTick}
+                tick={tickStyle}
+                tickLine={false}
+                axisLine={{ stroke: CHART.axis }}
+                width={44}
+              />
+              <Tooltip
+                formatter={(value: number | string, name: string) => [
+                  `${Number(value).toFixed(1)}%`,
+                  name,
+                ]}
+                cursor={{ stroke: CHART.axis, strokeWidth: 1 }}
+                contentStyle={TOOLTIP_STYLE}
+              />
+              <Legend wrapperStyle={{ fontSize: 12 }} />
+              <Line
+                name="Gross margin"
+                type="monotone"
+                dataKey="gross"
+                stroke={SERIES_COLOR.gross_margin}
+                strokeWidth={2}
+                dot={{ r: 2.5 }}
+                connectNulls={false}
+              />
+              <Line
+                name="Operating margin"
+                type="monotone"
+                dataKey="operating"
+                stroke={SERIES_COLOR.operating_margin}
+                strokeWidth={2}
+                dot={{ r: 2.5 }}
+                connectNulls={false}
+              />
+              <Line
+                name="Net margin"
+                type="monotone"
+                dataKey="net"
+                stroke={SERIES_COLOR.net_margin}
+                strokeWidth={2}
+                dot={{ r: 2.5 }}
+                connectNulls={false}
+              />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
     </div>
   );
 }

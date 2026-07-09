@@ -358,3 +358,161 @@ export interface GovConProfile {
   recompete: Recompete;
   created_at: string;
 }
+
+// --- Extensions: QoE/forensics, valuation/LBO, events, insiders, themes, news, filing watch ---
+
+export type ForensicRating = "strong" | "neutral" | "weak" | "distress" | "elevated" | "n/a";
+
+export interface ForensicComponent {
+  name: string;
+  value: number | null;
+}
+export interface ForensicScore {
+  key: string; // "altman_z", "piotroski_f", "beneish_m", "accruals"
+  label: string;
+  value: number | null;
+  rating: ForensicRating;
+  interpretation: string;
+  components: ForensicComponent[];
+  available: boolean;
+  note?: string;
+}
+export interface QoEMetric {
+  key: string;
+  label: string;
+  unit: "pct" | "x" | "usd" | "days" | "ratio";
+  value: number | null;
+  commentary: string;
+}
+export interface Forensics {
+  workspace_id: string;
+  target_name: string;
+  as_of_year: string | null;
+  scores: ForensicScore[];
+  qoe: QoEMetric[];
+  notes: string[];
+  generated_at: string;
+}
+
+export interface WACC {
+  value: number | null;
+  risk_free: number | null;
+  equity_risk_premium: number;
+  beta: number;
+  cost_of_equity: number | null;
+  cost_of_debt: number | null;
+  tax_rate: number;
+  debt_weight: number | null;
+}
+export interface DCF {
+  fcf_base: number | null;
+  growth: number;
+  terminal_growth: number;
+  wacc: number | null;
+  enterprise_value: number | null;
+  assumptions: string[];
+}
+export interface Valuation {
+  workspace_id: string;
+  target_name: string;
+  ebitda: number | null;
+  net_debt: number | null;
+  wacc: WACC;
+  dcf: DCF;
+  notes: string[];
+  generated_at: string;
+}
+export interface LboInputs {
+  entry_multiple: number; // EV / EBITDA at entry
+  exit_multiple: number;
+  leverage: number; // entry net debt / EBITDA
+  hold_years: number;
+  ebitda_cagr: number; // decimal
+}
+export interface LboSensitivity {
+  entry_multiples: number[];
+  exit_multiples: number[];
+  irr_grid: (number | null)[][];
+  moic_grid: (number | null)[][];
+}
+export interface LboResult {
+  entry_ev: number | null;
+  entry_equity: number | null;
+  exit_ev: number | null;
+  exit_equity: number | null;
+  irr: number | null;
+  moic: number | null;
+  inputs: LboInputs;
+  sensitivity: LboSensitivity;
+  assumptions: string[];
+  generated_at: string;
+}
+
+export interface EventItem {
+  code: string;
+  label: string;
+}
+export interface FilingEvent {
+  date: string;
+  form: string;
+  items: EventItem[];
+  accession: string | null;
+  url: string | null;
+  significant: boolean;
+}
+export interface EventTimeline {
+  workspace_id: string;
+  events: FilingEvent[];
+  generated_at: string;
+}
+
+export interface InsiderTx {
+  date: string;
+  insider: string;
+  role: string;
+  type: "buy" | "sell" | "other";
+  shares: number | null;
+  price: number | null;
+  value: number | null;
+  url: string | null;
+}
+export interface InsiderActivity {
+  workspace_id: string;
+  summary: { buys: number; sells: number; net_shares: number | null; window_days: number };
+  transactions: InsiderTx[];
+  generated_at: string;
+}
+
+export interface ThemeHit {
+  theme: string;
+  label: string;
+  count: number;
+  hits: { form: string; date: string; url: string | null }[];
+}
+export interface ThemeScan {
+  workspace_id: string;
+  themes: ThemeHit[];
+  generated_at: string;
+}
+
+export interface NewsArticle {
+  title: string;
+  url: string;
+  domain: string;
+  seendate: string;
+  sourcecountry?: string;
+}
+export interface NewsSignals {
+  workspace_id: string;
+  query: string;
+  articles: NewsArticle[];
+  generated_at: string;
+}
+
+export interface FilingWatch {
+  workspace_id: string;
+  last_ingested_date: string | null;
+  has_new: boolean;
+  new_filings: { form: string; date: string; accession: string | null; url: string | null }[];
+  generated_at: string;
+}

@@ -15,6 +15,15 @@ import type {
   FinancialTrends,
   MacroOverlay,
   GovConProfile,
+  Forensics,
+  Valuation,
+  LboInputs,
+  LboResult,
+  EventTimeline,
+  InsiderActivity,
+  ThemeScan,
+  NewsSignals,
+  FilingWatch,
   Memo,
   RedTeam,
   SecSearchResult,
@@ -135,4 +144,25 @@ export const api = {
       method: "POST",
       body: { recipient_name: recipient_name || undefined },
     }),
+
+  // QoE / forensics
+  getForensics: (id: string) => requestOrNull<Forensics>(`/api/workspaces/${id}/forensics`),
+
+  // Valuation / LBO
+  getValuation: (id: string) => requestOrNull<Valuation>(`/api/workspaces/${id}/valuation`),
+  runLbo: (id: string, inputs: LboInputs) =>
+    request<LboResult>(`/api/workspaces/${id}/lbo`, { method: "POST", body: inputs }),
+
+  // SEC event / insider / theme feeds
+  getEvents: (id: string) => requestOrNull<EventTimeline>(`/api/workspaces/${id}/events`),
+  getInsiders: (id: string) => requestOrNull<InsiderActivity>(`/api/workspaces/${id}/insiders`),
+  getThemes: (id: string) => requestOrNull<ThemeScan>(`/api/workspaces/${id}/themes`),
+  getNews: (id: string) => requestOrNull<NewsSignals>(`/api/workspaces/${id}/news`),
+
+  // Automations
+  getFilingWatch: (id: string) => requestOrNull<FilingWatch>(`/api/workspaces/${id}/filing-watch`),
+  refreshWorkspace: (id: string) =>
+    request<WorkspaceOverview>(`/api/workspaces/${id}/refresh`, { method: "POST" }),
+  autoComps: (id: string) =>
+    request<ComparableCompany[]>(`/api/workspaces/${id}/comps/auto`, { method: "POST" }),
 };

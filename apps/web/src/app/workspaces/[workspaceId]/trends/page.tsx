@@ -13,39 +13,37 @@ const ROW_COLUMNS: Column<TrendPoint>[] = [
   {
     key: "year",
     header: "Year",
-    render: (r) => <span className="font-medium text-slate-800">{r.year}</span>,
+    render: (r) => <span className="font-medium text-ink">{r.year}</span>,
   },
   {
     key: "revenue",
     header: "Revenue",
     align: "right",
-    render: (r) => <span className="tabular-nums text-slate-700">{formatUsd(r.revenue)}</span>,
+    render: (r) => <span className="tabular-nums text-body">{formatUsd(r.revenue)}</span>,
   },
   {
     key: "gross_margin",
     header: "Gross margin",
     align: "right",
-    render: (r) => <span className="tabular-nums text-slate-700">{formatPct(r.gross_margin)}</span>,
+    render: (r) => <span className="tabular-nums text-body">{formatPct(r.gross_margin)}</span>,
   },
   {
     key: "operating_margin",
     header: "Op. margin",
     align: "right",
-    render: (r) => (
-      <span className="tabular-nums text-slate-700">{formatPct(r.operating_margin)}</span>
-    ),
+    render: (r) => <span className="tabular-nums text-body">{formatPct(r.operating_margin)}</span>,
   },
   {
     key: "net_margin",
     header: "Net margin",
     align: "right",
-    render: (r) => <span className="tabular-nums text-slate-700">{formatPct(r.net_margin)}</span>,
+    render: (r) => <span className="tabular-nums text-body">{formatPct(r.net_margin)}</span>,
   },
   {
     key: "rnd_pct",
     header: "R&D %",
     align: "right",
-    render: (r) => <span className="tabular-nums text-slate-700">{formatPct(r.rnd_pct)}</span>,
+    render: (r) => <span className="tabular-nums text-body">{formatPct(r.rnd_pct)}</span>,
   },
 ];
 
@@ -72,6 +70,7 @@ export default async function TrendsPage({
   return (
     <div className="space-y-6">
       <PageHeader
+        eyebrow="Company"
         title="Financial trends"
         subtitle="Multi-year revenue and margin history reconstructed from SEC XBRL company facts."
       />
@@ -87,15 +86,21 @@ export default async function TrendsPage({
         />
       ) : (
         <>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-            <StatTile
-              label="Revenue CAGR"
-              value={formatPct(trends.revenue_cagr, 1)}
-              sub={yearRange ? `${yearRange} compound annual growth` : undefined}
-              tone="indigo"
-            />
-            <StatTile label="Years covered" value={String(trends.rows.length)} sub={yearRange} />
-            <StatTile label="Company" value={trends.target_name} />
+          <div className="grid grid-cols-1 gap-px overflow-hidden rounded-md border border-line bg-line sm:grid-cols-3">
+            <div className="bg-panel px-5 py-4">
+              <StatTile
+                label="Revenue CAGR"
+                value={formatPct(trends.revenue_cagr, 1)}
+                sub={yearRange ? `${yearRange} compound annual growth` : undefined}
+                tone="accent"
+              />
+            </div>
+            <div className="bg-panel px-5 py-4">
+              <StatTile label="Years covered" value={String(trends.rows.length)} sub={yearRange} />
+            </div>
+            <div className="bg-panel px-5 py-4">
+              <StatTile label="Company" value={trends.target_name} />
+            </div>
           </div>
 
           <Card title="Revenue & margins" subtitle={yearRange}>

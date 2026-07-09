@@ -29,7 +29,8 @@ export default async function GovConPage({
   return (
     <div className="space-y-6">
       <PageHeader
-        title="GovCon profile"
+        eyebrow="Analysis"
+        title="Federal contract profile (GovCon)"
         subtitle="Federal contract exposure from USAspending.gov: agency concentration, recompete risk, and top awards."
       />
 

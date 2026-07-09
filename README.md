@@ -140,6 +140,24 @@ USAspending or FRED**. Full details in [`docs/govcon-and-macro.md`](docs/govcon-
   **defense / GovCon diligence** — e.g. Leidos shows ~$128B in federal obligations with DoD at ~52%
   concentration.
 
+### Financial DD, valuation & signals (Wave 2, live)
+
+Closing the two workstreams that dominate real deal effort — quality-of-earnings and returns — plus SEC
+event/signal feeds and automations. All keyless.
+
+- **Quality of Earnings & financial forensics** (`GET /forensics`) — from XBRL: **Altman Z″**, **Piotroski
+  F-score**, **Beneish M-score**, Sloan **accruals**, plus net working capital, DSO/DIO/DPO / cash-conversion
+  cycle, FCF, cash conversion, interest coverage, net debt and net-debt/EBITDA. Breaches feed the red-flag
+  matrix (e.g. Z″ < 1.1 → distress). Degrades to `n/a` (never imputes) when a concept is untagged.
+- **Valuation & returns** (`GET /valuation`, `POST /lbo`) — WACC anchored on FRED, a DCF-lite, and an
+  interactive **LBO engine** returning IRR/MOIC with an entry × exit multiple **sensitivity grid**. Every
+  assumption is labeled; no fabricated market data.
+- **SEC event & signal feeds** (keyless) — an 8-K **material-event timeline** (Item 4.02 non-reliance flagged
+  critical), **Form 4 insider** activity, a full-text **red-flag theme scan** (going-concern, material weakness,
+  restatement…), and **GDELT news** (labeled unverified media, kept out of the evidence table).
+- **Automations** — **filing-watch** (new filings since last analysis) with one-click **refresh** (re-ingest +
+  re-analyze), and **SIC-based auto-peer** discovery for the comp set.
+
 ## Architecture
 
 | Layer            | Choice                                                              |

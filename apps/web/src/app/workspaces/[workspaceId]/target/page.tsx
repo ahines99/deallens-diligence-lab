@@ -19,7 +19,7 @@ export default async function TargetPage({
   } catch (e) {
     return (
       <div className="space-y-6">
-        <PageHeader title="Target" />
+        <PageHeader eyebrow="Company" title="Target profile" />
         <Callout tone="warning" title="Can't reach the API">
           {e instanceof ApiError ? e.message : "Failed to load the target."} Start the backend
           service (<code className="font-mono">apps/api</code>) and refresh.
@@ -31,7 +31,8 @@ export default async function TargetPage({
   return (
     <div className="space-y-6">
       <PageHeader
-        title="Target"
+        eyebrow="Company"
+        title="Target profile"
         subtitle="The company under diligence — profile and headline financials that anchor benchmarks and risk screening."
       />
 

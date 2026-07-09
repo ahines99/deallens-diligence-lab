@@ -46,6 +46,7 @@ def ingest_company(session: Session, workspace_id: str, ticker: str, filing_limi
         facts = edgar_client.get_company_facts(cik)
         fin = sec_financials.extract_financials(facts)
         fin["trends"] = sec_financials.extract_trends(facts)
+        fin["forensic_inputs"] = sec_financials.extract_forensic_inputs(facts)
     except EdgarError as exc:
         logger.warning("No XBRL company facts for %s: %s", ticker, exc)
         fin = {}

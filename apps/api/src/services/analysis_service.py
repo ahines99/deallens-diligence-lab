@@ -145,6 +145,16 @@ def run_full_analysis(session: Session, workspace_id: str) -> None:
         + analyst.financial_flags(target, filing_ctx)
         + analyst.govcon_flags(govcon)
     )
+    # Wave 2 extension flags (forensics + SEC feeds). Each is best-effort: a failure
+    # (e.g. missing forensic_inputs, SEC unreachable) must never break analysis.
+    import importlib
+
+    for mod_name in ("forensics_service", "sec_feeds_service"):
+        try:
+            module = importlib.import_module(f"src.services.{mod_name}")
+            raw_findings += module.risk_flags(session, workspace_id)
+        except Exception:  # pragma: no cover - defensive; extensions are optional
+            pass
     raw_findings.sort(key=lambda f: f["severity_score"], reverse=True)
 
     for f in raw_findings:

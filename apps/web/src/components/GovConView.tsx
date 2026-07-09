@@ -16,19 +16,19 @@ const AGENCY_COLUMNS: Column<AgencyShare>[] = [
   {
     key: "agency",
     header: "Agency",
-    render: (r) => <span className="font-medium text-slate-800">{r.agency ?? "Unknown"}</span>,
+    render: (r) => <span className="font-medium text-ink">{r.agency ?? "Unknown"}</span>,
   },
   {
     key: "amount",
     header: "Obligations",
     align: "right",
-    render: (r) => <span className="tabular-nums text-slate-700">{formatUsd(r.amount)}</span>,
+    render: (r) => <span className="tabular-nums text-body">{formatUsd(r.amount)}</span>,
   },
   {
     key: "pct",
     header: "Share",
     align: "right",
-    render: (r) => <span className="tabular-nums text-slate-700">{formatPct(r.pct)}</span>,
+    render: (r) => <span className="tabular-nums text-body">{formatPct(r.pct)}</span>,
   },
 ];
 
@@ -36,19 +36,19 @@ const RECOMPETE_COLUMNS: Column<RecompeteAward>[] = [
   {
     key: "agency",
     header: "Agency",
-    render: (r) => <span className="text-slate-700">{r.agency ?? "—"}</span>,
+    render: (r) => <span className="text-body">{r.agency ?? "—"}</span>,
   },
   {
     key: "amount",
     header: "Amount",
     align: "right",
-    render: (r) => <span className="tabular-nums text-slate-700">{formatUsd(r.amount)}</span>,
+    render: (r) => <span className="tabular-nums text-body">{formatUsd(r.amount)}</span>,
   },
   {
     key: "pop_end",
     header: "PoP end",
     align: "right",
-    render: (r) => <span className="tabular-nums text-slate-600">{formatDate(r.pop_end)}</span>,
+    render: (r) => <span className="tabular-nums text-muted">{formatDate(r.pop_end)}</span>,
   },
 ];
 
@@ -57,31 +57,31 @@ const AWARD_COLUMNS: Column<GovConAward>[] = [
     key: "award_id",
     header: "Award ID",
     render: (r) => (
-      <span className="font-mono text-xs text-slate-700">{r.award_id ?? "—"}</span>
+      <span className="font-mono text-xs text-body">{r.award_id ?? "—"}</span>
     ),
   },
   {
     key: "agency",
     header: "Agency",
-    render: (r) => <span className="text-slate-700">{r.agency ?? "—"}</span>,
+    render: (r) => <span className="text-body">{r.agency ?? "—"}</span>,
   },
   {
     key: "amount",
     header: "Amount",
     align: "right",
-    render: (r) => <span className="tabular-nums text-slate-700">{formatUsd(r.amount)}</span>,
+    render: (r) => <span className="tabular-nums text-body">{formatUsd(r.amount)}</span>,
   },
   {
     key: "pop_end",
     header: "PoP end",
     align: "right",
-    render: (r) => <span className="tabular-nums text-slate-600">{formatDate(r.pop_end)}</span>,
+    render: (r) => <span className="tabular-nums text-muted">{formatDate(r.pop_end)}</span>,
   },
   {
     key: "description",
     header: "Description",
     render: (r) => (
-      <span className="block max-w-md text-xs text-slate-500">{truncate(r.description)}</span>
+      <span className="block max-w-md text-xs text-muted">{truncate(r.description)}</span>
     ),
   },
 ];
@@ -98,7 +98,7 @@ export function GovConView({
       <Card
         title="Federal contract profile"
         subtitle={profile.recipient_name}
-        right={<span className="text-xs text-slate-400">Updated {formatDate(profile.created_at)}</span>}
+        right={<span className="text-xs text-faint">Updated {formatDate(profile.created_at)}</span>}
       >
         <GovConFetchForm
           workspaceId={workspaceId}
@@ -111,7 +111,7 @@ export function GovConView({
         <StatTile
           label="Total obligations"
           value={formatUsd(profile.total_obligations)}
-          tone="indigo"
+          tone="accent"
         />
         <StatTile label="Award count" value={formatNumber(profile.award_count)} />
         <StatTile
