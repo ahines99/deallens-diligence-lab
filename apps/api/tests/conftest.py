@@ -12,7 +12,7 @@ os.environ["LLM_MODE"] = "mock"
 os.environ["AUTO_SEED"] = "false"
 os.environ["DATABASE_URL"] = f"sqlite:///{_tmp}/test.sqlite3"
 os.environ.setdefault(
-    "SEC_USER_AGENT", "DealLens Diligence Lab (portfolio test) alexhines2017@gmail.com"
+    "SEC_USER_AGENT", "DealLens Diligence Lab (portfolio test) contact@example.com"
 )
 
 import pytest  # noqa: E402
