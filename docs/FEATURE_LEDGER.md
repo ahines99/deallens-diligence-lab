@@ -69,7 +69,7 @@ cannot be satisfied by relabeling repairs as features.
 | F38 | Import-exception aging queue | done | open-age sorting test |
 | F39 | QoE adjustment materiality analysis | done | percentage/band tests |
 | F40 | Reported-to-sponsor EBITDA variance | done | bridge aggregation test |
-| F41 | Fiscal-period consistency diagnostics | planned | mismatch detection tests |
+| F41 | Fiscal-period consistency diagnostics | planned | mismatch detection tests (carried into Wave 4 as G17 — see `ROADMAP-WAVE4.md`) |
 | F42 | Server-owned provenance labels | done | user/XBRL source tests |
 | F43 | Financial-import dry-run preview | done | no-write preview test |
 | F44 | Approved intelligence claims promoted to governed evidence | done | claim approval bridge test |
@@ -83,7 +83,7 @@ cannot be satisfied by relabeling repairs as features.
 | F52 | Local actor/role switcher for governance demos | done | frontend interaction test |
 | F53 | Demonstrable second-actor four-eyes workflow | done | submitter/approver UI test |
 | F54 | Discoverable Signals navigation group | done | navigation/build test |
-| F55 | Consolidated signals overview | planned | page/API rendering test |
+| F55 | Consolidated signals overview | planned | page/API rendering test (carried into Wave 4 as G18 — see `ROADMAP-WAVE4.md`) |
 | F56 | Expandable verbatim evidence excerpts | done | component test |
 | F57 | Model-input dirty-state indicator | done | frontend state test |
 | F58 | Stress-analysis stale-state indicator | done | frontend state test |
