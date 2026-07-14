@@ -1,4 +1,4 @@
-import { api, ApiError } from "@/lib/api";
+import { api, ApiError } from "@/lib/serverApi";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Card } from "@/components/ui/Card";
 import { EmptyState } from "@/components/ui/EmptyState";
@@ -9,9 +9,9 @@ import type { EventTimeline as EventTimelineData } from "@/lib/types";
 export default async function EventsPage({
   params,
 }: {
-  params: { workspaceId: string };
+  params: Promise<{ workspaceId: string }>;
 }) {
-  const id = params.workspaceId;
+  const { workspaceId: id } = await params;
 
   let data: EventTimelineData | null = null;
   let error: string | null = null;

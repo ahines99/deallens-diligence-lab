@@ -3,12 +3,14 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 from src.schemas.common import ORMModel
 
 
 class CompCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     ticker: str
     company_name: str = ""
     sector: str = ""
@@ -23,13 +25,13 @@ class CompCreate(BaseModel):
     enterprise_value: float | None = None
     ev_revenue_multiple: float | None = None
     notes: str = ""
-    data_source: str = "SEC EDGAR (XBRL)"
-    is_illustrative: bool = False
 
 
 class CompsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     # Add real public peers by ticker (fetched from SEC XBRL), or pass explicit comp rows.
-    tickers: list[str] = []
+    tickers: list[str] = Field(default_factory=list)
     comps: list[CompCreate] | None = None
 
 

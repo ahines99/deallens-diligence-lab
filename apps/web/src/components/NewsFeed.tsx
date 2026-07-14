@@ -1,4 +1,5 @@
 import { Callout } from "@/components/ui/Callout";
+import { SourceStatusCallout } from "@/components/SourceStatusCallout";
 import { formatDate } from "@/lib/formatting";
 import type { NewsSignals } from "@/lib/types";
 
@@ -20,8 +21,14 @@ export function NewsFeed({ data }: { data: NewsSignals }) {
         verified before any use in diligence or the IC memo.
       </Callout>
 
-      {data.articles.length === 0 ? (
-        <p className="py-6 text-center text-sm text-muted">No recent articles found.</p>
+      <SourceStatusCallout status={data.source_status} error={data.source_error} source="GDELT news" />
+
+      {data.source_status === "unavailable" ? null : data.articles.length === 0 ? (
+        <p className="py-6 text-center text-sm text-muted">
+          {data.source_status === "partial"
+            ? "No articles were returned from the partial response; coverage is incomplete."
+            : "No recent articles found."}
+        </p>
       ) : (
         <ul className="divide-y divide-line-faint">
           {data.articles.map((a, i) => (

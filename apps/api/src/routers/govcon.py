@@ -15,7 +15,7 @@ router = APIRouter(prefix="/api/workspaces", tags=["govcon"])
 def generate_govcon(workspace_id: str, payload: GovConRequest, session: SessionDep) -> GovConProfileOut:
     get_workspace_or_404(session, workspace_id)
     try:
-        profile = govcon_service.fetch(session, workspace_id, payload.recipient_name)
+        govcon_service.fetch(session, workspace_id, payload.recipient_name)
         session.commit()
         # Fold GovCon findings/questions/memo section into the pack.
         if workspace_service.get_target(session, workspace_id) is not None:

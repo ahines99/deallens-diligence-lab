@@ -1,5 +1,5 @@
 import { notFound } from "next/navigation";
-import { api, ApiError } from "@/lib/api";
+import { api, ApiError } from "@/lib/serverApi";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatTile, type StatTone } from "@/components/ui/StatTile";
 import { Callout } from "@/components/ui/Callout";
@@ -28,9 +28,9 @@ const SEVERITIES: Severity[] = ["critical", "high", "medium", "low"];
 export default async function RisksPage({
   params,
 }: {
-  params: { workspaceId: string };
+  params: Promise<{ workspaceId: string }>;
 }) {
-  const id = params.workspaceId;
+  const { workspaceId: id } = await params;
 
   let risks: RiskFinding[];
   try {
@@ -105,7 +105,7 @@ export default async function RisksPage({
 
       <RiskMatrix risks={risks} workspaceId={id} />
 
-      {themes && themes.themes.length > 0 && <ThemeScanPanel data={themes} />}
+      {themes && <ThemeScanPanel data={themes} />}
     </div>
   );
 }

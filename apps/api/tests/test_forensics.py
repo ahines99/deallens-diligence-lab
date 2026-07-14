@@ -68,8 +68,8 @@ def test_beneish_m_on_known_inputs():
     core = fx._core(_fi({"2023": _P, "2024": _T}, ["2023", "2024"]), _Target({"2024": _T}, ["2024"]))
     m = _score(core, "beneish_m")
     assert m["available"] is True
-    assert m["value"] == pytest.approx(-2.460, abs=2e-3)
-    assert m["rating"] == "neutral"  # -2.46 <= -1.78 -> no manipulation signal
+    assert m["value"] == pytest.approx(-2.455, abs=1e-3)
+    assert m["rating"] == "neutral"  # -2.455 <= -1.78 -> no manipulation signal
     assert m["note"] is None
 
 

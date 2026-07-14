@@ -1,0 +1,302 @@
+"""Versioned deal-room documents and deterministic evidence intelligence.
+
+The records in this module are deliberately append-only.  A document upload, Q&A run,
+extraction candidate, human review, comparison, or evaluation is an evidence artifact; a later
+decision therefore creates another row instead of rewriting the historical record.
+"""
+from __future__ import annotations
+
+from datetime import datetime
+
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    LargeBinary,
+    String,
+    Text,
+    UniqueConstraint,
+    event,
+)
+from sqlalchemy.orm import Mapped, mapped_column
+
+from src.db.base import Base, UUIDMixin, now_utc
+
+
+class DataRoomDocument(UUIDMixin, Base):
+    """One immutable version of a logical data-room document."""
+
+    __tablename__ = "data_room_documents"
+    __table_args__ = (
+        UniqueConstraint(
+            "deal_id", "logical_document_id", "version", name="uq_data_room_document_version"
+        ),
+        CheckConstraint("version >= 1", name="ck_data_room_document_version"),
+        CheckConstraint("byte_size > 0", name="ck_data_room_document_nonempty"),
+        Index("ix_data_room_documents_deal_logical", "deal_id", "logical_document_id"),
+        Index("ix_data_room_documents_deal_created", "deal_id", "created_at"),
+    )
+
+    deal_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("deals.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    logical_document_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    supersedes_document_id: Mapped[str | None] = mapped_column(
+        String(32), ForeignKey("data_room_documents.id", ondelete="RESTRICT"), nullable=True
+    )
+    title: Mapped[str] = mapped_column(String(240), nullable=False)
+    filename: Mapped[str] = mapped_column(String(240), nullable=False)
+    original_filename: Mapped[str] = mapped_column(String(500), nullable=False)
+    extension: Mapped[str] = mapped_column(String(12), nullable=False)
+    content_type: Mapped[str] = mapped_column(String(160), nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    byte_size: Mapped[int] = mapped_column(Integer, nullable=False)
+    raw_bytes: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    document_metadata: Mapped[dict] = mapped_column("metadata_json", JSON, nullable=False, default=dict)
+    source_kind: Mapped[str] = mapped_column(String(30), nullable=False, default="data_room")
+    uploaded_by_actor_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=now_utc, nullable=False
+    )
+
+
+class DataRoomChunk(UUIDMixin, Base):
+    """Extracted text with a resolvable page/paragraph or sheet/cell locator."""
+
+    __tablename__ = "data_room_chunks"
+    __table_args__ = (
+        UniqueConstraint("document_id", "ordinal", name="uq_data_room_chunk_ordinal"),
+        Index("ix_data_room_chunks_deal_document", "deal_id", "document_id", "ordinal"),
+    )
+
+    deal_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("deals.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    document_id: Mapped[str] = mapped_column(
+        String(32),
+        ForeignKey("data_room_documents.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    locator_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    locator: Mapped[dict] = mapped_column(JSON, nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    normalized_text: Mapped[str] = mapped_column(Text, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    char_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=now_utc, nullable=False
+    )
+
+
+class CitedQARun(UUIDMixin, Base):
+    """A persisted deterministic answer or explicit abstention."""
+
+    __tablename__ = "cited_qa_runs"
+    __table_args__ = (
+        CheckConstraint("status IN ('answered','abstained')", name="ck_cited_qa_status"),
+        Index("ix_cited_qa_runs_deal_created", "deal_id", "created_at"),
+    )
+
+    deal_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("deals.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    question: Mapped[str] = mapped_column(Text, nullable=False)
+    filters: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    answer: Mapped[str] = mapped_column(Text, nullable=False)
+    citations: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    retrieval_metadata: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    answer_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    algorithm_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    created_by_actor_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=now_utc, nullable=False
+    )
+
+
+class StructuredClaim(UUIDMixin, Base):
+    """An immutable revision of an extracted and human-reviewable structured claim."""
+
+    __tablename__ = "structured_claims"
+    __table_args__ = (
+        UniqueConstraint("logical_claim_id", "revision", name="uq_structured_claim_revision"),
+        CheckConstraint("revision >= 1", name="ck_structured_claim_revision"),
+        CheckConstraint(
+            "category IN ('debt_term','customer','contract','kpi','qoe_candidate')",
+            name="ck_structured_claim_category",
+        ),
+        CheckConstraint(
+            "review_status IN ('unreviewed','approved','rejected')",
+            name="ck_structured_claim_review_status",
+        ),
+        CheckConstraint("confidence >= 0 AND confidence <= 1", name="ck_claim_confidence"),
+        Index("ix_structured_claims_deal_status", "deal_id", "review_status"),
+        Index("ix_structured_claims_logical_revision", "logical_claim_id", "revision"),
+    )
+
+    deal_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("deals.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    logical_claim_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    supersedes_claim_id: Mapped[str | None] = mapped_column(
+        String(32), ForeignKey("structured_claims.id", ondelete="RESTRICT"), nullable=True
+    )
+    document_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("data_room_documents.id", ondelete="RESTRICT"), nullable=False
+    )
+    chunk_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("data_room_chunks.id", ondelete="RESTRICT"), nullable=False
+    )
+    category: Mapped[str] = mapped_column(String(30), nullable=False)
+    field_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    value_text: Mapped[str] = mapped_column(Text, nullable=False)
+    value_number: Mapped[float | None] = mapped_column(Float, nullable=True)
+    unit: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    period: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    currency: Mapped[str | None] = mapped_column(String(3), nullable=True)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    source_locator: Mapped[dict] = mapped_column(JSON, nullable=False)
+    source_span: Mapped[dict] = mapped_column(JSON, nullable=False)
+    review_status: Mapped[str] = mapped_column(String(20), nullable=False, default="unreviewed")
+    extraction_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    created_by_actor_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=now_utc, nullable=False
+    )
+
+
+class ClaimReviewEvent(UUIDMixin, Base):
+    """Append-only link between two claim revisions created by a human review action."""
+
+    __tablename__ = "claim_review_events"
+    __table_args__ = (
+        UniqueConstraint("logical_claim_id", "to_revision", name="uq_claim_review_to_revision"),
+        CheckConstraint("action IN ('approve','reject','edit')", name="ck_claim_review_action"),
+        Index("ix_claim_reviews_logical_created", "logical_claim_id", "created_at"),
+    )
+
+    deal_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("deals.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    logical_claim_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    from_claim_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("structured_claims.id", ondelete="RESTRICT"), nullable=False
+    )
+    to_claim_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("structured_claims.id", ondelete="RESTRICT"), nullable=False
+    )
+    from_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    to_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    action: Mapped[str] = mapped_column(String(20), nullable=False)
+    prior_status: Mapped[str] = mapped_column(String(20), nullable=False)
+    resulting_status: Mapped[str] = mapped_column(String(20), nullable=False)
+    changes: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    note: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    reviewer_actor_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=now_utc, nullable=False
+    )
+
+
+class DocumentComparison(UUIDMixin, Base):
+    """Persisted change/contradiction analysis between two immutable document versions."""
+
+    __tablename__ = "document_comparisons"
+    __table_args__ = (
+        CheckConstraint(
+            "comparison_type IN ('change','contradiction')", name="ck_document_comparison_type"
+        ),
+        Index("ix_document_comparisons_deal_created", "deal_id", "created_at"),
+    )
+
+    deal_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("deals.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    from_document_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("data_room_documents.id", ondelete="RESTRICT"), nullable=False
+    )
+    to_document_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("data_room_documents.id", ondelete="RESTRICT"), nullable=False
+    )
+    comparison_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    findings: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    finding_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    algorithm_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    created_by_actor_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=now_utc, nullable=False
+    )
+
+
+class SecFilingComparison(UUIDMixin, Base):
+    """Immutable section/chunk diff between two SEC filings in one workspace."""
+
+    __tablename__ = "sec_filing_comparisons"
+    __table_args__ = (
+        Index("ix_sec_filing_comparisons_workspace_created", "workspace_id", "created_at"),
+    )
+
+    workspace_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    from_filing_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("filings.id", ondelete="RESTRICT"), nullable=False
+    )
+    to_filing_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("filings.id", ondelete="RESTRICT"), nullable=False
+    )
+    findings: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    finding_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    algorithm_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    created_by_actor_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=now_utc, nullable=False
+    )
+
+
+class IntelligenceEvaluation(UUIDMixin, Base):
+    """Reproducible guardrail evaluation over cited Q&A cases."""
+
+    __tablename__ = "intelligence_evaluations"
+    __table_args__ = (Index("ix_intelligence_evaluations_deal_created", "deal_id", "created_at"),)
+
+    deal_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("deals.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    cases: Mapped[list] = mapped_column(JSON, nullable=False)
+    qa_run_ids: Mapped[list] = mapped_column(JSON, nullable=False)
+    metrics: Mapped[dict] = mapped_column(JSON, nullable=False)
+    passed: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    algorithm_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    created_by_actor_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=now_utc, nullable=False
+    )
+
+
+def _reject_immutable_mutation(mapper, connection, target) -> None:  # pragma: no cover - hook
+    del mapper, connection
+    raise ValueError(f"{type(target).__name__} records are append-only")
+
+
+for _immutable_model in (
+    DataRoomDocument,
+    DataRoomChunk,
+    CitedQARun,
+    StructuredClaim,
+    ClaimReviewEvent,
+    DocumentComparison,
+    SecFilingComparison,
+    IntelligenceEvaluation,
+):
+    event.listen(_immutable_model, "before_update", _reject_immutable_mutation)
+    event.listen(_immutable_model, "before_delete", _reject_immutable_mutation)

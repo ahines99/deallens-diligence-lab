@@ -1,9 +1,10 @@
 import type { ReactNode } from "react";
 import Link from "next/link";
-import { api } from "@/lib/api";
+import { api } from "@/lib/serverApi";
 import { WorkspaceNav } from "@/components/WorkspaceNav";
 import { Badge, type BadgeTone } from "@/components/ui/Badge";
 import type { WorkspaceOverview } from "@/lib/types";
+import { WorkspaceGovernanceControl } from "@/components/governance/WorkspaceGovernanceControl";
 
 const STATUS_TONE: Record<string, BadgeTone> = {
   draft: "slate",
@@ -16,9 +17,9 @@ export default async function WorkspaceLayout({
   params,
 }: {
   children: ReactNode;
-  params: { workspaceId: string };
+  params: Promise<{ workspaceId: string }>;
 }) {
-  const id = params.workspaceId;
+  const { workspaceId: id } = await params;
   const base = `/workspaces/${id}`;
 
   let ov: WorkspaceOverview | null = null;
@@ -54,6 +55,8 @@ export default async function WorkspaceLayout({
             <div className="mt-1 text-2xs leading-snug text-muted line-clamp-2">{target.sector}</div>
           )}
         </div>
+
+        <WorkspaceGovernanceControl workspaceId={id} initialWorkspace={ws} />
 
         <WorkspaceNav base={base} />
       </aside>

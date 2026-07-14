@@ -4,9 +4,10 @@ from __future__ import annotations
 import datetime
 
 from src.agents.financial_analyst import FinancialAnalyst
+from src.agents.risk_analyst import RiskAnalyst
 from src.schemas.common import RiskCategory, Workstream
 from src.seed import loader
-from src.services import evidence_service, fred_service, sec_financials, usaspending_service
+from src.services import edgar_client, evidence_service, fred_service, sec_financials, usaspending_service
 from src.services.filing_sections import extract_sections
 
 VALID_CATEGORIES = set(RiskCategory.__args__)
@@ -69,6 +70,47 @@ def test_xbrl_financials_mapping():
     assert round(fin["rule_of_40"], 4) == 0.3
     assert fin["cash"] == 50.0
     assert fin["sources"]["revenue"]["concept"] == "Revenues"
+
+
+def test_annual_points_prefers_latest_filing_and_frame_year():
+    facts = {
+        "facts": {"us-gaap": {"Revenues": {"units": {"USD": [
+            {
+                "start": "2023-01-01", "end": "2023-12-31", "val": 100.0,
+                "frame": "CY2023", "filed": "2024-02-01", "accn": "old",
+            },
+            {
+                "start": "2023-01-01", "end": "2023-12-31", "val": 105.0,
+                "frame": "CY2023", "filed": "2025-02-01", "accn": "restated",
+            },
+            {
+                # A 52/53-week FY2024 ending in calendar 2025 must remain keyed to 2024.
+                "start": "2024-01-01", "end": "2025-01-04", "val": 120.0,
+                "frame": "CY2024", "filed": "2025-02-01", "accn": "current",
+            },
+        ]}}}}}
+    points = edgar_client.annual_points(facts, "Revenues")
+    assert [point["accn"] for point in points] == ["restated", "current"]
+    trends = sec_financials.extract_trends(facts)
+    assert trends["years"] == ["2023", "2024"]
+    assert [row["revenue"] for row in trends["rows"]] == [105.0, 120.0]
+
+
+def test_financial_summary_never_mixes_reporting_periods():
+    facts = {"facts": {"us-gaap": {
+        "Revenues": {"units": {"USD": [
+            {"end": "2023-12-31", "val": 100.0, "frame": "CY2023"},
+            {"end": "2024-12-31", "val": 120.0, "frame": "CY2024"},
+        ]}},
+        # Operating income is absent for the latest period. It must not be divided by FY2024 revenue.
+        "OperatingIncomeLoss": {"units": {"USD": [
+            {"end": "2023-12-31", "val": 10.0, "frame": "CY2023"},
+        ]}},
+    }}}
+    financials = sec_financials.extract_financials(facts)
+    assert financials["revenue"] == 120.0
+    assert financials["operating_income"] is None
+    assert financials["operating_margin"] is None
 
 
 def test_section_extraction():
@@ -143,6 +185,28 @@ def test_fred_sector_series():
     assert "FEDFUNDS" in soft and "DGS10" in soft
     mfg = fred_service.sectors_series("Semiconductor Manufacturing")
     assert "INDPRO" in mfg
+
+
+def test_risk_factor_boilerplate_is_not_treated_as_realized_critical_risk():
+    class Chunk:
+        section = "Risk Factors (Item 1A)"
+        chunk_text = (
+            "We may experience a cybersecurity incident, and a future breach could materially affect "
+            "operations. Cybersecurity and data security risks may increase over time."
+        )
+
+    taxonomy = {"categories": [{
+        "slug": "cyber_security", "label": "Cyber & data security",
+        "workstream_owner": "cybersecurity", "signals": ["cybersecurity", "data security", "breach"],
+    }]}
+    findings = RiskAnalyst().scan_text(
+        [Chunk()],
+        taxonomy,
+        {"company": "ExampleCo", "url": "https://example.com", "date": "2025-01-01"},
+    )
+    assert len(findings) == 1
+    assert findings[0]["severity"] != "critical"
+    assert findings[0]["likelihood"] == "low"
 
 
 def client_create_empty() -> str:

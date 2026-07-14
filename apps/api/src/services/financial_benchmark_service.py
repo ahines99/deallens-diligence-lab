@@ -68,7 +68,14 @@ def add_comps_by_ticker(session: Session, workspace_id: str, tickers: list[str])
 
 def add_comps(session: Session, workspace_id: str, comps: list[CompCreate]) -> list[ComparableCompany]:
     for c in comps:
-        session.add(ComparableCompany(workspace_id=workspace_id, **c.model_dump()))
+        session.add(
+            ComparableCompany(
+                workspace_id=workspace_id,
+                **c.model_dump(),
+                data_source="User-submitted comparable profile (unverified)",
+                is_illustrative=True,
+            )
+        )
     session.flush()
     return list_comps(session, workspace_id)
 
@@ -167,14 +174,20 @@ def compute_benchmark(session: Session, workspace_id: str) -> dict:
         "commentary": "Growth + operating margin; a balanced growth/profitability read.",
     })
 
+    verified_count = sum(comp.data_source == "SEC EDGAR (XBRL)" for comp in comps)
+    user_count = len(comps) - verified_count
     summary = (
-        f"{target.name} benchmarked against {len(comps)} real public peer(s) on SEC-reported "
-        f"fundamentals. Valuation multiples are intentionally omitted (no free market-data source)."
+        f"{target.name} benchmarked against {len(comps)} peer(s): {verified_count} SEC-verified "
+        f"and {user_count} user-submitted/unverified. Valuation multiples are intentionally omitted "
+        "unless explicitly supplied by the analyst."
     )
     notes = [
-        "Peer financials are real, from SEC XBRL company facts.",
+        (
+            f"{verified_count} peer(s) use SEC XBRL company facts; {user_count} user-submitted "
+            "peer(s) remain unverified and illustrative."
+        ),
         "Fiscal-year periods may differ across peers; comparisons are directional.",
-        "Market multiples (EV/Revenue, market cap) are omitted — not available from a free source.",
+        "Market multiples require analyst or licensed-source inputs and are never inferred.",
     ]
     return {
         "workspace_id": workspace_id,

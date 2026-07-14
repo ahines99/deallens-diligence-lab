@@ -4,6 +4,7 @@ import { StatTile, type StatTone } from "@/components/ui/StatTile";
 import { DataTable, type Column } from "@/components/ui/Table";
 import { formatUsd, formatNumber, formatDate } from "@/lib/formatting";
 import type { InsiderActivity, InsiderTx } from "@/lib/types";
+import { SourceStatusCallout } from "@/components/SourceStatusCallout";
 
 const TYPE_TONE: Record<InsiderTx["type"], BadgeTone> = {
   buy: "green",
@@ -37,16 +38,20 @@ const columns: Column<InsiderTx>[] = [
 
 export function InsiderView({ data }: { data: InsiderActivity }) {
   const { summary } = data;
+  if (data.source_status === "unavailable") {
+    return <SourceStatusCallout status={data.source_status} error={data.source_error} source="SEC insider activity" />;
+  }
   const netTone: StatTone =
     summary.net_shares === null ? "default" : summary.net_shares >= 0 ? "positive" : "negative";
   return (
     <div className="space-y-6">
+      <SourceStatusCallout status={data.source_status} error={data.source_error} source="SEC insider activity" />
       <div className="grid grid-cols-2 gap-px overflow-hidden rounded-md border border-line bg-line shadow-panel sm:grid-cols-4">
         <div className="bg-panel px-4 py-4">
-          <StatTile label="Buys" value={summary.buys} tone={summary.buys > 0 ? "positive" : "default"} />
+          <StatTile label="Buys" value={summary.buys ?? "n/a"} tone={(summary.buys ?? 0) > 0 ? "positive" : "default"} />
         </div>
         <div className="bg-panel px-4 py-4">
-          <StatTile label="Sells" value={summary.sells} tone={summary.sells > 0 ? "negative" : "default"} />
+          <StatTile label="Sells" value={summary.sells ?? "n/a"} tone={(summary.sells ?? 0) > 0 ? "negative" : "default"} />
         </div>
         <div className="bg-panel px-4 py-4">
           <StatTile
@@ -61,7 +66,7 @@ export function InsiderView({ data }: { data: InsiderActivity }) {
       </div>
 
       <Card title="Transactions" subtitle="Parsed from SEC Form 4 ownership filings">
-        <DataTable columns={columns} rows={data.transactions} empty="No insider transactions in the window." />
+        <DataTable columns={columns} rows={data.transactions} empty={data.source_status === "partial" ? "No transactions were returned from the partial response; coverage is incomplete." : "No insider transactions in the window."} />
       </Card>
     </div>
   );

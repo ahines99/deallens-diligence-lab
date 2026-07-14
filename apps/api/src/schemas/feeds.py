@@ -25,6 +25,8 @@ class FilingEvent(BaseModel):
 class EventTimeline(BaseModel):
     workspace_id: str
     events: list[FilingEvent]
+    source_status: Literal["available", "partial", "unavailable"]
+    source_error: str | None = None
     generated_at: datetime
 
 
@@ -41,8 +43,8 @@ class InsiderTx(BaseModel):
 
 
 class InsiderSummary(BaseModel):
-    buys: int
-    sells: int
+    buys: int | None
+    sells: int | None
     net_shares: float | None
     window_days: int
 
@@ -51,6 +53,8 @@ class InsiderActivity(BaseModel):
     workspace_id: str
     summary: InsiderSummary
     transactions: list[InsiderTx]
+    source_status: Literal["available", "partial", "unavailable"]
+    source_error: str | None = None
     generated_at: datetime
 
 
@@ -64,11 +68,13 @@ class ThemeHitRef(BaseModel):
 class ThemeHit(BaseModel):
     theme: str
     label: str
-    count: int
+    count: int | None
     hits: list[ThemeHitRef]
 
 
 class ThemeScan(BaseModel):
     workspace_id: str
     themes: list[ThemeHit]
+    source_status: Literal["available", "partial", "unavailable"]
+    source_error: str | None = None
     generated_at: datetime

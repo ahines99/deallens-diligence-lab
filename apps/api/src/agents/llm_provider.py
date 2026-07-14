@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import httpx
 
+from src.agents.citation_auditor import CitationAuditor
 from src.config import settings
 
 SYSTEM_PROMPT = (
@@ -62,11 +63,13 @@ class LiveProvider:
             return resp.json()["choices"][0]["message"]["content"]
 
 
-def polish_markdown(markdown: str) -> str:
-    """Re-voice a grounded draft via the live LLM; return the original on any failure."""
-    if settings.is_mock or not settings.llm_api_key:
+def polish_markdown(markdown: str, *, external_allowed: bool = False) -> str:
+    """Re-voice a grounded draft only with workspace consent, failing closed on drift."""
+    if not external_allowed or settings.is_mock or not settings.llm_api_key:
         return markdown
     try:
-        return LiveProvider().complete(SYSTEM_PROMPT, markdown) or markdown
+        candidate = LiveProvider().complete(SYSTEM_PROMPT, markdown)
+        audit = CitationAuditor.audit_rewrite(markdown, candidate)
+        return candidate if audit.faithful else markdown
     except Exception:
         return markdown

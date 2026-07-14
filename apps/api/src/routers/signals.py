@@ -24,6 +24,8 @@ def get_news(workspace_id: str, session: SessionDep) -> NewsSignals:
             "workspace_id": workspace_id,
             "query": data["query"],
             "articles": data["articles"],
+            "source_status": data["source_status"],
+            "source_error": data["source_error"],
             "generated_at": now_utc(),
         }
     )

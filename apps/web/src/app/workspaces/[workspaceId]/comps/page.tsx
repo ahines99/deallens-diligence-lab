@@ -1,4 +1,4 @@
-import { api, ApiError } from "@/lib/api";
+import { api, ApiError } from "@/lib/serverApi";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Card } from "@/components/ui/Card";
 import { EmptyState } from "@/components/ui/EmptyState";
@@ -45,9 +45,9 @@ function formatByUnit(unit: BenchmarkMetric["unit"], v: number | null): string {
 export default async function CompsPage({
   params,
 }: {
-  params: { workspaceId: string };
+  params: Promise<{ workspaceId: string }>;
 }) {
-  const id = params.workspaceId;
+  const { workspaceId: id } = await params;
 
   let comps: ComparableCompany[] | null = null;
   let error: string | null = null;

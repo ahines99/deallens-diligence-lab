@@ -10,6 +10,7 @@ import { Callout } from "@/components/ui/Callout";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/Table";
 import { formatDate } from "@/lib/formatting";
 import type { FilingWatch } from "@/lib/types";
+import { SourceStatusCallout } from "@/components/SourceStatusCallout";
 
 export function FilingWatchPanel({
   workspaceId,
@@ -30,7 +31,7 @@ export function FilingWatchPanel({
     setDone(null);
     try {
       await api.refreshWorkspace(workspaceId);
-      setDone("Re-ingested the latest filings from SEC EDGAR and re-ran analysis.");
+      setDone("Refresh request completed. Review the source-status banner for confirmed upstream coverage.");
       router.refresh();
     } catch (err) {
       if (err instanceof ApiError) {
@@ -43,7 +44,7 @@ export function FilingWatchPanel({
     }
   }
 
-  const hasNew = initial?.has_new ?? false;
+  const hasNew = initial?.has_new;
 
   return (
     <Card
@@ -70,11 +71,12 @@ export function FilingWatchPanel({
       }
     >
       <div className="space-y-4">
+        {initial && <SourceStatusCallout status={initial.source_status} error={initial.source_error} source="SEC filing watch" />}
         {initial === null ? (
           <p className="text-sm text-muted">
             Filing-watch status is unavailable. Ingest a public company with a CIK, then refresh.
           </p>
-        ) : hasNew ? (
+        ) : initial.source_status === "unavailable" || hasNew === null ? null : hasNew ? (
           <>
             <div className="flex items-center gap-2">
               <Badge tone="amber">{initial.new_filings.length} new</Badge>
@@ -114,12 +116,12 @@ export function FilingWatchPanel({
               </TBody>
             </Table>
           </>
-        ) : (
+        ) : initial.source_status === "available" ? (
           <div className="flex items-center gap-2">
             <Badge tone="green">Up to date</Badge>
             <span className="text-sm text-muted">No new filings since the last ingestion.</span>
           </div>
-        )}
+        ) : null}
 
         {done && (
           <Callout tone="info" title="Refreshed">

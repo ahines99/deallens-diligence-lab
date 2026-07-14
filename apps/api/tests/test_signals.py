@@ -110,6 +110,8 @@ def test_fetch_news_degrades_on_non_json(monkeypatch):
     out = news_service.fetch_news("Microsoft Corp")
     assert out["articles"] == []
     assert out["query"] == "Microsoft sourcelang:english"
+    assert out["source_status"] == "unavailable"
+    assert out["source_error"]
 
 
 def test_fetch_news_parses_articles(monkeypatch):
@@ -142,6 +144,8 @@ def test_fetch_news_parses_articles(monkeypatch):
     out = news_service.fetch_news("Acme Widgets")
     assert len(out["articles"]) == 1
     assert out["articles"][0]["domain"] == "news.ex"
+    assert out["source_status"] == "available"
+    assert out["source_error"] is None
 
 
 # --- offline unit tests: filing-watch comparison + refresh wiring ------------
@@ -173,6 +177,7 @@ def test_filing_watch_detects_new(monkeypatch):
     assert res["has_new"] is True
     assert [f["accession"] for f in res["new_filings"]] == ["acc-9"]
     assert res["new_filings"][0]["url"] == "https://x/9"
+    assert res["source_status"] == "available"
 
 
 def test_filing_watch_none_when_up_to_date(monkeypatch):
@@ -186,11 +191,57 @@ def test_filing_watch_none_when_up_to_date(monkeypatch):
     FM = edgar_client.FilingMeta
     monkeypatch.setattr(
         edgar_client, "recent_filings",
-        lambda c, f, l: [FM("10-Q", "2025-03-20", "acc-2", "d2.htm", "https://x/2", "2025-03-20")],
+        lambda cik, forms, limit: [
+            FM("10-Q", "2025-03-20", "acc-2", "d2.htm", "https://x/2", "2025-03-20")
+        ],
     )
     res = watch_service.filing_watch(object(), "ws1")
     assert res["has_new"] is False
     assert res["new_filings"] == []
+    assert res["source_status"] == "available"
+
+
+def test_filing_watch_reports_edgar_outage_as_unknown(monkeypatch):
+    from src.services import edgar_client, watch_service, workspace_service
+
+    target = SimpleNamespace(cik="0000789019", ticker="MSFT", name="MICROSOFT CORP")
+    monkeypatch.setattr(workspace_service, "get_target", lambda s, w: target)
+    monkeypatch.setattr(watch_service, "_stored_filings", lambda s, w: [])
+
+    def unavailable(*_args, **_kwargs):
+        raise edgar_client.EdgarError("offline")
+
+    monkeypatch.setattr(edgar_client, "recent_filings", unavailable)
+    result = watch_service.filing_watch(object(), "ws1")
+    assert result["source_status"] == "unavailable"
+    assert result["has_new"] is None
+    assert result["new_filings"] == []
+    assert result["source_error"]
+
+
+def test_sec_signal_outages_are_unavailable_not_clean_zero(monkeypatch):
+    from src.services import edgar_client, sec_feeds_service
+
+    target = SimpleNamespace(cik="0000789019", ticker="MSFT", name="MICROSOFT CORP")
+    monkeypatch.setattr(sec_feeds_service, "get_target", lambda s, w: target)
+
+    def unavailable(*_args, **_kwargs):
+        raise edgar_client.EdgarError("offline")
+
+    monkeypatch.setattr(edgar_client, "get_submissions", unavailable)
+    events = sec_feeds_service.events(object(), "ws1")
+    insiders = sec_feeds_service.insiders(object(), "ws1")
+    assert events["source_status"] == "unavailable"
+    assert events["events"] == []
+    assert insiders["source_status"] == "unavailable"
+    assert insiders["summary"]["buys"] is None
+    assert insiders["summary"]["sells"] is None
+
+    monkeypatch.setattr(sec_feeds_service, "_efts_search", lambda *_args: None)
+    monkeypatch.setattr(edgar_client, "polite_pause", lambda: None)
+    themes = sec_feeds_service.themes(object(), "ws1")
+    assert themes["source_status"] == "unavailable"
+    assert all(item["count"] is None for item in themes["themes"])
 
 
 def test_filing_watch_requires_cik(monkeypatch):
@@ -246,7 +297,8 @@ def test_filing_watch_live_shape(signals_client, live_workspace_id):
     assert fw.status_code == 200, fw.text
     body = fw.json()
     assert body["workspace_id"] == live_workspace_id
-    assert isinstance(body["has_new"], bool)
+    assert body["source_status"] in {"available", "partial", "unavailable"}
+    assert body["has_new"] is None or isinstance(body["has_new"], bool)
     assert isinstance(body["new_filings"], list)
     assert body["last_ingested_date"] is None or isinstance(body["last_ingested_date"], str)
     for nf in body["new_filings"]:
@@ -262,6 +314,7 @@ def test_news_live_tolerates_empty(signals_client, live_workspace_id):
     assert body["workspace_id"] == live_workspace_id
     assert body["query"]  # a real query string is always built
     assert isinstance(body["articles"], list)  # may be empty if GDELT is flaky
+    assert body["source_status"] in {"available", "partial", "unavailable"}
     for a in body["articles"]:
         assert a["title"] and a["url"]
         assert "domain" in a and "seendate" in a

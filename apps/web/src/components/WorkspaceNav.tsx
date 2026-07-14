@@ -5,35 +5,52 @@ import { usePathname } from "next/navigation";
 
 const GROUPS: { label: string; items: { label: string; seg: string }[] }[] = [
   {
-    label: "Company",
+    label: "Deal",
     items: [
-      { label: "Overview", seg: "" },
-      { label: "Target", seg: "target" },
-      { label: "Trends", seg: "trends" },
-      { label: "Macro", seg: "macro" },
-      { label: "Filings", seg: "filings" },
-      { label: "Events", seg: "events" },
+      { label: "Deal cockpit", seg: "" },
+      { label: "Data room", seg: "data-room" },
+      { label: "QoE bridge", seg: "qoe" },
     ],
   },
   {
-    label: "Analysis",
+    label: "Underwrite",
     items: [
-      { label: "Comps & Benchmark", seg: "comps" },
-      { label: "Quality of Earnings", seg: "forensics" },
-      { label: "Valuation & LBO", seg: "valuation" },
-      { label: "GovCon", seg: "govcon" },
-      { label: "Red-Flag Matrix", seg: "risks" },
-      { label: "Insiders", seg: "insiders" },
-      { label: "News", seg: "news" },
-      { label: "Diligence Questions", seg: "questions" },
+      { label: "Operating model & LBO", seg: "underwriting" },
+      { label: "Valuation & stress", seg: "stress" },
     ],
   },
   {
-    label: "Deliverables",
+    label: "Execute",
     items: [
-      { label: "IC Memo", seg: "memo" },
-      { label: "Red-Team", seg: "red-team" },
-      { label: "Evidence", seg: "evidence" },
+      { label: "Workplan & requests", seg: "execution" },
+      { label: "Evidence intelligence", seg: "intelligence" },
+      { label: "IC readiness & decision", seg: "ic" },
+    ],
+  },
+  {
+    label: "Signals",
+    items: [
+      { label: "Filing events", seg: "events" },
+      { label: "Insider activity", seg: "insiders" },
+      { label: "News signals", seg: "news" },
+      { label: "Macro overlay", seg: "macro" },
+      { label: "GovCon exposure", seg: "govcon" },
+    ],
+  },
+  {
+    label: "Public research",
+    items: [
+      { label: "Target profile", seg: "target" },
+      { label: "Financial trends", seg: "trends" },
+      { label: "SEC filings", seg: "filings" },
+      { label: "Comps & benchmark", seg: "comps" },
+      { label: "QoE forensics", seg: "forensics" },
+      { label: "Red-flag matrix", seg: "risks" },
+      { label: "Diligence questions", seg: "questions" },
+      { label: "Red-team case", seg: "red-team" },
+      { label: "Evidence trail", seg: "evidence" },
+      { label: "Public-data valuation", seg: "valuation" },
+      { label: "IC memo draft", seg: "memo" },
     ],
   },
 ];
@@ -41,7 +58,7 @@ const GROUPS: { label: string; items: { label: string; seg: string }[] }[] = [
 export function WorkspaceNav({ base }: { base: string }) {
   const pathname = usePathname();
   return (
-    <nav className="space-y-5">
+    <nav className="space-y-5 lg:max-h-[calc(100vh-14rem)] lg:overflow-y-auto lg:pr-1">
       {GROUPS.map((g) => (
         <div key={g.label}>
           <div className="eyebrow mb-1.5 px-2.5 text-faint">{g.label}</div>

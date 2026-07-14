@@ -1,4 +1,4 @@
-"""Valuation & returns: WACC assembly, a DCF-lite EV, and a levered-buyout returns model.
+"""Valuation & returns: an accounting-derived FCFF DCF and a levered-buyout returns model.
 
 All figures are computed deterministically from data already stored at ingestion
 (`target.financials["forensic_inputs"]` + headline target fields) plus the live risk-free rate
@@ -9,8 +9,8 @@ Formulas per BUILD_SPEC:
 - WACC: risk_free = latest FRED DGS10 / 100; equity_risk_premium=0.05; beta=1.1;
   cost_of_equity = risk_free + beta*erp; cost_of_debt = risk_free + 0.02; tax=0.21;
   debt_weight = net_debt/(net_debt+equity); WACC = we*coe + wd*cod*(1-tax).
-- DCF-lite: FCF base = cfo - capex (latest year), grown at `growth` (0.05) for 5 years,
-  Gordon terminal (terminal_growth 0.025), discounted at WACC -> EV.
+- FCFF DCF: FCFF proxy = CFO + interest expense * (1-tax) - capex (latest year), grown at
+  `growth` (0.05) for 5 years, with a Gordon terminal value discounted at WACC -> EV.
 - LBO: entry_ev=entry_multiple*EBITDA; entry_debt=leverage*EBITDA; entry_equity=entry_ev-entry_debt;
   project EBITDA at ebitda_cagr over hold_years; exit_ev=exit_multiple*exit_EBITDA;
   debt paid down by cumulative FCF proxy (fcf_conversion*EBITDA per year); exit_equity=exit_ev-exit_debt;
@@ -58,9 +58,26 @@ def _num(v) -> float | None:
     return float(v) if isinstance(v, (int, float)) else None
 
 
-def _sum_present(values: list) -> float | None:
-    present = [float(v) for v in values if isinstance(v, (int, float))]
-    return sum(present) if present else None
+def _sum_complete(values: list) -> float | None:
+    if any(not isinstance(value, (int, float)) for value in values):
+        return None
+    return sum(float(value) for value in values)
+
+
+def _trusted_headline_debt(target) -> tuple[float | None, str | None]:
+    """Return a directly reported debt value and an explicit coverage label."""
+
+    source = ((target.financials or {}).get("sources") or {}).get("total_debt") or {}
+    concept = source.get("concept")
+    if concept == "DebtLongtermAndShorttermCombinedAmount":
+        return _num(target.total_debt), "SEC combined long- and short-term debt"
+    if concept == "LongTermDebt":
+        return (
+            _num(target.total_debt),
+            "SEC reported long-term debt (including current maturities; separately reported "
+            "short-term borrowing is not included)",
+        )
+    return None, None
 
 
 def _core_inputs(target) -> dict:
@@ -77,22 +94,28 @@ def _core_inputs(target) -> dict:
     da = _num(latest.get("da"))
     ebitda = (operating_income + da) if (operating_income is not None and da is not None) else None
 
-    # Net debt = (ltd + ltd_current + short_debt) - cash, using whatever debt parts are tagged.
-    gross_debt = _sum_present([latest.get("ltd"), latest.get("ltd_current"), latest.get("short_debt")])
+    # Prefer a directly reported aggregate. Otherwise require a complete component set. A missing
+    # debt tranche is unknown, not zero.
+    gross_debt, debt_basis = _trusted_headline_debt(target)
     if gross_debt is None:
-        gross_debt = _num(target.total_debt)  # headline fallback
+        gross_debt = _sum_complete(
+            [latest.get("ltd"), latest.get("ltd_current"), latest.get("short_debt")]
+        )
+        if gross_debt is not None:
+            debt_basis = "complete tagged debt components"
     cash = _num(latest.get("cash"))
-    if cash is None:
-        cash = _num(target.cash)
-    if gross_debt is None and cash is None:
-        net_debt = None
-    else:
-        net_debt = (gross_debt or 0.0) - (cash or 0.0)
+    net_debt = gross_debt - cash if gross_debt is not None and cash is not None else None
 
     equity = _num(latest.get("equity"))
     cfo = _num(latest.get("cfo"))
     capex = _num(latest.get("capex"))
-    fcf_base = (cfo - capex) if (cfo is not None and capex is not None) else None
+    interest = _num(latest.get("interest"))
+    # CFO is after cash interest. Add back after-tax interest to approximate unlevered FCFF.
+    fcff_base = (
+        cfo + interest * (1.0 - TAX_RATE) - capex
+        if cfo is not None and interest is not None and capex is not None
+        else None
+    )
 
     return {
         "as_of_year": t,
@@ -100,15 +123,16 @@ def _core_inputs(target) -> dict:
         "operating_income": operating_income,
         "da": da,
         "net_debt": round(net_debt, 2) if net_debt is not None else None,
+        "net_debt_basis": debt_basis,
         "equity": equity,
-        "fcf_base": round(fcf_base, 2) if fcf_base is not None else None,
+        "fcf_base": round(fcff_base, 2) if fcff_base is not None else None,
     }
 
 
 # --- WACC / DCF (pure math on already-extracted inputs) ----------------------
 
 def compute_wacc(risk_free: float | None, net_debt: float | None, equity: float | None) -> dict:
-    """Assemble a WACC from the labeled assumptions. Missing inputs -> value None."""
+    """Assemble an illustrative WACC using the supplied capital values; missing -> None."""
     cost_of_equity = round(risk_free + BETA * EQUITY_RISK_PREMIUM, 6) if risk_free is not None else None
     cost_of_debt = round(risk_free + COST_OF_DEBT_SPREAD, 6) if risk_free is not None else None
 
@@ -140,16 +164,21 @@ def compute_wacc(risk_free: float | None, net_debt: float | None, equity: float 
 
 def compute_dcf(fcf_base: float | None, wacc: float | None,
                 growth: float = DCF_GROWTH, terminal_growth: float = DCF_TERMINAL_GROWTH) -> dict:
-    """Discount a 5-year growing FCF stream + Gordon terminal at the WACC -> enterprise value."""
+    """Discount a 5-year growing FCFF stream plus Gordon terminal value to enterprise value."""
     assumptions = [
-        f"FCF base = CFO - capex (latest fiscal year).",
-        f"FCF grown {growth:.1%}/yr for {DCF_YEARS} years.",
+        (
+            "Input is FCFF; the service-derived base equals CFO + after-tax interest expense "
+            f"(using a {TAX_RATE:.0%} tax assumption) - capex."
+        ),
+        f"FCFF grown {growth:.1%}/yr for {DCF_YEARS} years.",
         f"Gordon terminal value at {terminal_growth:.1%} perpetual growth.",
-        "Discounted at WACC; unlevered, pre-synergy, no mid-year convention.",
+        "FCFF is discounted at WACC; pre-synergy, year-end convention.",
+        "This is an illustrative accounting-data DCF, not a management forecast.",
     ]
     enterprise_value = None
     if (
         fcf_base is not None
+        and fcf_base > 0
         and wacc is not None
         and wacc > terminal_growth  # Gordon model requires discount rate > terminal growth
     ):
@@ -184,9 +213,15 @@ def compute_valuation(session: Session, workspace_id: str) -> dict:
     notes: list[str] = [
         f"As-of fiscal year {core['as_of_year']}; inputs from stored SEC XBRL (no re-fetch).",
         "EBITDA = operating income + D&A (n/a when D&A is untagged).",
-        "Net debt = long-term debt + current LTD + short-term debt - cash.",
+        (
+            "Net debt uses a directly reported SEC debt concept (with its coverage disclosed "
+            "below) or a complete tagged component set, less same-period cash; missing inputs "
+            "remain n/a."
+        ),
         f"WACC assumptions: ERP {EQUITY_RISK_PREMIUM:.0%}, beta {BETA}, tax {TAX_RATE:.0%}, "
         f"cost-of-debt spread {COST_OF_DEBT_SPREAD:.0%} over the risk-free rate.",
+        "WACC capital weights use reported book equity because market capitalization is not stored; "
+        "the resulting FCFF DCF is illustrative rather than an institutional valuation opinion.",
     ]
     if risk_free is None:
         notes.append("Risk-free rate unavailable (FRED DGS10 unreachable); WACC/DCF reported as n/a.")
@@ -194,8 +229,18 @@ def compute_valuation(session: Session, workspace_id: str) -> dict:
         notes.append(f"Risk-free rate = latest FRED DGS10 = {risk_free:.2%}.")
     if core["ebitda"] is None:
         notes.append("EBITDA is n/a (D&A untagged); EBITDA-based reads degrade gracefully.")
+    if core["net_debt"] is None:
+        notes.append("Net debt is n/a because complete debt and same-period cash were not both available.")
+    elif core["net_debt_basis"]:
+        notes.append(f"Net debt basis: {core['net_debt_basis']}.")
     if core["fcf_base"] is None:
-        notes.append("FCF base is n/a (CFO or capex untagged); DCF enterprise value is n/a.")
+        notes.append(
+            "FCFF base is n/a (CFO, interest expense, or capex untagged); DCF enterprise value is n/a."
+        )
+    elif core["fcf_base"] <= 0:
+        notes.append(
+            "FCFF base is non-positive; a growing Gordon-model enterprise value is not computed."
+        )
 
     return {
         "workspace_id": workspace_id,
@@ -383,7 +428,8 @@ def risk_flags(session: Session, workspace_id: str) -> list[dict]:
             "claim_type": "calculation",
             "evidence_text": (
                 f"Net debt ${net_debt/1e6:,.0f}M / EBITDA ${ebitda/1e6:,.0f}M = {lev:.1f}x "
-                f"(EBITDA = operating income + D&A; net debt = total debt - cash, SEC XBRL)."
+                f"(EBITDA = operating income + D&A; net debt = reported debt - cash; debt basis: "
+                f"{core['net_debt_basis'] or 'complete tagged debt components'}, SEC XBRL)."
             ),
             "source_name": f"{target.name} FY{core['as_of_year']} 10-K (XBRL company facts)",
             "source_type": "xbrl",

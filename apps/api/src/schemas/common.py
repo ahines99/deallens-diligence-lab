@@ -9,7 +9,7 @@ DealType = Literal[
     "buyout", "growth_equity", "private_credit", "public_equity", "govcon", "software_platform"
 ]
 WorkspaceStatus = Literal["draft", "in_progress", "complete"]
-TargetType = Literal["public_company", "synthetic_private"]
+TargetType = Literal["public_company", "private_company", "synthetic_private"]
 Severity = Literal["low", "medium", "high", "critical"]
 Priority = Literal["low", "medium", "high"]
 ClaimType = Literal["fact", "calculation", "inference", "assumption"]

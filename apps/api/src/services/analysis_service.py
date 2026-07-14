@@ -15,6 +15,7 @@ from src.agents.ic_memo_writer import ICMemoWriter
 from src.agents.llm_provider import polish_markdown
 from src.agents.red_team_reviewer import RedTeamReviewer
 from src.agents.risk_analyst import RiskAnalyst
+from src.db.base import now_utc
 from src.models import (
     DiligencePlan,
     DiligenceQuestion,
@@ -24,6 +25,7 @@ from src.models import (
     RiskFinding,
     Target,
 )
+from src.models.underwriting_data import AnalysisRun, ArtifactVersion
 from src.seed import loader
 from src.services import evidence_service
 from src.services.common import NotFound, get_workspace_or_404, touch_status
@@ -64,13 +66,22 @@ def _latest_10k(session: Session, workspace_id: str) -> Filing | None:
 
 
 def run_full_analysis(session: Session, workspace_id: str) -> None:
+    """Run and seal the projection atomically; any failure restores the prior current view."""
+    try:
+        _run_full_analysis(session, workspace_id)
+    except Exception:
+        session.rollback()
+        raise
+
+
+def _run_full_analysis(session: Session, workspace_id: str) -> None:
     ws = get_workspace_or_404(session, workspace_id)
     target: Target | None = session.scalar(select(Target).where(Target.workspace_id == workspace_id))
     if target is None:
         raise NotFound("No target ingested for this workspace. Create it with a ticker first.")
 
-    # Clear prior artifacts (idempotent rebuild).
-    evidence_service.clear(session, workspace_id)
+    # Replace current-state views, while retaining prior Evidence rows. Stable evidence refs remain
+    # resolvable for frozen artifact versions and newly generated claims receive new refs.
     session.execute(delete(RiskFinding).where(RiskFinding.workspace_id == workspace_id))
     session.execute(delete(DiligenceQuestion).where(DiligenceQuestion.workspace_id == workspace_id))
     session.execute(delete(DiligencePlan).where(DiligencePlan.workspace_id == workspace_id))
@@ -89,6 +100,7 @@ def run_full_analysis(session: Session, workspace_id: str) -> None:
     fin_refs: dict[str, str] = {}
     fin = target.financials or {}
     sources = fin.get("sources") or {}
+    sec_sourced_target = target.data_source.startswith("SEC EDGAR")
     fy = (target.fiscal_year_end or "")[:4] or "latest FY"
     for attr, label, claim_type, concept_key in _FIN_METRICS:
         v = getattr(target, attr, None)
@@ -96,19 +108,31 @@ def run_full_analysis(session: Session, workspace_id: str) -> None:
             continue
         src = sources.get(concept_key) or {}
         concept = src.get("concept", concept_key)
+        has_xbrl_binding = sec_sourced_target and bool(src.get("concept"))
+        effective_claim_type = claim_type if has_xbrl_binding else "assumption"
         ev = evidence_service.create(
             session,
             workspace_id,
             claim=f"{target.name} FY{fy} {label.lower()} was {_fmt(attr, v)}.",
-            claim_type=claim_type,
-            source_name=f"{target.name} FY{fy} 10-K (XBRL: {concept})",
-            source_type="xbrl",
-            evidence_text=f"{label}: {_fmt(attr, v)} (SEC XBRL company facts, concept {concept}).",
-            confidence=0.95 if claim_type == "fact" else 0.9,
+            claim_type=effective_claim_type,
+            source_name=(
+                f"{target.name} FY{fy} 10-K (XBRL: {concept})"
+                if has_xbrl_binding
+                else "User-submitted target profile (unverified)"
+            ),
+            source_type="xbrl" if has_xbrl_binding else "user_input",
+            evidence_text=(
+                f"{label}: {_fmt(attr, v)} (SEC XBRL company facts, concept {concept})."
+                if has_xbrl_binding
+                else f"{label}: {_fmt(attr, v)} (unverified value supplied by the user)."
+            ),
+            confidence=(0.95 if claim_type == "fact" else 0.9) if has_xbrl_binding else 0.5,
             agent_name="financial_analyst",
-            source_url=filing_ctx["url"],
-            source_date=filing_ctx["date"],
-            source_section="XBRL company facts",
+            source_url=filing_ctx["url"] if has_xbrl_binding else None,
+            source_date=filing_ctx["date"] if has_xbrl_binding else target.fiscal_year_end,
+            source_section=(
+                "XBRL company facts" if has_xbrl_binding else "User-submitted target profile"
+            ),
         )
         fin_refs[attr] = ev.ref
 
@@ -189,7 +213,8 @@ def run_full_analysis(session: Session, workspace_id: str) -> None:
             workstreams=plan_data["workstreams"],
         )
     )
-    for q in lead.build_questions(target, raw_findings):
+    question_data = lead.build_questions(target, raw_findings)
+    for q in question_data:
         session.add(
             DiligenceQuestion(
                 workspace_id=workspace_id,
@@ -223,7 +248,10 @@ def run_full_analysis(session: Session, workspace_id: str) -> None:
     }
 
     # 5) IC memo.
-    memo_md = polish_markdown(ICMemoWriter().draft(ctx))
+    external_llm_allowed = ws.external_llm_allowed and ws.data_classification != "restricted"
+    memo_md = polish_markdown(
+        ICMemoWriter().draft(ctx), external_allowed=external_llm_allowed
+    )
     session.add(
         Memo(
             workspace_id=workspace_id,
@@ -235,7 +263,9 @@ def run_full_analysis(session: Session, workspace_id: str) -> None:
 
     # 6) Red-team / bear-case.
     rt = RedTeamReviewer().build(ctx)
-    bear_md = polish_markdown(rt["bear_case_markdown"])
+    bear_md = polish_markdown(
+        rt["bear_case_markdown"], external_allowed=external_llm_allowed
+    )
     session.add(
         RedTeamReport(
             workspace_id=workspace_id,
@@ -256,6 +286,91 @@ def run_full_analysis(session: Session, workspace_id: str) -> None:
     )
 
     touch_status(ws, "complete")
+
+    # Seal the reproducible run and artifact in the same transaction as the current-state
+    # projection. A failed seal therefore cannot leave deleted prior projections or an unversioned
+    # memo behind, while prior ArtifactVersion rows remain immutable and resolvable.
+    from src.services import underwriting_data_service
+
+    input_manifest = {
+        "workspace_id": workspace_id,
+        "target_id": target.id,
+        "target_updated_at": target.updated_at.isoformat() if target.updated_at else None,
+        "filing_id": tenk.id if tenk else None,
+        "filing_accession": tenk.accession_number if tenk else None,
+        "financial_sources": sources,
+    }
+    output_summary = {
+        "risk_count": len(raw_findings),
+        "question_count": len(question_data),
+        "financial_evidence_count": len(fin_refs),
+        "artifacts": ["plan", "ic_memo", "bear_case"],
+    }
+    latest_run = session.scalar(
+        select(AnalysisRun)
+        .where(
+            AnalysisRun.workspace_id == workspace_id,
+            AnalysisRun.run_type == "full_diligence",
+        )
+        .order_by(AnalysisRun.version.desc())
+    )
+    completed_at = now_utc()
+    run = AnalysisRun(
+        workspace_id=workspace_id,
+        run_type="full_diligence",
+        version=(latest_run.version + 1) if latest_run else 1,
+        supersedes_id=latest_run.id if latest_run else None,
+        status="succeeded",
+        input_hash=underwriting_data_service.content_hash(input_manifest),
+        content_hash=underwriting_data_service.content_hash(output_summary),
+        source_snapshot_ids=[],
+        input_manifest=input_manifest,
+        output_summary=output_summary,
+        model_version="deterministic-wave3",
+        prompt_version=None,
+        code_version="wave3",
+        error_message=None,
+        created_by="analysis_service",
+        started_at=completed_at,
+        completed_at=completed_at,
+    )
+    session.add(run)
+    session.flush()
+    content_json = {
+        "plan": plan_data,
+        "risk_findings": raw_findings,
+        "questions": question_data,
+        "ic_memo_markdown": memo_md,
+        "red_team": rt,
+        "financial_evidence_refs": fin_refs,
+    }
+    latest_artifact = session.scalar(
+        select(ArtifactVersion)
+        .where(
+            ArtifactVersion.workspace_id == workspace_id,
+            ArtifactVersion.artifact_type == "diligence_pack",
+        )
+        .order_by(ArtifactVersion.version.desc())
+    )
+    artifact = ArtifactVersion(
+        workspace_id=workspace_id,
+        artifact_type="diligence_pack",
+        version=(latest_artifact.version + 1) if latest_artifact else 1,
+        supersedes_id=latest_artifact.id if latest_artifact else None,
+        analysis_run_id=run.id,
+        source_snapshot_ids=[],
+        input_hash=underwriting_data_service.content_hash(input_manifest),
+        content_hash=underwriting_data_service.content_hash(content_json),
+        content_json=content_json,
+        content_text=None,
+        file_uri=None,
+        artifact_metadata={
+            "target_name": target.name,
+            "filing_accession": tenk.accession_number if tenk else None,
+        },
+        created_by="analysis_service",
+    )
+    session.add(artifact)
     session.commit()
 
 

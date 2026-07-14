@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from src.agents.base import BaseAgent
-from src.agents.ic_memo_writer import _cite, _pct, _usd
+from src.agents.ic_memo_writer import _cite, _pct
 
 
 class RedTeamReviewer(BaseAgent):

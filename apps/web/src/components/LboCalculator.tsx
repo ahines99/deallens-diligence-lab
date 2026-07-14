@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/Button";
 import { Callout } from "@/components/ui/Callout";
 import { StatTile } from "@/components/ui/StatTile";
 import { formatUsd, formatPct } from "@/lib/formatting";
+import { useInvalidatedResult } from "@/lib/useInvalidatedResult";
 import type { LboInputs, LboResult } from "@/lib/types";
 
 const inputClass =
@@ -51,12 +52,14 @@ export function LboCalculator({
     hold_years: initial?.hold_years ?? 5,
     ebitda_cagr: initial?.ebitda_cagr ?? 0.08,
   });
-  const [result, setResult] = useState<LboResult | null>(null);
+  const { result, setFreshResult, invalidateResult, resultWasInvalidated } =
+    useInvalidatedResult<LboResult>();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   function setField(key: keyof LboInputs, raw: string) {
     const n = Number(raw);
+    if (!Number.isNaN(n) && n !== inputs[key]) invalidateResult();
     setInputs((prev) => ({ ...prev, [key]: Number.isNaN(n) ? prev[key] : n }));
   }
 
@@ -67,7 +70,7 @@ export function LboCalculator({
     setError(null);
     try {
       const res = await api.runLbo(workspaceId, inputs);
-      setResult(res);
+      setFreshResult(res);
     } catch (err) {
       if (err instanceof ApiError) {
         setError(err.status === 404 ? "Workspace or EBITDA not available." : err.message);
@@ -119,7 +122,8 @@ export function LboCalculator({
             )}
           </Button>
           <span className="text-xs text-muted">
-            EBITDA CAGR is a decimal (e.g. 0.08 = 8%). Debt is held flat; no interim FCF paydown.
+            EBITDA CAGR is a decimal (e.g. 0.08 = 8%). Debt paydown uses the model&apos;s explicit
+            50% of projected EBITDA annual FCF proxy; review the returned assumptions before use.
           </span>
         </div>
       </form>
@@ -127,6 +131,13 @@ export function LboCalculator({
       {error && (
         <Callout tone="warning" title="Couldn't run the LBO">
           {error}
+        </Callout>
+      )}
+
+      {resultWasInvalidated && !result && (
+        <Callout tone="muted" title="Inputs changed">
+          The prior LBO output has been cleared. Run the model again to calculate results for the
+          current assumptions.
         </Callout>
       )}
 

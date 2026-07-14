@@ -120,7 +120,13 @@ def events(session, workspace_id: str) -> dict:
         recent = edgar_client.get_submissions(cik10).get("filings", {}).get("recent", {})
     except EdgarError as exc:
         logger.warning("events: submissions fetch failed for %s: %s", cik10, exc)
-        recent = {}
+        return {
+            "workspace_id": workspace_id,
+            "events": [],
+            "source_status": "unavailable",
+            "source_error": "SEC EDGAR submissions are temporarily unavailable.",
+            "generated_at": now_utc(),
+        }
 
     forms = recent.get("form", [])
     dates = recent.get("filingDate", [])
@@ -150,7 +156,13 @@ def events(session, workspace_id: str) -> dict:
                 "significant": significant,
             }
         )
-    return {"workspace_id": workspace_id, "events": rows, "generated_at": now_utc()}
+    return {
+        "workspace_id": workspace_id,
+        "events": rows,
+        "source_status": "available",
+        "source_error": None,
+        "generated_at": now_utc(),
+    }
 
 
 # --- Insiders (Form 4) -----------------------------------------------------
@@ -223,7 +235,17 @@ def _parse_form4(xml_bytes: bytes, display_url: str | None) -> list[dict]:
         shares = _num(amounts.find("transactionShares"))
         price = _num(amounts.find("transactionPricePerShare"))
         ad = _text(amounts.find("transactionAcquiredDisposedCode")).upper()
-        tx_type = "buy" if ad == "A" else "sell" if ad == "D" else "other"
+        transaction_code = _text(tx.find("transactionCoding/transactionCode")).upper()
+        # A/D only describes whether securities were acquired or disposed. It does not distinguish
+        # an open-market trade from grants, option exercises, gifts, or tax withholding. SEC Form 4
+        # transaction codes P and S are the open-market/private purchase and sale codes.
+        tx_type = (
+            "buy"
+            if transaction_code == "P"
+            else "sell"
+            if transaction_code == "S"
+            else "other"
+        )
         date = _text(tx.find("transactionDate"))
         value = round(shares * price, 2) if (shares is not None and price is not None) else None
         rows.append(
@@ -232,6 +254,8 @@ def _parse_form4(xml_bytes: bytes, display_url: str | None) -> list[dict]:
                 "insider": name or "Unknown",
                 "role": role,
                 "type": tx_type,
+                "transaction_code": transaction_code or None,
+                "acquired_disposed_code": ad or None,
                 "shares": shares,
                 "price": price,
                 "value": value,
@@ -248,7 +272,19 @@ def insiders(session, workspace_id: str) -> dict:
         recent = edgar_client.get_submissions(cik10).get("filings", {}).get("recent", {})
     except EdgarError as exc:
         logger.warning("insiders: submissions fetch failed for %s: %s", cik10, exc)
-        recent = {}
+        return {
+            "workspace_id": workspace_id,
+            "summary": {
+                "buys": None,
+                "sells": None,
+                "net_shares": None,
+                "window_days": INSIDER_WINDOW_DAYS,
+            },
+            "transactions": [],
+            "source_status": "unavailable",
+            "source_error": "SEC EDGAR insider filings are temporarily unavailable.",
+            "generated_at": now_utc(),
+        }
 
     forms = recent.get("form", [])
     dates = recent.get("filingDate", [])
@@ -258,6 +294,7 @@ def insiders(session, workspace_id: str) -> dict:
     cutoff = (datetime.now(timezone.utc).date() - timedelta(days=INSIDER_WINDOW_DAYS)).isoformat()
     transactions: list[dict] = []
     fetched = 0
+    fetch_errors = 0
     for i, form in enumerate(forms):
         if fetched >= _MAX_FORM4_FETCH:
             break
@@ -280,6 +317,7 @@ def insiders(session, workspace_id: str) -> dict:
             edgar_client.polite_pause()
         except httpx.HTTPError as exc:
             logger.warning("insiders: Form 4 fetch failed %s: %s", xml_url, exc)
+            fetch_errors += 1
             continue
         fetched += 1
         transactions.extend(_parse_form4(raw, display_url))
@@ -298,12 +336,18 @@ def insiders(session, workspace_id: str) -> dict:
         "workspace_id": workspace_id,
         "summary": {"buys": buys, "sells": sells, "net_shares": net, "window_days": INSIDER_WINDOW_DAYS},
         "transactions": transactions,
+        "source_status": "partial" if fetch_errors else "available",
+        "source_error": (
+            f"{fetch_errors} Form 4 filing(s) could not be retrieved."
+            if fetch_errors
+            else None
+        ),
         "generated_at": now_utc(),
     }
 
 
 # --- Themes (EDGAR full-text search) ---------------------------------------
-def _efts_search(phrase: str, cik10: str) -> dict:
+def _efts_search(phrase: str, cik10: str) -> dict | None:
     try:
         with httpx.Client(timeout=30, headers=_headers(), follow_redirects=True) as c:
             resp = c.get(EFTS_URL, params={"q": f'"{phrase}"', "ciks": cik10})
@@ -311,7 +355,7 @@ def _efts_search(phrase: str, cik10: str) -> dict:
             return resp.json()
     except (httpx.HTTPError, ValueError) as exc:
         logger.warning("themes: EFTS search failed for '%s': %s", phrase, exc)
-        return {}
+        return None
 
 
 def _hit_url(cik10: str, adsh_doc: str) -> str | None:
@@ -329,8 +373,14 @@ def themes(session, workspace_id: str) -> dict:
     cik10 = _cik10(target.cik)
 
     out: list[dict] = []
+    failures = 0
     for key, label, phrase in THEMES:
         data = _efts_search(phrase, cik10)
+        if data is None:
+            failures += 1
+            out.append({"theme": key, "label": label, "count": None, "hits": []})
+            edgar_client.polite_pause()
+            continue
         hits_node = (data.get("hits") or {})
         total = ((hits_node.get("total") or {}).get("value")) or 0
         hit_rows: list[dict] = []
@@ -347,7 +397,20 @@ def themes(session, workspace_id: str) -> dict:
             )
         out.append({"theme": key, "label": label, "count": int(total), "hits": hit_rows})
         edgar_client.polite_pause()
-    return {"workspace_id": workspace_id, "themes": out, "generated_at": now_utc()}
+    source_status = (
+        "unavailable" if failures == len(THEMES) else "partial" if failures else "available"
+    )
+    return {
+        "workspace_id": workspace_id,
+        "themes": out,
+        "source_status": source_status,
+        "source_error": (
+            f"{failures} of {len(THEMES)} SEC full-text searches were unavailable."
+            if failures
+            else None
+        ),
+        "generated_at": now_utc(),
+    }
 
 
 # --- SIC auto-peer discovery -----------------------------------------------

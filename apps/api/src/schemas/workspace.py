@@ -4,7 +4,7 @@ from datetime import datetime
 
 from pydantic import BaseModel
 
-from src.schemas.common import DealType, ORMModel, WorkspaceStatus
+from src.schemas.common import DealType, ORMModel
 from src.schemas.risk import RiskOut
 from src.schemas.target import TargetOut
 
@@ -21,10 +21,13 @@ class WorkspaceCreate(BaseModel):
 class WorkspaceOut(ORMModel):
     id: str
     name: str
+    organization_id: str | None
     target_id: str | None
     deal_type: str
     investment_question: str
     status: str
+    data_classification: str
+    external_llm_allowed: bool
     created_at: datetime
     updated_at: datetime
 

@@ -53,26 +53,73 @@ def ingest_company(session: Session, workspace_id: str, ticker: str, filing_limi
 
     # --- Filings (metadata) ---
     metas = edgar_client.recent_filings(cik, FILING_FORMS, filing_limit)
-    existing_acc = {
-        f.accession for f in session.scalars(select(Filing).where(Filing.workspace_id == workspace_id))
-    }
+    existing_filings = list(
+        session.scalars(select(Filing).where(Filing.workspace_id == workspace_id))
+    )
+
+    def filing_key(
+        accession: str | None,
+        form: str,
+        filing_date: str,
+        document_url: str | None,
+    ) -> str:
+        """Use accession when present; otherwise retain an idempotent metadata fallback."""
+
+        clean_accession = (accession or "").strip()
+        if clean_accession:
+            return f"accession:{clean_accession}"
+        return f"metadata:{form}|{filing_date}|{document_url or ''}"
+
+    existing_by_accession: dict[str, Filing] = {}
+    existing_by_metadata: dict[str, Filing] = {}
+    for existing in existing_filings:
+        accession = (existing.accession_number or "").strip()
+        if accession:
+            existing_by_accession.setdefault(accession, existing)
+        # Keep a metadata lookup even when an accession exists so a legacy row whose accession was
+        # never populated can be matched and repaired by the next refresh.
+        existing_by_metadata.setdefault(
+            filing_key(
+                None,
+                existing.form_type,
+                existing.filing_date,
+                existing.document_url,
+            ),
+            existing,
+        )
     tenk_filing: Filing | None = None
     for m in metas:
-        if m.accession in existing_acc:
-            continue
-        filing = Filing(
-            workspace_id=workspace_id,
-            company_name=name,
-            ticker=info["ticker"],
-            cik=cik,
-            form_type=m.form,
-            filing_date=m.filing_date,
-            accession_number=m.accession,
-            document_url=m.primary_doc_url,
-            is_synthetic=False,
-        )
-        session.add(filing)
-        existing_acc.add(m.accession)
+        accession = (m.accession or "").strip()
+        metadata_key = filing_key(None, m.form, m.filing_date, m.primary_doc_url)
+        filing = existing_by_accession.get(accession) if accession else None
+        if filing is None:
+            filing = existing_by_metadata.get(metadata_key)
+        if filing is None:
+            filing = Filing(
+                workspace_id=workspace_id,
+                company_name=name,
+                ticker=info["ticker"],
+                cik=cik,
+                form_type=m.form,
+                filing_date=m.filing_date,
+                accession_number=m.accession or None,
+                document_url=m.primary_doc_url or None,
+                is_synthetic=False,
+            )
+            session.add(filing)
+        else:
+            # Refresh stale metadata in place. The accession is the immutable EDGAR identity.
+            filing.company_name = name
+            filing.ticker = info["ticker"]
+            filing.cik = cik
+            filing.form_type = m.form
+            filing.filing_date = m.filing_date
+            filing.accession_number = m.accession or filing.accession_number
+            filing.document_url = m.primary_doc_url or filing.document_url
+            filing.is_synthetic = False
+        if accession:
+            existing_by_accession[accession] = filing
+        existing_by_metadata[metadata_key] = filing
         if m.form == "10-K" and tenk_filing is None:
             tenk_filing = filing
     session.flush()
@@ -82,45 +129,84 @@ def ingest_company(session: Session, workspace_id: str, ticker: str, filing_limi
     if tenk_filing is None:
         latest = edgar_client.recent_filings(cik, ("10-K",), 1)
         if latest:
-            # A 10-K exists but was outside the metadata window; add it.
+            # A 10-K exists but was outside the metadata window; reuse it or add it once.
             m = latest[0]
-            tenk_filing = Filing(
-                workspace_id=workspace_id,
-                company_name=name,
-                ticker=info["ticker"],
-                cik=cik,
-                form_type="10-K",
-                filing_date=m.filing_date,
-                accession_number=m.accession,
-                document_url=m.primary_doc_url,
-                is_synthetic=False,
-            )
-            session.add(tenk_filing)
+            accession = (m.accession or "").strip()
+            metadata_key = filing_key(None, "10-K", m.filing_date, m.primary_doc_url)
+            tenk_filing = existing_by_accession.get(accession) if accession else None
+            if tenk_filing is None:
+                tenk_filing = existing_by_metadata.get(metadata_key)
+            if tenk_filing is None:
+                tenk_filing = Filing(
+                    workspace_id=workspace_id,
+                    company_name=name,
+                    ticker=info["ticker"],
+                    cik=cik,
+                    form_type="10-K",
+                    filing_date=m.filing_date,
+                    accession_number=m.accession or None,
+                    document_url=m.primary_doc_url or None,
+                    is_synthetic=False,
+                )
+                session.add(tenk_filing)
+            else:
+                tenk_filing.accession_number = m.accession or tenk_filing.accession_number
+                tenk_filing.document_url = m.primary_doc_url or tenk_filing.document_url
+            if accession:
+                existing_by_accession[accession] = tenk_filing
+            existing_by_metadata[metadata_key] = tenk_filing
             session.flush()
 
     if tenk_filing is not None and tenk_filing.document_url:
-        try:
-            text = edgar_client.fetch_document_text(tenk_filing.document_url)
-            sections = extract_sections(text)
-            business_text = sections.get("Business (Item 1)", "")
-            index = 0
-            for section_name, body in sections.items():
-                for para in split_paragraphs(body):
-                    session.add(
-                        DocumentChunk(
-                            filing_id=tenk_filing.id,
-                            workspace_id=workspace_id,
-                            section=section_name,
-                            chunk_text=para,
-                            chunk_index=index,
-                            source_url=tenk_filing.document_url,
-                        )
-                    )
-                    index += 1
-            tenk_filing.section_count = index
+        stored_chunks = list(
+            session.scalars(
+                select(DocumentChunk)
+                .where(DocumentChunk.filing_id == tenk_filing.id)
+                .order_by(DocumentChunk.chunk_index, DocumentChunk.created_at)
+            )
+        )
+        if stored_chunks:
+            # The filing accession is immutable. Reuse its derived chunks and remove any legacy
+            # duplicates produced by older refreshes instead of fetching/appending them again.
+            unique_by_index: dict[tuple[str, int], DocumentChunk] = {}
+            for chunk in stored_chunks:
+                key = (chunk.section, chunk.chunk_index)
+                if key in unique_by_index:
+                    session.delete(chunk)
+                    continue
+                unique_by_index[key] = chunk
+                chunk.source_url = tenk_filing.document_url
+            kept_chunks = list(unique_by_index.values())
+            tenk_filing.section_count = len(kept_chunks)
+            business_text = " ".join(
+                chunk.chunk_text
+                for chunk in kept_chunks
+                if chunk.section == "Business (Item 1)"
+            )
             session.flush()
-        except EdgarError as exc:
-            logger.warning("Failed to fetch/parse 10-K for %s: %s", ticker, exc)
+        else:
+            try:
+                text = edgar_client.fetch_document_text(tenk_filing.document_url)
+                sections = extract_sections(text)
+                business_text = sections.get("Business (Item 1)", "")
+                index = 0
+                for section_name, body in sections.items():
+                    for para in split_paragraphs(body):
+                        session.add(
+                            DocumentChunk(
+                                filing_id=tenk_filing.id,
+                                workspace_id=workspace_id,
+                                section=section_name,
+                                chunk_text=para,
+                                chunk_index=index,
+                                source_url=tenk_filing.document_url,
+                            )
+                        )
+                        index += 1
+                tenk_filing.section_count = index
+                session.flush()
+            except EdgarError as exc:
+                logger.warning("Failed to fetch/parse 10-K for %s: %s", ticker, exc)
 
     # --- Target upsert ---
     target = session.scalar(select(Target).where(Target.workspace_id == workspace_id))

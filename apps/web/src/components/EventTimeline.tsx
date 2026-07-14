@@ -1,12 +1,18 @@
 import { Badge } from "@/components/ui/Badge";
+import { SourceStatusCallout } from "@/components/SourceStatusCallout";
 import { formatDate } from "@/lib/formatting";
 import type { EventTimeline as EventTimelineData } from "@/lib/types";
 
 export function EventTimeline({ data }: { data: EventTimelineData }) {
+  if (data.source_status === "unavailable") {
+    return <SourceStatusCallout status={data.source_status} error={data.source_error} source="SEC filing events" />;
+  }
   if (data.events.length === 0) {
-    return <p className="py-6 text-center text-sm text-muted">No filing events found.</p>;
+    return <div className="space-y-4"><SourceStatusCallout status={data.source_status} error={data.source_error} source="SEC filing events" /><p className="py-6 text-center text-sm text-muted">{data.source_status === "partial" ? "No events were returned from the partial response; coverage is incomplete." : "No filing events found."}</p></div>;
   }
   return (
+    <div className="space-y-5">
+      <SourceStatusCallout status={data.source_status} error={data.source_error} source="SEC filing events" />
     <ol className="relative space-y-6 border-l border-line pl-6">
       {data.events.map((ev, i) => (
         <li key={`${ev.accession ?? i}-${ev.date}`} className="relative">
@@ -45,6 +51,7 @@ export function EventTimeline({ data }: { data: EventTimelineData }) {
         </li>
       ))}
     </ol>
+    </div>
   );
 }
 

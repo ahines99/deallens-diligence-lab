@@ -3,15 +3,21 @@ import { Badge } from "@/components/ui/Badge";
 import { Table, THead, TBody, TR, TH, TD } from "@/components/ui/Table";
 import { formatDate } from "@/lib/formatting";
 import type { ThemeScan } from "@/lib/types";
+import { SourceStatusCallout } from "@/components/SourceStatusCallout";
 
 export function ThemeScanPanel({ data }: { data: ThemeScan }) {
-  const total = data.themes.reduce((n, t) => n + t.count, 0);
+  const total = data.themes.reduce((n, t) => n + (t.count ?? 0), 0);
+  const complete = data.source_status === "available" && data.themes.every((theme) => theme.count !== null);
   return (
     <Card
       title="Red-flag theme scan"
       subtitle="Full-text search of the target's SEC filings for high-risk language"
-      right={<Badge tone={total > 0 ? "amber" : "green"}>{total} hits</Badge>}
+      right={<Badge tone={!complete ? "slate" : total > 0 ? "amber" : "green"}>{complete ? `${total} hits` : "Coverage incomplete"}</Badge>}
     >
+      {data.source_status === "unavailable" ? (
+        <SourceStatusCallout status={data.source_status} error={data.source_error} source="SEC theme search" />
+      ) : <div className="space-y-5">
+      <SourceStatusCallout status={data.source_status} error={data.source_error} source="SEC theme search" />
       <Table>
         <THead>
           <TR>
@@ -25,7 +31,9 @@ export function ThemeScanPanel({ data }: { data: ThemeScan }) {
             <TR key={t.theme} className="hover:bg-panel2">
               <TD className="font-medium text-ink">{t.label}</TD>
               <TD align="right">
-                {t.count > 0 ? (
+                {t.count === null ? (
+                  <span className="text-faint">n/a</span>
+                ) : t.count > 0 ? (
                   <Badge tone="red">{t.count}</Badge>
                 ) : (
                   <span className="text-faint">0</span>
@@ -33,7 +41,7 @@ export function ThemeScanPanel({ data }: { data: ThemeScan }) {
               </TD>
               <TD>
                 {t.hits.length === 0 ? (
-                  <span className="text-2xs text-faint">No matches</span>
+                  <span className="text-2xs text-faint">{t.count === null ? "Coverage unavailable" : "No matches"}</span>
                 ) : (
                   <div className="flex flex-wrap gap-x-3 gap-y-1">
                     {t.hits.map((h, i) => {
@@ -61,6 +69,7 @@ export function ThemeScanPanel({ data }: { data: ThemeScan }) {
           ))}
         </TBody>
       </Table>
+      </div>}
     </Card>
   );
 }

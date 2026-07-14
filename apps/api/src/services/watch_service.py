@@ -44,12 +44,19 @@ def filing_watch(session: Session, workspace_id: str) -> dict:
     # 'YYYY-MM-DD' strings sort lexicographically == chronologically.
     last_ingested = max(stored_dates) if stored_dates else None
 
-    def _shape(new_filings: list[dict]) -> dict:
+    def _shape(
+        new_filings: list[dict],
+        *,
+        source_status: str = "available",
+        source_error: str | None = None,
+    ) -> dict:
         return {
             "workspace_id": workspace_id,
             "last_ingested_date": last_ingested,
-            "has_new": bool(new_filings),
+            "has_new": bool(new_filings) if source_status == "available" else None,
             "new_filings": new_filings,
+            "source_status": source_status,
+            "source_error": source_error,
             "generated_at": now_utc(),
         }
 
@@ -57,7 +64,11 @@ def filing_watch(session: Session, workspace_id: str) -> dict:
         metas = edgar_client.recent_filings(target.cik, WATCH_FORMS, WATCH_LIMIT)
     except EdgarError as exc:
         logger.warning("filing-watch fetch failed for CIK %s: %s", target.cik, exc)
-        return _shape([])
+        return _shape(
+            [],
+            source_status="unavailable",
+            source_error="SEC EDGAR filing watch is temporarily unavailable.",
+        )
 
     new_filings: list[dict] = []
     for m in metas:

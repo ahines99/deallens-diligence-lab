@@ -28,11 +28,18 @@ def _best_sentence(text: str, terms: list[str], max_len: int = 380) -> str:
     return best
 
 
-def _severity_from_hits(hits: int, distinct: int) -> tuple[str, int]:
-    score = min(9, 3 + distinct + hits // 2)
-    if score >= 9:
-        band = "critical"
-    elif score >= 7:
+_REALIZED_MARKERS = (
+    "experienced", "occurred", "materially affected", "material adverse", "declined",
+    "terminated", "defaulted", "breach occurred", "was unable", "were unable",
+)
+_CONDITIONAL_MARKERS = (" may ", " might ", " could ", " would ", " risk of ", " if ")
+
+
+def _severity_from_hits(hits: int, distinct: int, realized: bool = False) -> tuple[str, int]:
+    # Frequency in boilerplate is an investigation signal, not proof of occurrence. Text-only
+    # scanning cannot produce a critical finding; structured event data must establish that.
+    score = min(8 if realized else 6, 2 + distinct + min(hits, 4) // 2 + (2 if realized else 0))
+    if score >= 7:
         band = "high"
     elif score >= 4:
         band = "medium"
@@ -66,13 +73,16 @@ class RiskAnalyst(BaseAgent):
             if best is None or best[0] < 3:
                 continue
             _, chunk, matched, hits = best
-            severity, score = _severity_from_hits(hits, len(matched))
             snippet = _best_sentence(chunk.chunk_text, matched)
+            normalized_snippet = f" {snippet.lower()} "
+            realized = any(marker in normalized_snippet for marker in _REALIZED_MARKERS)
+            conditional = any(marker in normalized_snippet for marker in _CONDITIONAL_MARKERS)
+            severity, score = _severity_from_hits(hits, len(matched), realized=realized)
             findings.append(
                 {
                     "risk_category": cat["slug"],
                     "risk_category_label": cat["label"],
-                    "title": f"{cat['label']} flagged in 10-K risk factors",
+                    "title": f"{cat['label']} disclosure requires diligence",
                     "finding": (
                         f"The {filing_ctx['company']} 10-K discusses {cat['label'].lower()} "
                         f"({hits} related mention(s) in {chunk.section}). Representative disclosure: "
@@ -80,15 +90,15 @@ class RiskAnalyst(BaseAgent):
                     ),
                     "severity": severity,
                     "severity_score": score,
-                    "likelihood": "medium",
-                    "confidence": round(min(0.7, 0.45 + 0.03 * hits), 3),
+                    "likelihood": "low" if conditional and not realized else "medium",
+                    "confidence": round(min(0.72, 0.48 + 0.03 * len(matched)), 3),
                     "workstream_owner": cat["workstream_owner"],
                     "follow_up_question": (
                         f"Quantify the {cat['label'].lower()} exposure and management's mitigation, "
                         f"beyond the risk-factor language."
                     ),
                     "evidence": {
-                        "claim": f"{filing_ctx['company']}'s 10-K discloses {cat['label'].lower()} risk.",
+                        "claim": f"{filing_ctx['company']}'s 10-K discusses {cat['label'].lower()}.",
                         "claim_type": "fact",
                         "evidence_text": snippet,
                         "source_name": f"{filing_ctx['company']} 10-K — {chunk.section}",
@@ -96,7 +106,7 @@ class RiskAnalyst(BaseAgent):
                         "source_url": filing_ctx.get("url"),
                         "source_date": filing_ctx.get("date"),
                         "source_section": chunk.section,
-                        "confidence": round(min(0.7, 0.45 + 0.03 * hits), 3),
+                        "confidence": round(min(0.72, 0.48 + 0.03 * len(matched)), 3),
                         "agent_name": self.name,
                     },
                 }
@@ -113,16 +123,33 @@ class RiskAnalyst(BaseAgent):
 
         def calc_evidence(claim: str, text: str, concept_key: str, conf: float) -> dict:
             src = (fin.get("sources") or {}).get(concept_key) or {}
+            has_xbrl_binding = target.data_source.startswith("SEC EDGAR") and bool(
+                src.get("concept")
+            )
             return {
                 "claim": claim,
                 "claim_type": "calculation",
-                "evidence_text": text,
-                "source_name": f"{target.name} FY{fy()} 10-K (XBRL: {src.get('concept', concept_key)})",
-                "source_type": "xbrl",
-                "source_url": filing_ctx.get("url"),
-                "source_date": filing_ctx.get("date"),
-                "source_section": "XBRL company facts",
-                "confidence": conf,
+                "evidence_text": (
+                    text
+                    if has_xbrl_binding
+                    else f"{text} Inputs are user-supplied and unverified."
+                ),
+                "source_name": (
+                    f"{target.name} FY{fy()} 10-K (XBRL: {src.get('concept', concept_key)})"
+                    if has_xbrl_binding
+                    else "User-submitted target profile (unverified)"
+                ),
+                "source_type": "xbrl" if has_xbrl_binding else "user_input",
+                "source_url": filing_ctx.get("url") if has_xbrl_binding else None,
+                "source_date": (
+                    filing_ctx.get("date") if has_xbrl_binding else target.fiscal_year_end
+                ),
+                "source_section": (
+                    "XBRL company facts"
+                    if has_xbrl_binding
+                    else "User-submitted target profile"
+                ),
+                "confidence": conf if has_xbrl_binding else min(conf, 0.5),
                 "agent_name": "financial_analyst",
             }
 

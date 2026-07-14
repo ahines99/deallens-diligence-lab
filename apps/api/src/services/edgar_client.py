@@ -147,22 +147,53 @@ def get_company_facts(cik10: str) -> dict:
 
 
 _ANNUAL_DURATION = re.compile(r"^CY\d{4}$")
-_ANNUAL_INSTANT = re.compile(r"^CY\d{4}Q4I$")
+_INSTANT_FRAME = re.compile(r"^CY\d{4}Q[1-4]I$")
 
 
 def annual_points(facts: dict, concept: str, instant: bool = False, unit: str = "USD") -> list[dict]:
-    """Return de-duplicated annual XBRL points (via 'frame') for a us-gaap concept, oldest first.
+    """Return the latest filed value for each annual reporting period, oldest first.
 
     `unit` defaults to "USD"; pass "shares" for share-count concepts (which live under units.shares).
+    Duration facts are keyed by the issuer fiscal year when SEC supplies ``fy`` (falling back to
+    the annual frame). Instant facts are keyed by balance-sheet
+    date and, when filing context is present, must come from a fiscal-year 10-K. This intentionally
+    accepts Q1/Q2/Q3 instant frames for non-December fiscal year ends instead of assuming Q4.
+    Company Facts retains comparative values from later filings, so keeping the most recently filed
+    point preserves amendments/restatements without double-counting a period.
     """
     node = facts.get("facts", {}).get("us-gaap", {}).get(concept)
     if not node:
         return []
     series = node.get("units", {}).get(unit, [])
-    pat = _ANNUAL_INSTANT if instant else _ANNUAL_DURATION
-    pts = [u for u in series if pat.match(u.get("frame", ""))]
-    pts.sort(key=lambda u: u["end"])
-    return pts
+    by_period: dict[str, dict] = {}
+    for point in series:
+        frame = point.get("frame", "")
+        if instant:
+            form = point.get("form", "")
+            fp = point.get("fp", "")
+            has_filing_context = bool(form or fp)
+            is_fiscal_annual = form in {"10-K", "10-K/A"} and fp == "FY"
+            if has_filing_context and not is_fiscal_annual:
+                continue
+            if not is_fiscal_annual and not _INSTANT_FRAME.match(frame):
+                continue
+            period_key = point.get("end", "") or frame
+        else:
+            if not _ANNUAL_DURATION.match(frame):
+                continue
+            fiscal_year = str(point.get("fy") or "").strip()
+            period_key = f"FY{fiscal_year}" if fiscal_year else frame
+        if not period_key:
+            continue
+        existing = by_period.get(period_key)
+        ordering = (point.get("filed", ""), point.get("accn", ""))
+        existing_ordering = (
+            (existing or {}).get("filed", ""),
+            (existing or {}).get("accn", ""),
+        )
+        if existing is None or ordering >= existing_ordering:
+            by_period[period_key] = point
+    return [by_period[period] for period in sorted(by_period)]
 
 
 def pick_concept(

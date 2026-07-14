@@ -17,12 +17,18 @@ from src.models import (
     Workspace,
 )
 from src.schemas.target import TargetCreate
+from src.schemas.identity import PrincipalContext, WorkspaceGovernancePatch
 from src.schemas.workspace import WorkspaceCreate
 from src.services import edgar_client, sec_ingestion_service
 from src.services.common import NotFound
 
 
-def create_workspace(session: Session, data: WorkspaceCreate) -> Workspace:
+def create_workspace(
+    session: Session,
+    data: WorkspaceCreate,
+    *,
+    organization_id: str | None = None,
+) -> Workspace:
     ticker = (data.ticker or "").strip().upper()
     name = data.name.strip()
     investment_question = data.investment_question.strip()
@@ -41,6 +47,7 @@ def create_workspace(session: Session, data: WorkspaceCreate) -> Workspace:
 
     ws = Workspace(
         name=name,
+        organization_id=organization_id,
         deal_type=data.deal_type,
         investment_question=investment_question,
         status="draft",
@@ -60,8 +67,40 @@ def create_workspace(session: Session, data: WorkspaceCreate) -> Workspace:
     return ws
 
 
-def list_workspaces(session: Session) -> list[Workspace]:
-    return list(session.scalars(select(Workspace).order_by(Workspace.created_at.desc())))
+def list_workspaces(session: Session, organization_id: str | None = None) -> list[Workspace]:
+    statement = select(Workspace)
+    if organization_id is not None:
+        statement = statement.where(Workspace.organization_id == organization_id)
+    return list(session.scalars(statement.order_by(Workspace.created_at.desc())))
+
+
+def update_governance(
+    session: Session,
+    workspace_id: str,
+    data: WorkspaceGovernancePatch,
+    principal: PrincipalContext,
+) -> Workspace:
+    workspace = session.get(Workspace, workspace_id)
+    if workspace is None or workspace.organization_id != principal.organization_id:
+        raise NotFound(f"Workspace '{workspace_id}' not found")
+    if principal.role not in {"owner", "admin"}:
+        from src.services.identity_service import IdentityForbidden
+
+        raise IdentityForbidden("Only organization owners and admins can change governance")
+    values = data.model_dump(exclude_unset=True)
+    resulting_classification = values.get(
+        "data_classification", workspace.data_classification
+    )
+    resulting_external_consent = values.get(
+        "external_llm_allowed", workspace.external_llm_allowed
+    )
+    if resulting_classification == "restricted" and resulting_external_consent:
+        raise ValueError("Restricted workspaces cannot enable external LLM processing")
+    for key, value in values.items():
+        setattr(workspace, key, value)
+    session.commit()
+    session.refresh(workspace)
+    return workspace
 
 
 def get_target(session: Session, workspace_id: str) -> Target | None:
@@ -78,6 +117,10 @@ def set_target(session: Session, workspace_id: str, data: TargetCreate) -> Targe
         session.add(target)
     for field, value in data.model_dump().items():
         setattr(target, field, value)
+    # Provenance is a server assertion. A client-created target is never represented as SEC data.
+    target.data_source = "User-submitted target profile (unverified)"
+    target.is_synthetic = False
+    target.financials = None
     session.flush()
     ws.target_id = target.id
     session.commit()

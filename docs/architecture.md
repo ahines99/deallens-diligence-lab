@@ -6,11 +6,13 @@ pipeline, the deterministic analysis engine, the optional LLM abstraction, and t
 The [`docs/CONTRACTS.md`](./CONTRACTS.md) file is the single source of truth for the HTTP shapes both
 sides share; TypeScript mirrors live in `apps/web/src/lib/types.ts`.
 
-Everything about a target is **real, ticker-driven public-company data**. You create a workspace with a
+The original public-company path remains fully live and ticker-driven. You create a workspace with a
 ticker (e.g. `CRWD`); the backend resolves it against SEC EDGAR, pulls XBRL financials and recent
 filings, extracts the latest 10-K's risk factors, and deterministically builds the whole pack —
 evidence, risks, questions, plan, IC memo, and bear case — every material claim cited to a real SEC
-source. There is no synthetic target and no mock-data mode in the primary flow.
+source. Private deals instead use versioned management financial imports and data-room documents, then
+flow through deterministic underwriting, deal execution, approved claims, and frozen IC packet versions.
+See [`WAVE3.md`](./WAVE3.md) for the institutional architecture.
 
 The system runs in two postures without code changes:
 
@@ -154,7 +156,7 @@ Creating a workspace with a ticker is the representative path; it runs the whole
         filing_sections.extract_sections → Item 1 / 1A / 7 (largest-span heuristic)
         split_paragraphs → DocumentChunk rows (section-labelled, source_url set)
      d. upsert Target (is_synthetic=false, data_source="SEC EDGAR (XBRL + 10-K)")
-5. analysis_service.run_full_analysis (idempotent — clears then rebuilds):
+5. analysis_service.run_full_analysis (rebuilds current views and seals a new immutable run/artifact):
      • financial evidence  (facts + calculations from XBRL)           → Evidence (source_type "xbrl")
      • risk findings       (taxonomy keyword scan of 10-K risk factors → Evidence "sec_filing")
                            (+ deterministic financial-metric flags     → Evidence "xbrl")
@@ -184,8 +186,8 @@ then **re-runs `run_full_analysis`** so the benchmark and memo reflect the new p
 Key contract properties (from `CONTRACTS.md`):
 
 - Unknown ticker → **404**; an EDGAR network failure → **502**.
-- `generate` endpoints are **idempotent** — they clear and rebuild the artifact from the target's real
-  data. `GET` before generate returns **404** (the frontend shows an empty state with a generate action).
+- `generate` endpoints rebuild the current artifact from the target's real data while retaining prior
+  evidence and sealing a new `AnalysisRun`/`ArtifactVersion`. `GET` before generate returns **404**.
 - Generating risks / questions / memo / red-team **also creates the Evidence rows they cite**, so the
   audit trail is never out of sync with the narrative.
 
@@ -221,11 +223,17 @@ One set of SQLAlchemy 2.0 models runs against either database:
 | Setup      | Zero external services; a file        | `docker compose up --build`                           |
 | Use        | Local dev, the demo, CI               | Production-shaped deployment                           |
 | Retrieval  | Keyword/TF over `DocumentChunk` text  | Same interface; pgvector column ready for embeddings   |
-| Migrations | Same models                           | Same models                                            |
+| Migrations | Alembic; legacy `create_all` upgrade  | Alembic on container startup                           |
 
 `DATABASE_URL` selects the backend (`sqlite:///./data/deallens.sqlite3` by default). Retrieval over the
 10-K chunks is deterministic keyword/TF today; swapping in a pgvector similarity search is a data-layer
 change, not an application-layer one.
+
+Outbound integrations use the same database as a transactional outbox. Workflow mutations, immutable
+audit events, and queued webhook deliveries commit atomically. A separate polling worker claims due
+deliveries, validates the destination, decrypts the signing secret only in memory, sends a canonical
+HMAC-signed body without redirects, and persists the response/retry state. Consumers can safely
+deduplicate retries using the immutable delivery ID.
 
 ---
 

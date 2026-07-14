@@ -19,11 +19,12 @@ out/
 .vercel/
 npm-debug.log*
 yarn-error.log*
+*.tsbuildinfo
 
 # Env / secrets
 .env
 .env.local
-.env.*.local
+.env.*
 !.env.example
 
 # Local ingestion cache (downloaded filings)

@@ -1,6 +1,9 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { Inter, Newsreader } from "next/font/google";
+import { ActorProvider } from "@/components/identity/ActorContext";
+import { IdentitySwitcher } from "@/components/identity/IdentitySwitcher";
+import { AuthProvider } from "@/components/auth/AuthContext";
 import "@/app/globals.css";
 
 const sans = Inter({
@@ -17,9 +20,9 @@ const serif = Newsreader({
 });
 
 export const metadata: Metadata = {
-  title: "DealLens Diligence Lab",
+  title: "DealLens | Private Equity Underwriting",
   description:
-    "A public-data AI diligence copilot for investment research, red-flag detection, and IC memo generation.",
+    "An evidence-backed private equity underwriting, diligence, and investment committee workbench.",
 };
 
 function Mark() {
@@ -36,8 +39,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en" className={`${sans.variable} ${serif.variable}`}>
       <body className="min-h-screen bg-paper font-sans text-body">
+        <AuthProvider>
+        <ActorProvider>
         <header className="sticky top-0 z-30 border-b border-black/20 bg-ink text-white/90">
-          <div className="mx-auto flex h-14 max-w-[1400px] items-center gap-6 px-5 lg:px-8">
+          <div className="mx-auto flex min-h-14 max-w-[1400px] flex-wrap items-center gap-x-3 gap-y-2 px-4 py-2 lg:h-14 lg:flex-nowrap lg:gap-6 lg:px-8 lg:py-0">
             <Link href="/" className="group flex items-center gap-2.5 text-white">
               <span className="text-white/85 transition group-hover:text-white">
                 <Mark />
@@ -51,21 +56,34 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 </span>
               </span>
             </Link>
-            <nav className="ml-2 flex items-center gap-1 text-sm">
+            <nav className="order-3 flex w-full items-center gap-1 border-t border-white/10 pt-2 text-xs lg:order-none lg:ml-2 lg:w-auto lg:border-0 lg:pt-0 lg:text-sm">
               <Link
                 href="/"
-                className="rounded px-2.5 py-1.5 text-white/70 transition hover:bg-white/10 hover:text-white"
+                className="flex-1 rounded px-2 py-1.5 text-center text-white/70 transition hover:bg-white/10 hover:text-white lg:flex-none lg:px-2.5"
               >
                 Overview
               </Link>
               <Link
                 href="/workspaces"
-                className="rounded px-2.5 py-1.5 text-white/70 transition hover:bg-white/10 hover:text-white"
+                className="flex-1 rounded px-2 py-1.5 text-center text-white/70 transition hover:bg-white/10 hover:text-white lg:flex-none lg:px-2.5"
               >
                 Workspaces
               </Link>
+              <Link
+                href="/pipeline"
+                className="flex-1 rounded px-2 py-1.5 text-center text-white/70 transition hover:bg-white/10 hover:text-white lg:flex-none lg:px-2.5"
+              >
+                Pipeline
+              </Link>
+              <Link
+                href="/portfolio"
+                className="flex-1 rounded px-2 py-1.5 text-center text-white/70 transition hover:bg-white/10 hover:text-white lg:flex-none lg:px-2.5"
+              >
+                Portfolio
+              </Link>
             </nav>
-            <div className="ml-auto hidden items-center gap-2 text-2xs uppercase tracking-eyebrow text-white/40 md:flex">
+            <IdentitySwitcher />
+            <div className="hidden items-center gap-2 text-2xs uppercase tracking-eyebrow text-white/40 2xl:flex">
               <span>SEC EDGAR</span>
               <span className="text-white/20">·</span>
               <span>FRED</span>
@@ -84,10 +102,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               DealLens Diligence Lab uses public data (SEC EDGAR, FRED, USAspending) and is not
               affiliated with any firm. Outputs are AI-assisted drafts for human review —{" "}
               <span className="font-semibold text-body">not investment advice</span>. Qualitative
-              severities are heuristic; market/valuation data is omitted.
+              severities are heuristic; market and transaction data require analyst or licensed inputs.
             </p>
           </div>
         </footer>
+        </ActorProvider>
+        </AuthProvider>
       </body>
     </html>
   );

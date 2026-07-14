@@ -1,141 +1,99 @@
-# Demo script
+# Institutional private-deal demo
 
-A step-by-step runbook for recording the DealLens Diligence Lab walkthrough. It is **ticker-driven and
-real**: you enter a public-company ticker (e.g. **CRWD**) and the backend pulls live SEC EDGAR data —
-XBRL financials, recent filings, and the latest 10-K's risk factors — then deterministically builds the
-whole pack. Because it is real, the demo **needs network access** to SEC EDGAR and a descriptive
-`SEC_USER_AGENT`.
+This 8–10 minute walkthrough shows DealLens as an internal private-equity diligence workbench. The
+primary story is a private target moving from management data to an independently reviewed IC packet.
+Public SEC data is a useful secondary workflow, not the source of private-company facts.
 
-**Target length:** 5–7 minutes. **Pace:** narrate the *why* while each artifact renders.
+## Before recording
 
----
+1. Start from a migrated database: `cd apps/api && python -m alembic -c alembic.ini upgrade head`.
+2. Start the API and web app with `make dev`, or run `python -m uvicorn src.main:app --reload` and
+   `npm.cmd run dev` in separate terminals.
+3. Register the first owner at `/register`; keep `AUTH_REQUIRED=true` and
+   `AUTH_ALLOW_REGISTRATION=false` after bootstrap.
+4. Prepare a small management P&L CSV, one debt agreement, and one customer-contract text file. Use
+   fictional data that is clearly labeled as user-submitted.
+5. Create two users in the same organization: an associate who prepares work and an investment partner
+   who performs independent approvals.
 
-## Before you record
+## Walkthrough
 
-- Set a descriptive `SEC_USER_AGENT` in `.env` (e.g. `"DealLens Diligence Lab (portfolio) you@example.com"`).
-  SEC requires it; without it requests are throttled or blocked.
-- Backend up. Either pre-seed real demo workspaces or create one live on camera:
-  - `python -m src.seed.load_seed` — seeds real MSFT and CRWD workspaces from live SEC (needs network),
-    then `uvicorn src.main:app --reload` (or `make seed` + `make dev`).
-- Frontend up: `npm run dev` → `http://localhost:3000`.
-- Confirm `GET /api/health` returns `"status":"ok"` (and `"database":"sqlite"` by default).
-- If you want to show creation live, start with **no** CRWD workspace; otherwise pre-seed and skip to
-  step 3.
+### 1. Portfolio command center
 
----
+Open `/portfolio`. Explain the stage funnel, sector and strategy exposure, upcoming IC calendar,
+readiness components, overdue work, critical risks, source health, and downside/covenant watchlists.
+Filter by stage and fund, then export the current view to CSV. Emphasize that every card is aggregated
+from governed deal, task, source, model, and IC records—not a separate dashboard dataset.
 
-## Opening line (say to camera)
+### 2. Create and govern a private target
 
-> "DealLens Diligence Lab is a public-data AI diligence copilot. In the next few minutes I'll run a full
-> first-pass diligence pack on a **real public company** — pulled live from SEC EDGAR — surfacing red
-> flags from its 10-K, benchmarking against real public peers, drafting an investment-committee memo, and
-> red-teaming the thesis, while keeping **every material claim source-grounded, traceable, and reviewable
-> by a human.**"
+Create a workspace without a ticker, select `private_company`, and link it to a fund and deal. Show the
+workspace classification and external-LLM setting. Say that manually entered target values are stamped
+as user-submitted and unverified; the client cannot relabel them as SEC/XBRL evidence.
 
----
+### 3. Import management financials
 
-## The journey
+Open Financial Data, upload the management P&L, and preview the dry run. Review mappings, period and
+currency metadata, scaling, reconciliation output, and explicit exceptions before committing. Show the
+sealed source snapshot and hash. Re-import a revised file to demonstrate an append-only version rather
+than an in-place rewrite.
 
-### Step 1 — Landing page & disclaimer
-**Do:** Open `/`. **Say:** "This is a non-commercial portfolio project on public SEC data — outputs are
-AI-assisted drafts for demonstration, not investment advice." **Point out:** the disclaimer banner and
-the "New workspace" call to action.
+### 4. Build and approve the QoE bridge
 
-### Step 2 — Create the workspace (enter a ticker)
-**Do:** Click **New workspace** → `/workspaces/new`. Pick a `deal_type` (e.g. `software_platform`) and
-enter a ticker: **CRWD**. Submit. **Say:** "I just entered a ticker. On submit, the backend resolves CRWD
-to its SEC CIK, pulls XBRL company facts and recent filings, fetches the latest 10-K, extracts the risk
-factors, and runs the full analysis — all before this page finishes loading." **Point out:** an unknown
-ticker returns a clear 404; a network failure returns a 502 — it never invents data.
+Open QoE, create management and sponsor adjustments, and show reported, management-adjusted,
+sponsor-adjusted, and run-rate EBITDA. Point to the evidence locator and materiality. Submit as the
+associate, switch to the partner, and approve it. Demonstrate that the proposer cannot decide the same
+adjustment and that missing values remain unknown instead of becoming zero.
 
-### Step 3 — Workspace overview
-**Do:** Land on `/workspaces/[id]`. **Say:** "The command center — the diligence plan, top risks, and the
-counts (filings, comps, risks, questions, evidence), all already populated from the live ingest." **Point
-out:** the artifact checklist (plan, risks, questions, IC memo, bear case) is already complete because
-creation ran the full pipeline.
+### 5. Review private documents and claims
 
-### Step 4 — Target profile (real XBRL)
-**Do:** Open `/workspaces/[id]/target`. **Say:** "CrowdStrike, straight from SEC XBRL — roughly $4.8B
-revenue, ~22% growth, ~75% gross margin, and a **negative GAAP operating margin**, which pulls Rule-of-40
-to about 16%." **Point out:** `data_source: SEC EDGAR (XBRL + 10-K)`, `is_synthetic: false`, and that
-every figure links to its XBRL concept in the evidence table.
+Open the Data Room, ingest the debt agreement and customer contract, then ask a cited question. Inspect
+the exact document version, chunk locator, quoted span, and abstention behavior for unsupported answers.
+Extract structured claims, reject or edit one, and approve another as the independent reviewer. The
+approved revision is promoted to governed Evidence with exact document and chunk hashes.
 
-### Step 5 — Filings
-**Do:** Open `/workspaces/[id]/filings`. **Say:** "The real 10-K / 10-Q / 8-K filings pulled from
-`data.sec.gov`, each with its accession number and a link to the actual document on `sec.gov`. The latest
-10-K was fetched and chunked by section — that's where the risk factors come from." **Point out:** the
-`section_count` on the 10-K and that `is_synthetic` is false; mention the SEC `User-Agent` requirement.
+### 6. Underwrite base, upside, and downside cases
 
-### Step 6 — Add real peers
-**Do:** Open `/workspaces/[id]/comps`. Add peer tickers: **PANW, ZS, S**. **Say:** "Peers are added by
-ticker, and each one's financials come from the **same** XBRL pipeline as the target — real numbers, not
-sample values. Adding peers re-runs the analysis so the benchmark and memo update." **Point out:** every
-comp row is real XBRL; the valuation-multiple columns are intentionally blank.
+Open the Underwriting workbench. Build sources and uses, monthly Y1–Y2 and annual Y3–Y5 projections,
+debt tranches, cash sweep, covenants, DCF, and sponsor returns. Bind the approved private claim to the
+case before saving. Save all three scenarios and show immutable versions, parent version, canonical
+input/output hashes, and stale-output invalidation when an assumption changes.
 
-### Step 7 — Financial benchmark
-**Do:** View the benchmark on the same page. **Say:** "Deterministic target-vs-peer metrics on
-SEC-reported fundamentals — scale above the median, gross margin in line, growth below the median, GAAP
-operating margin below the median. **Market valuation multiples are omitted entirely** — there's no free
-source, and we don't fabricate valuation." **Point out:** the Recharts visual and the omitted-multiples
-note.
+Run entry/exit sensitivity, reverse stress, and the working-capital peg. Call out liquidity shortfalls,
+covenant breaches, and debt-service defaults. Avoid presenting an old result after editing inputs.
 
-### Step 8 — Diligence plan
-**Do:** Open the plan (generated on ingest; re-generate to show it live). **Say:** "A first-pass plan by
-workstream — commercial, financial, product/tech, legal, cyber, management. GovCon is marked *not
-applicable* unless federal exposure surfaces in the filing." **Point out:** objectives, key questions, and
-evidence-needed per workstream.
+### 7. Govern the model and assemble the IC packet
 
-### Step 9 — Risk / red-flag matrix
-**Do:** Open `/workspaces/[id]/risks`. **Say:** "Findings from two deterministic sources: a keyword scan
-of the real 10-K risk factors — legal/regulatory, AI-disruption, integration/M&A — and financial-metric
-flags over XBRL: the negative GAAP operating margin and the GAAP net loss. Each is scored 1–10 and
-**cited to evidence**." **Point out:** the `ClaimBadge`, the severity colors, and that text-based
-severities are heuristic (keyword-based) and carry a follow-up asking to quantify the exposure.
+Submit the chosen cases as the associate and approve them as the partner. Add thesis and risk ledger
+items with evidence references. Open the IC composer, select the cases and any additional approved
+claims, then create the packet. Explain that the server assembles snapshots from persisted records;
+client-authored model, evidence, or thesis snapshots are rejected.
 
-### Step 10 — Diligence questions
-**Do:** Open `/workspaces/[id]/questions`. **Say:** "The findings become prioritized questions by
-workstream — e.g. an independent QoE and path-to-profitability stress test on the GAAP operating loss, and
-quantifying the disclosed legal and AI-disruption risks." **Point out:** priority tags; finding-linked
-questions carry the finding's evidence ref.
+Show readiness checks and source-currentness. The claims already bound to model cases are automatically
+carried into the packet. Submit the packet, switch actors, and record the independent IC decision.
 
-### Step 11 — IC memo
-**Do:** Open `/workspaces/[id]/memo`. **Say:** "A draft investment-committee memo — executive summary,
-financial profile from XBRL, the peer benchmark, findings, preliminary thesis, and next steps." **Point
-out:** the *DRAFT FOR HUMAN REVIEW — NOT INVESTMENT ADVICE* banner and the inline `[EV-###]` citations.
-Mention the optional live-LLM polish that improves flow but changes no numbers or citations.
+### 8. Verify the export
 
-### Step 12 — Red-team / bear case
-**Do:** Open `/workspaces/[id]/red-team`. **Say:** "Now the system argues **against** its own thesis —
-profitability is projected not proven, the disclosed risks may be underweighted — and it publishes the
-claims it *couldn't* support and the evidence still missing." **Point out:** the unsupported-claims list
-(with *why weak* and *recommended action*) and the missing-evidence list routed to workstreams.
+Create the JSON export manifest and run verification. Show canonical packet binding, section hashes,
+evidence/document/chunk bindings, case input/output hashes, and decision metadata. Explain that packet
+regeneration creates a new immutable version atomically; failure does not destroy the last good packet.
 
-### Step 13 — Evidence & audit table
-**Do:** Open `/workspaces/[id]/evidence`. **Say:** "This is the point of the whole thing — every material
-claim resolves to a row: the claim, its type (fact / calculation / inference / assumption), the SEC
-source, the exact snippet or the calculation, and a confidence score. Financial facts trace to an XBRL
-concept; qualitative flags quote the 10-K and link to the real `sec.gov` document." **Point out:** click a
-`SourceCitation` in the memo and land on the matching `EV-###`.
+### 9. Close on operational honesty
 
-### Step 14 — Recap & close
-**Do:** Return to `/workspaces/[id]`. **Say:** "In a few minutes we went from a **ticker** to a full
-first-pass pack — real financial profile, real peer benchmark, plan, red-flag matrix, questions, an IC
-memo, a bear case, and an inspectable evidence trail behind every claim — grounded entirely in public SEC
-data, with nothing fabricated and everything checkable."
+Return to the portfolio. Show the activity timeline and updated readiness. Briefly open the signal panels
+and explain their explicit `available`, `partial`, and `unavailable` states: an upstream SEC, FRED,
+USAspending, Form 4, EFTS, or GDELT failure is never displayed as a clean zero or “no events.”
 
----
+## Suggested closing
 
-## Closing line (say to camera)
+> DealLens does not replace investment judgment. It makes the path from source material to an IC
+> decision inspectable: who supplied a value, who approved it, which exact source supports it, which
+> model version used it, and whether the exported packet still verifies.
 
-> "The point is not to automate investment judgment. The point is to show how AI can accelerate the
-> evidence-gathering, issue-spotting, memo-drafting, and red-team process **while keeping humans
-> accountable for decisions.** Every number traces back to a real SEC filing, and none of it is
-> investment advice."
+## Optional public-data appendix
 
----
-
-## Optional B-roll / secondary flow
-
-Show a second ticker to prove it's general — e.g. create an **MSFT** workspace with peers GOOGL / ORCL /
-CRM, or **NVDA** — and note the whole pack rebuilds from that company's live XBRL and 10-K. Keep it short.
-See [`docs/sec-ingestion.md`](./sec-ingestion.md).
+For a second, shorter flow, create a public workspace with AAPL, MSFT, or CRWD. Demonstrate SEC company
+facts, exact fiscal-year labels for non-calendar issuers, filing accession links, FRED observations,
+Form 4 ownership-code parsing, USAspending pagination, and explicit source outage states. Keep this
+appendix separate from the private-deal narrative so public data is never implied to verify management
+financials.

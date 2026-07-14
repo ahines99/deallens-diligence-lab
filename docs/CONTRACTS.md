@@ -4,8 +4,9 @@ This document defines the data model and the exact HTTP API shapes shared by the
 (`apps/api`) and the Next.js frontend (`apps/web`). Both sides MUST match these shapes. TypeScript
 mirrors live in `apps/web/src/lib/types.ts`; the API client in `apps/web/src/lib/api.ts`.
 
-All IDs are UUID strings. All timestamps are ISO-8601 strings (UTC). Money is in USD (raw dollars,
-e.g. `55000000`). Ratios/margins are decimals in `[0,1]` (e.g. `0.72` = 72%).
+All IDs are UUID strings. All timestamps are ISO-8601 strings (UTC). Money uses the declared currency
+in raw units (e.g. `55000000`). Rates are decimals (`0.08` = 8%); signed growth and margin fields may
+be negative, and each Pydantic field defines its exact bounds.
 
 Base URL: `NEXT_PUBLIC_API_URL` (default `http://localhost:8000`). All app routes are under `/api`.
 
@@ -15,7 +16,7 @@ Base URL: `NEXT_PUBLIC_API_URL` (default `http://localhost:8000`). All app route
 
 - `deal_type`: `buyout` | `growth_equity` | `private_credit` | `public_equity` | `govcon` | `software_platform`
 - `workspace_status`: `draft` | `in_progress` | `complete`
-- `target_type`: `public_company` | `synthetic_private`
+- `target_type`: `public_company` | `private_company` | `synthetic_private` (legacy fixtures only)
 - `severity`: `low` | `medium` | `high` | `critical`
 - `priority`: `low` | `medium` | `high`
 - `claim_type`: `fact` | `calculation` | `inference` | `assumption`
@@ -210,3 +211,40 @@ Components: `WorkspaceCard`, `TargetProfile`, `FilingTable`, `CompsTable`, `Risk
 `QuestionList`, `MemoViewer`, `RedTeamViewer`, `EvidenceTable`, `ClaimBadge`, `SourceCitation`,
 plus shared UI in `components/ui/`. Charts use Recharts. Every claim surfaces a `ClaimBadge`
 (fact/calculation/inference/assumption) and links to its evidence `ref`.
+
+---
+
+## Wave 3A/3B contracts
+
+The authoritative Pydantic and TypeScript shapes for the institutional workbench live in:
+
+- `apps/api/src/schemas/underwriting_data.py`
+- `apps/api/src/schemas/underwriting_model.py`
+- `apps/api/src/schemas/deal_workflow.py`
+- `apps/api/src/schemas/deal_intelligence.py`
+- `apps/api/src/schemas/integration.py`
+- `apps/web/src/lib/types.ts`
+
+Endpoint families:
+
+| Area | Prefix / representative routes |
+|---|---|
+| Private financials | `/api/workspaces/{id}/underwriting/sources`, `/financial-imports/{csv,xlsx}`, `/financial-facts`, `/reconciliations`, `/import-exceptions` |
+| QoE | `/api/workspaces/{id}/underwriting/qoe-adjustments`, `/qoe-bridge` |
+| Model | `/api/workspaces/{id}/underwriting/{calculate,cases,case-set,working-capital-peg,valuation-triangulation,sensitivity,reverse-stress}` |
+| Deal execution | `/api/organizations`, `/api/funds/{id}/deals`, `/api/deals/{id}/{gates,team,workstreams,milestones,tasks,diligence-requests,ledger}` |
+| IC governance | `/api/deals/{id}/ic-packets`, `/api/ic-packets/{id}/{readiness,submit,comments,decisions,exports}` |
+| Documents/evidence | `/api/deals/{id}/intelligence/{documents,qa,extractions,claims,comparisons,evaluations}` |
+| SEC changes | `/api/workspaces/{id}/intelligence/sec-comparisons` |
+| Integrations | `/api/organizations/{id}/webhooks`, `/api/organizations/{id}/webhook-deliveries`, `/api/webhook-deliveries/{id}/send` |
+
+Money uses the case currency and rates are decimals. Model case, source, document, claim, analysis-run,
+artifact, and IC packet histories are append-only or versioned. Missing/failed information is represented
+as missing, partial, stale, failed, or abstained; it is never converted to a clean zero.
+
+All `/api` routes also resolve under `/api/v1`. Webhook payloads are canonical JSON CloudEvents-style
+envelopes backed by the workflow audit stream. The signature is lowercase hex HMAC-SHA256 over the ASCII
+timestamp, a literal period, and the exact request bytes. Receivers should reject stale timestamps and
+deduplicate on `X-DealLens-Delivery`.
+
+See [`WAVE3.md`](./WAVE3.md) for the end-to-end workflow and import/export requirements.

@@ -27,6 +27,9 @@ class Settings(BaseSettings):
 
     # --- Database ----------------------------------------------------------
     database_url: str = "sqlite:///./data/deallens.sqlite3"
+    # "migrate" applies Alembic to head, "external" expects deployment orchestration to do so,
+    # and "create_all" is reserved for isolated tests.
+    schema_management: str = "migrate"
 
     # --- API ---------------------------------------------------------------
     api_host: str = "0.0.0.0"
@@ -35,6 +38,20 @@ class Settings(BaseSettings):
     # Auto-seed live-SEC demo workspaces on first startup (needs network). Off by default so
     # startup stays fast/offline-safe; run `python -m src.seed.load_seed` to populate on demand.
     auto_seed: bool = False
+    # Optional tenant selector for the CLI/auto seeder when more than one organization exists.
+    seed_organization_slug: str = ""
+    # Secure by default. Tests or an explicitly isolated demo may opt out with AUTH_REQUIRED=false.
+    auth_required: bool = True
+    internal_api_token: str = ""
+    # The first user may always bootstrap the installation; further self-service signups are opt-in.
+    auth_allow_registration: bool = False
+    auth_session_hours: int = 12
+    auth_max_failed_logins: int = 5
+    auth_lockout_minutes: int = 15
+    auth_rate_limit_attempts: int = 30
+    auth_rate_limit_window_seconds: int = 60
+    webhook_encryption_key: str = ""
+    webhook_allow_insecure_http: bool = False
 
     # --- Public data sources (live mode / extensions) ----------------------
     sec_user_agent: str = "DealLens Diligence Lab (portfolio project) contact@example.com"

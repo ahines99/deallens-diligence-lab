@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from sqlalchemy import Float, ForeignKey, String, Text
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy import Float, ForeignKey, String, Text, UniqueConstraint, event
+from sqlalchemy.orm import Mapped, Session, mapped_column
 
 from src.db.base import Base, TimestampMixin, UUIDMixin
 
@@ -14,6 +14,9 @@ class Evidence(UUIDMixin, TimestampMixin, Base):
     """
 
     __tablename__ = "evidence"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "ref", name="uq_evidence_workspace_ref"),
+    )
 
     workspace_id: Mapped[str] = mapped_column(
         String(32), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True
@@ -29,3 +32,21 @@ class Evidence(UUIDMixin, TimestampMixin, Base):
     evidence_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
     confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.6)
     agent_name: Mapped[str] = mapped_column(String(60), nullable=False, default="")
+
+
+def _reject_evidence_mutation(_mapper, _connection, target: Evidence) -> None:
+    del target
+    raise ValueError("Evidence records are append-only")
+
+
+@event.listens_for(Session, "do_orm_execute")
+def _reject_bulk_evidence_mutation(execute_state) -> None:  # pragma: no cover - exercised by tests
+    if not (execute_state.is_update or execute_state.is_delete):
+        return
+    table = getattr(execute_state.statement, "table", None)
+    if table is not None and table.name == Evidence.__tablename__:
+        raise ValueError("Evidence records are append-only")
+
+
+event.listen(Evidence, "before_update", _reject_evidence_mutation)
+event.listen(Evidence, "before_delete", _reject_evidence_mutation)

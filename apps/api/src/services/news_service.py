@@ -3,7 +3,7 @@
 Pulls recent English-language news articles that mention the target company. This is UNVERIFIED
 MEDIA — it is explicitly NOT part of the evidence table and must never be cited as diligence
 evidence. GDELT is best-effort: it occasionally returns non-JSON, HTML error pages, or empty
-bodies, so every failure path degrades gracefully to ``{"articles": []}``.
+bodies, so failure paths return an explicit unavailable status rather than a false clean empty.
 """
 from __future__ import annotations
 
@@ -72,11 +72,7 @@ def _parse_articles(data: object) -> list[dict]:
 
 
 def fetch_news(company: str, max_records: int = MAX_RECORDS) -> dict:
-    """Return ``{"query", "articles": [...]}``.
-
-    Always degrades to an empty ``articles`` list on any network/parse failure so the endpoint
-    never errors just because GDELT hiccupped.
-    """
+    """Return articles plus an explicit source-availability state."""
     query = build_query(company)
     params = {
         "query": query,
@@ -94,6 +90,23 @@ def fetch_news(company: str, max_records: int = MAX_RECORDS) -> dict:
             data = resp.json()
     except (httpx.HTTPError, ValueError) as exc:
         logger.warning("GDELT news fetch failed for %r: %s", query, exc)
-        return {"query": query, "articles": []}
+        return {
+            "query": query,
+            "articles": [],
+            "source_status": "unavailable",
+            "source_error": "GDELT could not be reached or returned an invalid response.",
+        }
 
-    return {"query": query, "articles": _parse_articles(data)}
+    if not isinstance(data, dict):
+        return {
+            "query": query,
+            "articles": [],
+            "source_status": "unavailable",
+            "source_error": "GDELT returned an invalid response shape.",
+        }
+    return {
+        "query": query,
+        "articles": _parse_articles(data),
+        "source_status": "available",
+        "source_error": None,
+    }

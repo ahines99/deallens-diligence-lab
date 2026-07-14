@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from src.schemas.common import ORMModel, TargetType
 
 
 class TargetCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
     name: str
     target_type: TargetType = "public_company"
     ticker: str | None = None
@@ -26,9 +28,6 @@ class TargetCreate(BaseModel):
     total_debt: float | None = None
     headcount: int | None = None
     fiscal_year_end: str | None = None
-    data_source: str = "SEC EDGAR (XBRL)"
-    is_synthetic: bool = False
-    financials: dict | None = None
 
 
 class TargetOut(ORMModel):

@@ -4,8 +4,9 @@ All inputs come from `target.financials["forensic_inputs"]` (per-year XBRL field
 ingestion) plus headline `target` fields. We NEVER re-fetch XBRL and NEVER impute a missing field:
 when a required input is `None`, the affected score/metric degrades to `available=False` / `value=None`.
 
-Scores (each a ForensicScore): Altman Z'' (private), Piotroski F (0-9), Beneish M (DEPI suppressed when
-D&A is untagged), Sloan accruals ratio. QoE metrics (each a QoEMetric): net working capital, DSO/DIO/DPO,
+Scores (each a ForensicScore): Altman Z'' (private), Piotroski F (0-9), Beneish M (shown as an
+unscored reduced value when DEPI is unavailable), Sloan accruals ratio. QoE metrics (each a
+QoEMetric): net working capital, DSO/DIO/DPO,
 cash-conversion cycle, FCF, cash conversion, interest coverage, EBITDA, net debt, net-debt/EBITDA leverage.
 
 `risk_flags(session, workspace_id)` re-uses the same math to emit red-flag finding dicts (same shape as
@@ -66,13 +67,15 @@ def _ebit(row: dict) -> float | None:
 
 
 def _debt_sum(row: dict) -> float | None:
-    """Interest-bearing debt = ltd + ltd_current + short_debt. An untagged tranche counts as absent (0);
-    returns None only when no debt tranche is tagged at all (so net-debt/leverage degrade cleanly)."""
+    """Interest-bearing debt from a complete tagged component set.
+
+    An untagged tranche is unknown, not zero. Returning ``None`` prevents a partial debt subtotal
+    from being presented as total debt or used in net-leverage calculations.
+    """
     parts = [row.get("ltd"), row.get("ltd_current"), row.get("short_debt")]
-    present = [p for p in parts if p is not None]
-    if not present:
+    if any(part is None for part in parts):
         return None
-    return sum(present)
+    return sum(parts)
 
 
 # --- forensic scores -------------------------------------------------------
@@ -136,25 +139,36 @@ def _piotroski(t: dict, p: dict | None) -> dict:
         ("Rising asset turnover", _gt(at_t, at_p)),
     ]
     components = [_comp(n, None if v is None else float(bool(v))) for n, v in signals]
+    unscored = [name for name, value in signals if value is None]
+    if unscored:
+        return {
+            "key": "piotroski_f",
+            "label": "Piotroski F-score",
+            "value": None,
+            "rating": "n/a",
+            "available": False,
+            "components": components,
+            "interpretation": (
+                "Insufficient tags for a comparable 0-9 Piotroski score; missing signals are "
+                "unscored rather than counted as failures."
+            ),
+            "note": "Unscored: " + ", ".join(unscored) + ".",
+        }
     score = sum(1 for _, v in signals if v is True)
-    note = None
-    if no_dilution is None:
-        note = "Shares outstanding untagged; scored out of 8 (dilution signal omitted)."
     if score <= 2:
         rating = "weak"
     elif score >= 7:
         rating = "strong"
     else:
         rating = "neutral"
-    denom = 8 if no_dilution is None else 9
     return {"key": "piotroski_f", "label": "Piotroski F-score", "value": float(score), "rating": rating,
             "available": True, "components": components,
-            "interpretation": f"F={score}/{denom} — higher signals stronger fundamentals (profitability, "
-                              f"leverage, efficiency). F<=2 is a red flag; F>=8 is a positive.", "note": note}
+            "interpretation": f"F={score}/9 — higher signals stronger fundamentals (profitability, "
+                              f"leverage, efficiency). F<=2 is a red flag; F>=8 is a positive.", "note": None}
 
 
 def _beneish(t: dict, p: dict | None) -> dict:
-    """Beneish M-score. DEPI is suppressed (term dropped) when D&A is untagged in either year."""
+    """Beneish M-score; a missing DEPI produces a reduced display value, never a threshold score."""
     if p is None:
         return {"key": "beneish_m", "label": "Beneish M-score", "value": None, "rating": "n/a",
                 "available": False, "components": [],
@@ -172,7 +186,7 @@ def _beneish(t: dict, p: dict | None) -> dict:
     # DEPI (suppress if D&A None in either year).
     depi = None
     da_t, da_p, ppe_t, ppe_p = t.get("da"), p.get("da"), t.get("ppe_net"), p.get("ppe_net")
-    depi_suppressed = da_t is None or da_p is None
+    depi_suppressed = None in (da_t, da_p, ppe_t, ppe_p)
     if not depi_suppressed:
         depi = _div(_div(da_p, (da_p or 0) + (ppe_p or 0)), _div(da_t, (da_t or 0) + (ppe_t or 0)))
 
@@ -193,10 +207,22 @@ def _beneish(t: dict, p: dict | None) -> dict:
          - 0.172 * sgai + 4.679 * tata - 0.327 * lvgi)
     if not depi_suppressed:
         m += 0.115 * depi
-    note = "DEPI omitted (D&A untagged)" if depi_suppressed else None
-    rating = "elevated" if m > -1.78 else "neutral"
-    interp = (f"M={m:.2f}. Above -1.78 flags elevated earnings-manipulation likelihood; "
-              f"below is consistent with non-manipulators.")
+    if depi_suppressed:
+        note = (
+            "DEPI omitted (D&A untagged)"
+            if da_t is None or da_p is None
+            else "DEPI omitted (PP&E untagged)"
+        )
+        rating = "unscored"
+        interp = (
+            f"Reduced seven-variable value={m:.2f}. It is not comparable to the standard -1.78 "
+            "eight-variable Beneish threshold and is not used as a red flag."
+        )
+    else:
+        note = None
+        rating = "elevated" if m > -1.78 else "neutral"
+        interp = (f"M={m:.2f}. Above -1.78 flags elevated earnings-manipulation likelihood; "
+                  f"below is consistent with non-manipulators.")
     return {"key": "beneish_m", "label": "Beneish M-score", "value": _r(m, 3), "rating": rating,
             "available": True, "components": components, "interpretation": interp, "note": note}
 
@@ -211,12 +237,15 @@ def _aqi_ratio(row: dict) -> float | None:
 
 
 def _lvg_debt(row: dict) -> float | None:
-    """Beneish LVGI numerator debt = ltd + ltd_current + current_liabilities (untagged tranche = 0);
-    requires current_liabilities to be tagged."""
-    cl = row.get("current_liabilities")
-    if cl is None:
+    """Beneish LVGI numerator = current liabilities + long-term debt.
+
+    Current liabilities already include current debt maturities, so ``ltd_current`` must not be
+    added again. Missing long-term debt is unknown—not an assumed zero.
+    """
+    cl, ltd = row.get("current_liabilities"), row.get("ltd")
+    if cl is None or ltd is None:
         return None
-    return cl + (row.get("ltd") or 0) + (row.get("ltd_current") or 0)
+    return cl + ltd
 
 
 def _accruals(t: dict) -> dict:
@@ -244,13 +273,20 @@ def _accruals(t: dict) -> dict:
 # --- QoE metrics -----------------------------------------------------------
 
 
-def _qoe(t: dict, target) -> list[dict]:
+def _average(current: float | None, prior: float | None) -> float | None:
+    if current is None or prior is None:
+        return None
+    return (current + prior) / 2
+
+
+def _qoe(t: dict, p: dict | None) -> list[dict]:
     rev, cogs = t.get("revenue"), t.get("cogs")
     ca, cl = t.get("current_assets"), t.get("current_liabilities")
     nwc = ca - cl if ca is not None and cl is not None else None
-    dso = _mul(_div(t.get("receivables"), rev), 365)
-    dio = _mul(_div(t.get("inventory"), cogs), 365)
-    dpo = _mul(_div(t.get("payables"), cogs), 365)
+    prior = p or {}
+    dso = _mul(_div(_average(t.get("receivables"), prior.get("receivables")), rev), 365)
+    dio = _mul(_div(_average(t.get("inventory"), prior.get("inventory")), cogs), 365)
+    dpo = _mul(_div(_average(t.get("payables"), prior.get("payables")), cogs), 365)
     ccc = dso + dio - dpo if None not in (dso, dio, dpo) else None
     cfo, capex = t.get("cfo"), t.get("capex")
     fcf = cfo - capex if cfo is not None and capex is not None else None
@@ -259,7 +295,7 @@ def _qoe(t: dict, target) -> list[dict]:
     int_cov = _div(ebit, interest)
     da = t.get("da")
     ebitda = (t.get("operating_income") + da) if t.get("operating_income") is not None and da is not None else None
-    cash = t.get("cash") if t.get("cash") is not None else getattr(target, "cash", None)
+    cash = t.get("cash")
     debt = _debt_sum(t)
     net_debt = debt - cash if debt is not None and cash is not None else None
     leverage = _div(net_debt, ebitda)
@@ -268,11 +304,12 @@ def _qoe(t: dict, target) -> list[dict]:
         _m("net_working_capital", "Net working capital", "usd", _r(nwc, 0),
            "Current assets less current liabilities — the operating capital tied up in the business."),
         _m("dso", "Days sales outstanding (DSO)", "days", _r(dso, 1),
-           "Average days to collect receivables; rising DSO can flag revenue-recognition or collection stress."),
+           "Average opening/closing receivables divided by revenue; rising DSO can flag "
+           "revenue-recognition or collection stress."),
         _m("dio", "Days inventory outstanding (DIO)", "days", _r(dio, 1),
-           "Average days inventory is held; n/a for asset-light businesses without inventory."),
+           "Average opening/closing inventory divided by COGS; n/a without both balance dates."),
         _m("dpo", "Days payable outstanding (DPO)", "days", _r(dpo, 1),
-           "Average days to pay suppliers; higher DPO conserves cash."),
+           "Average opening/closing payables divided by COGS; higher DPO conserves cash."),
         _m("cash_conversion_cycle", "Cash conversion cycle", "days", _r(ccc, 1),
            "DSO + DIO - DPO. Lower (or negative) is a stronger working-capital profile."),
         _m("fcf", "Free cash flow", "usd", _r(fcf, 0),
@@ -284,7 +321,8 @@ def _qoe(t: dict, target) -> list[dict]:
         _m("ebitda", "EBITDA", "usd", _r(ebitda, 0),
            "Operating income + D&A. n/a (EBIT-only) when D&A is untagged in XBRL."),
         _m("net_debt", "Net debt", "usd", _r(net_debt, 0),
-           "Interest-bearing debt less cash. Negative net debt means a net-cash position."),
+           "Fully tagged long-term, current-maturity and short-term debt less same-period cash; "
+           "n/a if any component is untagged."),
         _m("leverage_nd_ebitda", "Net debt / EBITDA", "x", _r(leverage, 2),
            "Turns of leverage; n/a when EBITDA is unavailable (D&A untagged)."),
     ]
@@ -317,7 +355,7 @@ def _rows(forensic_inputs: dict) -> tuple[str | None, dict, dict | None]:
 def _core(forensic_inputs: dict, target) -> dict:
     t_year, t, p = _rows(forensic_inputs)
     scores = [_altman(t), _piotroski(t, p), _beneish(t, p), _accruals(t)]
-    qoe = _qoe(t, target)
+    qoe = _qoe(t, p)
     notes = [
         "All figures are computed deterministically from SEC XBRL company facts stored at ingestion; "
         "no values are imputed — missing tags degrade to n/a.",
@@ -327,7 +365,10 @@ def _core(forensic_inputs: dict, target) -> dict:
     if p is None:
         notes.append("Only one fiscal year is available, so year-over-year scores (Piotroski, Beneish) are n/a.")
     if any(s["key"] == "beneish_m" and s.get("note") for s in scores):
-        notes.append("Beneish M was computed without DEPI because depreciation & amortization is untagged.")
+        notes.append(
+            "A reduced Beneish value is shown without DEPI, but it is unscored and not compared "
+            "with the standard eight-variable manipulation threshold."
+        )
     return {"as_of_year": t_year, "scores": scores, "qoe": qoe, "notes": notes}
 
 
@@ -420,14 +461,14 @@ def risk_flags(session: Session, workspace_id: str) -> list[dict]:
         ))
 
     beneish = _score(scores, "beneish_m")
-    if beneish and beneish["available"] and beneish["value"] is not None and beneish["value"] > -1.78:
-        note = f" ({beneish['note']})" if beneish.get("note") else ""
+    if (beneish and beneish["available"] and beneish["value"] is not None
+            and not beneish.get("note") and beneish["value"] > -1.78):
         flags.append(_finding(
             "margin_pressure", "Earnings quality",
             "Beneish M-score signals elevated manipulation likelihood",
             f"{target.name}'s Beneish M-score is {beneish['value']:.2f} (FY{year}), above the -1.78 threshold — "
             f"elevated earnings-manipulation likelihood. This is a statistical screen, not proof; it flags "
-            f"accrual, receivable and margin dynamics for closer review.{note}",
+            "accrual, receivable and margin dynamics for closer review.",
             "medium", 6, 0.75,
             "Reconcile revenue recognition, receivables growth and accruals against cash collections and disclosures.",
             _evidence(target, year, f"Beneish M-score = {beneish['value']:.2f} (> -1.78).",

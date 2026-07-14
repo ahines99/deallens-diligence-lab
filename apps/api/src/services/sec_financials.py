@@ -7,6 +7,7 @@ Margins/growth are deterministic calculations over the reported values.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 
 from src.services import edgar_client
 
@@ -25,7 +26,11 @@ CASH_CONCEPTS = [
     "CashAndCashEquivalentsAtCarryingValue",
     "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents",
 ]
-DEBT_CONCEPTS = ["LongTermDebtNoncurrent", "LongTermDebt", "DebtLongtermAndShorttermCombinedAmount"]
+DEBT_CONCEPTS = [
+    "DebtLongtermAndShorttermCombinedAmount",
+    "LongTermDebt",
+    "LongTermDebtNoncurrent",
+]
 ASSETS_CONCEPTS = ["Assets"]
 
 
@@ -36,6 +41,27 @@ class Point:
     accession: str
     form: str
     concept: str
+    frame: str
+    fy: str
+
+
+_FRAME_YEAR = re.compile(r"^CY(\d{4})")
+
+
+def _period_year(point: dict) -> str:
+    """Return the fiscal label carried by an annual duration frame when available.
+
+    This matters for 52/53-week issuers whose FY2024 can end in early January 2025. Instant facts
+    are aligned separately to the duration fact's exact period end; their calendar-quarter frame is
+    not assumed to represent the issuer's fiscal year.
+    """
+    fiscal_year = str(point.get("fy") or "").strip()
+    if re.fullmatch(r"\d{4}", fiscal_year):
+        return fiscal_year
+    match = _FRAME_YEAR.match(point.get("frame", ""))
+    if match:
+        return match.group(1)
+    return point.get("end", "")[:4]
 
 
 def _point(pt: dict, concept: str) -> Point:
@@ -45,6 +71,8 @@ def _point(pt: dict, concept: str) -> Point:
         accession=pt.get("accn", ""),
         form=pt.get("form", ""),
         concept=concept,
+        frame=pt.get("frame", ""),
+        fy=str(pt.get("fy") or ""),
     )
 
 
@@ -55,14 +83,32 @@ def _latest(facts: dict, concepts: list[str], instant: bool = False) -> Point | 
     return _point(pts[-1], concept)
 
 
+def _for_period(
+    facts: dict,
+    concepts: list[str],
+    period_year: str,
+    instant: bool = False,
+    period_end: str | None = None,
+) -> Point | None:
+    """Return a fact only when it belongs to the requested annual reporting period."""
+    concept, points = edgar_client.pick_concept(facts, concepts, instant=instant)
+    if not concept:
+        return None
+    if instant and period_end:
+        exact = [point for point in points if point.get("end") == period_end]
+        return _point(exact[-1], concept) if exact else None
+    matches = [point for point in points if _period_year(point) == period_year]
+    return _point(matches[-1], concept) if matches else None
+
+
 def _latest_two(facts: dict, concepts: list[str]) -> tuple[Point | None, Point | None]:
     concept, pts = edgar_client.pick_concept(facts, concepts, instant=False)
     if not concept or not pts:
         return None, None
-    # De-duplicate by fiscal-year end, keep chronological.
+    # De-duplicate by the SEC annual frame, not the raw calendar end year.
     by_end: dict[str, dict] = {}
     for p in pts:
-        by_end[p["end"][:4]] = p
+        by_end[_period_year(p)] = p
     ordered = [by_end[k] for k in sorted(by_end)]
     latest = _point(ordered[-1], concept) if ordered else None
     prior = _point(ordered[-2], concept) if len(ordered) >= 2 else None
@@ -72,15 +118,41 @@ def _latest_two(facts: dict, concepts: list[str]) -> tuple[Point | None, Point |
 def _ratio(num: Point | None, den: Point | None) -> float | None:
     if not num or not den or not den.value:
         return None
+    if num.fy and den.fy and num.fy != den.fy:
+        return None
+    if num.frame and den.frame and _FRAME_YEAR.match(num.frame) and _FRAME_YEAR.match(den.frame):
+        if _FRAME_YEAR.match(num.frame).group(1) != _FRAME_YEAR.match(den.frame).group(1):
+            return None
     return round(num.value / den.value, 4)
 
 
 def _annual_by_year(
-    facts: dict, concepts: list[str], instant: bool = False, unit: str = "USD"
+    facts: dict,
+    concepts: list[str],
+    instant: bool = False,
+    unit: str = "USD",
+    duration_periods: dict[str, str] | None = None,
 ) -> dict[str, float]:
     """Map fiscal-year (YYYY) -> value for the first concept with annual data."""
     _, pts = edgar_client.pick_concept(facts, concepts, instant=instant, unit=unit)
-    return {p["end"][:4]: float(p["val"]) for p in pts}
+    if instant and duration_periods is not None:
+        return {
+            duration_periods[p["end"]]: float(p["val"])
+            for p in pts
+            if p.get("end") in duration_periods
+        }
+    return {_period_year(p): float(p["val"]) for p in pts}
+
+
+def _duration_periods(facts: dict) -> dict[str, str]:
+    """Map exact annual duration end dates to the fiscal labels used downstream."""
+
+    _, points = edgar_client.pick_concept(facts, REVENUE_CONCEPTS, instant=False)
+    return {
+        point["end"]: _period_year(point)
+        for point in points
+        if point.get("end")
+    }
 
 
 # --- Extended concepts for Quality-of-Earnings / forensics / valuation ------
@@ -100,8 +172,11 @@ _BAL = {
     ],
     "ppe_net": ["PropertyPlantAndEquipmentNet"],
     "ltd_current": ["LongTermDebtCurrent", "LongTermDebtAndCapitalLeaseObligationsCurrent"],
-    "short_debt": ["ShortTermBorrowings", "DebtCurrent"],
-    "ltd": ["LongTermDebtNoncurrent", "LongTermDebt"],
+    # Keep these components mutually exclusive. ``DebtCurrent`` can include current maturities,
+    # while ``LongTermDebt`` can include both current and noncurrent portions; using either as a
+    # fallback here would silently double-count the separately extracted components.
+    "short_debt": ["ShortTermBorrowings"],
+    "ltd": ["LongTermDebtNoncurrent"],
     "cash": CASH_CONCEPTS,
 }
 # Income-statement / cash-flow (duration) concepts.
@@ -140,11 +215,23 @@ def extract_forensic_inputs(facts: dict, n: int = 6) -> dict:
     concept isn't tagged for that year (notably D&A) — downstream math must degrade gracefully.
     """
     maps: dict[str, dict[str, float]] = {}
+    duration_periods = _duration_periods(facts)
     for key, concepts in _BAL.items():
-        maps[key] = _annual_by_year(facts, concepts, instant=True)
+        maps[key] = _annual_by_year(
+            facts,
+            concepts,
+            instant=True,
+            duration_periods=duration_periods,
+        )
     for key, concepts in _FLOW.items():
         maps[key] = _annual_by_year(facts, concepts, instant=False)
-    maps["shares_out"] = _annual_by_year(facts, _SHARES_INSTANT, instant=True, unit="shares")
+    maps["shares_out"] = _annual_by_year(
+        facts,
+        _SHARES_INSTANT,
+        instant=True,
+        unit="shares",
+        duration_periods=duration_periods,
+    )
     maps["shares_diluted"] = _annual_by_year(facts, _SHARES_DILUTED, instant=False, unit="shares")
 
     year_set: set[str] = set()
@@ -199,10 +286,15 @@ def extract_trends(facts: dict, n: int = 5) -> dict:
 def extract_financials(facts: dict) -> dict:
     """Return a dict of real financials with source points, or Nones where unavailable."""
     revenue, revenue_prior = _latest_two(facts, REVENUE_CONCEPTS)
+    period_year = (
+        _period_year({"fy": revenue.fy, "frame": revenue.frame, "end": revenue.end})
+        if revenue
+        else ""
+    )
 
-    gross_profit = _latest(facts, GROSS_PROFIT_CONCEPTS)
+    gross_profit = _for_period(facts, GROSS_PROFIT_CONCEPTS, period_year)
     if gross_profit is None and revenue is not None:
-        cost = _latest(facts, COST_OF_REVENUE_CONCEPTS)
+        cost = _for_period(facts, COST_OF_REVENUE_CONCEPTS, period_year)
         if cost is not None and cost.end == revenue.end:
             gross_profit = Point(
                 value=revenue.value - cost.value,
@@ -210,14 +302,23 @@ def extract_financials(facts: dict) -> dict:
                 accession=cost.accession,
                 form=cost.form,
                 concept=f"{revenue.concept} - {cost.concept}",
+                frame=revenue.frame,
+                fy=revenue.fy,
             )
 
-    operating_income = _latest(facts, OPERATING_INCOME_CONCEPTS)
-    net_income = _latest(facts, NET_INCOME_CONCEPTS)
-    rnd = _latest(facts, RND_CONCEPTS)
-    cash = _latest(facts, CASH_CONCEPTS, instant=True)
-    debt = _latest(facts, DEBT_CONCEPTS, instant=True)
-    assets = _latest(facts, ASSETS_CONCEPTS, instant=True)
+    operating_income = _for_period(facts, OPERATING_INCOME_CONCEPTS, period_year)
+    net_income = _for_period(facts, NET_INCOME_CONCEPTS, period_year)
+    rnd = _for_period(facts, RND_CONCEPTS, period_year)
+    period_end = revenue.end if revenue else None
+    cash = _for_period(
+        facts, CASH_CONCEPTS, period_year, instant=True, period_end=period_end
+    )
+    debt = _for_period(
+        facts, DEBT_CONCEPTS, period_year, instant=True, period_end=period_end
+    )
+    assets = _for_period(
+        facts, ASSETS_CONCEPTS, period_year, instant=True, period_end=period_end
+    )
 
     revenue_growth = None
     if revenue and revenue_prior and revenue_prior.value:
@@ -237,6 +338,8 @@ def extract_financials(facts: dict) -> dict:
             "accession": p.accession,
             "form": p.form,
             "concept": p.concept,
+            "frame": p.frame,
+            "fy": p.fy,
         }
 
     return {

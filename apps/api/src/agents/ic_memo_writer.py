@@ -37,7 +37,6 @@ class ICMemoWriter(BaseAgent):
         findings = ctx["findings"]
         bench = ctx.get("benchmark")
         iq = ctx.get("investment_question") or ""
-        filing = ctx.get("filing") or {}
 
         top = sorted(findings, key=lambda f: f["severity_score"], reverse=True)[:6]
         high = [f for f in findings if f["severity"] in ("high", "critical")]

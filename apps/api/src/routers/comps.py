@@ -15,9 +15,9 @@ router = APIRouter(prefix="/api/workspaces", tags=["comps"])
 def set_comps(workspace_id: str, payload: CompsRequest, session: SessionDep) -> list[CompOut]:
     get_workspace_or_404(session, workspace_id)
     if payload.comps:
-        comps = bench.add_comps(session, workspace_id, payload.comps)
+        bench.add_comps(session, workspace_id, payload.comps)
     else:
-        comps = bench.add_comps_by_ticker(session, workspace_id, payload.tickers)
+        bench.add_comps_by_ticker(session, workspace_id, payload.tickers)
     session.commit()
     # Refresh the memo/benchmark so it reflects the new peer set.
     if workspace_service.get_target(session, workspace_id) is not None:

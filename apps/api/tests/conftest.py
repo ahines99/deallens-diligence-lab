@@ -10,6 +10,9 @@ import tempfile
 _tmp = tempfile.mkdtemp().replace("\\", "/")
 os.environ["LLM_MODE"] = "mock"
 os.environ["AUTO_SEED"] = "false"
+os.environ["SCHEMA_MANAGEMENT"] = "create_all"
+os.environ["AUTH_REQUIRED"] = "false"
+os.environ["AUTH_ALLOW_REGISTRATION"] = "true"
 os.environ["DATABASE_URL"] = f"sqlite:///{_tmp}/test.sqlite3"
 os.environ.setdefault(
     "SEC_USER_AGENT", "DealLens Diligence Lab (portfolio test) contact@example.com"

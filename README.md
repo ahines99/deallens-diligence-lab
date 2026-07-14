@@ -1,12 +1,13 @@
 # DealLens Diligence Lab
 
-**A public-data AI diligence copilot for investment research, red-flag detection, and IC memo generation.**
+**A private-equity underwriting and diligence workbench with deterministic models, governed evidence,
+deal execution, and investment-committee controls.**
 
-DealLens Diligence Lab is an independent, non-commercial portfolio project that demonstrates how an
-investment team might use AI to accelerate *first-pass* diligence on a **real public company**. You enter
-a **ticker**; it resolves the company against SEC EDGAR, pulls XBRL financials and recent filings,
-extracts the latest 10-K's risk factors, surfaces risks and red flags, benchmarks against real public
-peers, generates diligence questions, drafts an investment committee (IC) memo, and red-teams the thesis
+DealLens Diligence Lab is an independent, non-commercial portfolio project demonstrating an end-to-end
+investment workflow for private and public targets. Teams can import management financials and deal-room
+documents, build versioned cases, run an institutional LBO/debt/covenant model, execute diligence, review
+cited claims, and freeze the exact evidence/model snapshot presented to investment committee. Public
+targets can additionally ingest live SEC EDGAR filings and XBRL facts
 — while keeping **every material claim source-grounded, traceable, and reviewable by a human**.
 
 > The point is not to automate investment judgment. The point is to show how AI can accelerate the
@@ -22,7 +23,7 @@ SEC EDGAR). It is not affiliated with, endorsed by, or sponsored by any investme
 firm, public company, data vendor, or AI platform vendor. Outputs are AI-assisted, deterministic drafts
 for educational and demonstration purposes only, are **not investment advice**, and should not be used to
 make investment decisions. Qualitative risk severities are heuristic and require human validation;
-market/valuation data is omitted.
+market and transaction data must be supplied by the analyst or a licensed source.
 
 ---
 
@@ -73,15 +74,22 @@ python -m venv .venv
 # Windows PowerShell: .venv\Scripts\Activate.ps1
 # macOS/Linux:        source .venv/bin/activate
 pip install -e ".[dev]"
+python -m alembic -c alembic.ini upgrade head
 export SEC_USER_AGENT="DealLens Diligence Lab (portfolio) you@example.com"   # SEC fair-access
-python -m src.seed.load_seed          # seed real demo workspaces (MSFT, CRWD) from live SEC — needs network
 uvicorn src.main:app --reload         # http://localhost:8000
 ```
 
-`load_seed` ingests each demo ticker and its peers from live SEC EDGAR and runs the full analysis; it is
-a no-op if workspaces already exist. You can also create workspaces from the UI by entering a ticker.
+On Windows PowerShell, set the SEC identity with `$env:SEC_USER_AGENT="DealLens Diligence Lab
+(portfolio) you@example.com"`. Local startup applies Alembic migrations automatically by default;
+running `python -m alembic -c alembic.ini upgrade head` explicitly is still recommended before a demo
+or deployment.
 
-**Frontend (Node 18+):**
+After registering the first owner, `python -m src.seed.load_seed` can ingest MSFT, CRWD, and their
+peers from live SEC EDGAR. It assigns the demo to the only organization automatically; when multiple
+organizations exist, set `SEED_ORGANIZATION_SLUG` first. The command is a no-op if workspaces already
+exist. You can also create workspaces from the UI by entering a ticker.
+
+**Frontend (Node 20.19+):**
 
 ```bash
 cd apps/web
@@ -91,13 +99,36 @@ npm run dev                           # http://localhost:3000
 
 Set `NEXT_PUBLIC_API_URL=http://localhost:8000` in `apps/web/.env.local` if your API is elsewhere.
 
+If PowerShell reports that `npm.ps1` cannot run because script execution is disabled, call npm's
+Windows executable directly; this does not require changing the machine execution policy:
+
+```powershell
+cd "D:\Code\Personal\Portfolio Projects\deallens-diligence-lab\apps\web"
+npm.cmd install
+$env:NEXT_PUBLIC_API_URL="http://localhost:8000"
+npm.cmd run dev
+```
+
+Open `http://localhost:3000/register` to create the first user and organization, or
+`http://localhost:3000/login` to resume an existing session. The same-origin web bridge keeps the
+opaque session token in an HttpOnly, SameSite=Strict cookie; browser storage contains only non-secret
+identity metadata. The app supports verified organization switching and logout. Authentication is
+required by default. Only set
+`AUTH_REQUIRED=false` for an explicitly isolated local demo; that mode trusts development actor
+headers and must never be exposed to another network.
+
+The first registered user bootstraps the installation even when `AUTH_ALLOW_REGISTRATION=false`.
+Keep that secure default after bootstrap; temporarily opt in only when deliberately onboarding
+additional self-registering users. Docker binds the web/API ports to localhost and does not publish
+Postgres. A real external deployment still requires TLS and a trusted reverse proxy.
+
 ### Makefile shortcuts
 
 ```bash
 make install   # install api + web deps
 make seed      # seed real demo workspaces (MSFT, CRWD) from live SEC (needs network)
-make dev       # run api + web together (needs two terminals or a process manager)
-make test      # run backend pytest suite (live SEC tests skip when EDGAR is unreachable)
+make dev       # run api + web together (GNU make launches both jobs)
+make test      # run backend pytest and frontend Vitest suites
 make up        # docker compose up --build
 make down      # docker compose down
 ```
@@ -158,6 +189,47 @@ event/signal feeds and automations. All keyless.
 - **Automations** — **filing-watch** (new filings since last analysis) with one-click **refresh** (re-ingest +
   re-analyze), and **SIC-based auto-peer** discovery for the comp set.
 
+### Institutional underwriting workbench (Wave 3A/3B)
+
+Wave 3 turns the research dashboard into a controlled PE deal system. The implementation and example
+contracts are documented in [`docs/WAVE3.md`](docs/WAVE3.md).
+
+- **Private-company data foundation** — no ticker required; immutable source snapshots; guarded CSV and
+  XLSX imports; account mapping, period/unit/currency provenance, reconciliation, and exception review.
+- **QoE adjustment ledger** — reported to management, sponsor, and covenant EBITDA, with evidence and
+  approval required before an adjustment enters the underwritten bridge.
+- **Versioned operating/LBO model** — monthly Y1–Y2 and annual Y3–Y5 cases, integrated cash/debt schedules,
+  SOFR/floors/spreads, PIK, revolver, cash sweep, covenants, XIRR/MOIC, FCFF DCF, working-capital peg,
+  valuation triangulation, sensitivities, and reverse stress.
+- **Deal execution and IC governance** — organization/fund/deal scope, stage gates, team/workstreams/tasks,
+  diligence requests, decision ledger, frozen IC packets, comments, four-eyes decisions, conditions to
+  close, diffs, audit events, and hashed PDF/DOCX/XLSX/JSON exports.
+- **Document intelligence** — immutable PDF/DOCX/XLSX/CSV/TXT versions, exact page/sheet/cell citations,
+  abstaining Q&A, schema extraction, human claim approval, contradiction/change detection, SEC filing
+  diffs, and persisted evaluation metrics.
+- **Enterprise controls** — tenant-aware workspace isolation, password authentication with revocable
+  server-side sessions and organization roles, non-destructive analysis/artifact versions, stable
+  `/api/v1` contracts, encrypted signed-webhook delivery with retry/dead-letter handling, and Alembic
+  migrations for fresh and legacy databases.
+
+### Portfolio command center and governed IC controls (live)
+
+- **Portfolio command center** (`/portfolio`) — headline KPIs, pipeline funnel, stage/fund/search filters,
+  sector and strategy exposure, IC calendar, stage aging, readiness decomposition, workload, diligence
+  SLA, conditions to close, return snapshots, downside/covenant watchlists, source health, and CSV export.
+- **Governed identity and tenancy** — registration/login/logout, expiring opaque sessions hashed at rest,
+  verified organization switching, owner/admin/member/viewer roles, tenant-scoped workspaces and document
+  downloads, and spoof-resistant actor attribution.
+- **Evidence-to-IC chain of custody** — approved document claims promote to immutable governed evidence;
+  server-assembled IC packets bind exact model, claim, document, chunk, and export-manifest hashes, with a
+  verification endpoint for detecting later tampering.
+- **Operational oversight** — a unified activity timeline, webhook delivery-health metrics and traceable
+  dead-letter replay, system/source health, financial-import dry runs, and explainable reconciliation,
+  mapping, exception, freshness, and fiscal-period diagnostics.
+- **Data-governance policy** — each workspace has a classification and explicit external-LLM consent.
+  Restricted workspaces cannot enable external processing; deterministic local generation remains the
+  default for every classification.
+
 ## Architecture
 
 | Layer            | Choice                                                              |
@@ -203,10 +275,10 @@ Market **valuation multiples are omitted** — no free source. See
 2. Facts, calculations, inferences, and assumptions are labeled distinctly.
 3. Outputs are never presented as investment advice.
 4. Citations are never fabricated — every `EV-###` cited must resolve.
-5. Missing financials are omitted, not invented; **market/valuation multiples are omitted entirely** (no
-   free source).
-6. Qualitative risk severities are heuristic (keyword-based) and flagged as requiring human validation.
+5. Missing financials are omitted, not invented; valuation multiples require analyst/licensed inputs.
+6. Filing-language signals are not treated as proof of realized exposure; human review remains required.
 7. LLMs may draft/re-voice narrative, but calculations are deterministic and auditable.
+8. Approved IC artifacts, model cases, sources, and claims retain immutable hashes and versions.
 
 ## Repository layout
 

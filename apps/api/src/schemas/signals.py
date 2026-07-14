@@ -6,6 +6,7 @@ refresh endpoint reuses WorkspaceOverview from src.schemas.workspace.
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel
 
@@ -22,6 +23,8 @@ class NewsSignals(BaseModel):
     workspace_id: str
     query: str
     articles: list[NewsArticle]
+    source_status: Literal["available", "partial", "unavailable"]
+    source_error: str | None = None
     generated_at: datetime
 
 
@@ -35,6 +38,8 @@ class NewFiling(BaseModel):
 class FilingWatch(BaseModel):
     workspace_id: str
     last_ingested_date: str | None
-    has_new: bool
+    has_new: bool | None
     new_filings: list[NewFiling]
+    source_status: Literal["available", "partial", "unavailable"]
+    source_error: str | None = None
     generated_at: datetime
