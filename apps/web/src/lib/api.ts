@@ -2,7 +2,10 @@
 // Server Components call these directly; Client Components use the same functions.
 
 import type {
+  ExampleDealResult,
+  ExampleTemplateInfo,
   Workspace,
+  WorkspaceBuildStatus,
   WorkspaceOverview,
   Target,
   Filing,
@@ -294,6 +297,14 @@ export const api = {
     investment_question?: string;
   }) => request<Workspace>("/api/workspaces", { method: "POST", body }),
   getWorkspace: (id: string) => request<WorkspaceOverview>(`/api/workspaces/${id}`),
+  getBuildStatus: (id: string) =>
+    request<WorkspaceBuildStatus>(`/api/workspaces/${id}/build-status`),
+  retryBuild: (id: string) =>
+    request<WorkspaceBuildStatus>(`/api/workspaces/${id}/build/retry`, { method: "POST" }),
+
+  loadExampleDeal: (actor: WorkflowActor = {}) =>
+    workflowRequest<ExampleDealResult>("/api/examples/private-deal", { method: "POST" }, actor),
+  listExampleTemplates: () => request<ExampleTemplateInfo[]>("/api/examples/templates"),
 
   getTarget: (id: string) => requestOrNull<Target>(`/api/workspaces/${id}/target`),
   setTarget: (id: string, body: Partial<Target>) =>

@@ -49,8 +49,28 @@ export interface Workspace {
   status: WorkspaceStatus;
   data_classification: WorkspaceDataClassification;
   external_llm_allowed: boolean;
+  build_status: WorkspaceBuildState;
+  build_step: WorkspaceBuildStep | null;
+  build_error: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export type WorkspaceBuildState = "ready" | "building" | "failed";
+
+export type WorkspaceBuildStep =
+  | "resolving_company"
+  | "fetching_financials"
+  | "indexing_filings"
+  | "fetching_annual_report"
+  | "running_analysis";
+
+export interface WorkspaceBuildStatus {
+  workspace_id: string;
+  status: WorkspaceBuildState;
+  step: WorkspaceBuildStep | null;
+  error: string | null;
+  ticker: string | null;
 }
 
 export type WorkspaceDataClassification = "public" | "internal" | "confidential" | "restricted";
@@ -267,6 +287,21 @@ export interface SecSearchResult {
   cik: string;
   ticker: string;
   name: string;
+}
+
+export interface ExampleDealResult {
+  organization_id: string;
+  fund_id: string;
+  deal_id: string;
+  workspace_id: string;
+  deal_code: string;
+  import_status: string;
+  open_exceptions: number;
+}
+
+export interface ExampleTemplateInfo {
+  name: string;
+  description: string;
 }
 
 export interface HealthStatus {

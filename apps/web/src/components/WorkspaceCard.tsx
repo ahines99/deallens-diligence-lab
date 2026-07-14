@@ -23,7 +23,13 @@ export function WorkspaceCard({ workspace }: { workspace: Workspace }) {
     >
       <div className="flex items-center justify-between gap-3">
         <Badge tone="indigo">{DEAL_TYPE_LABELS[workspace.deal_type] ?? workspace.deal_type}</Badge>
-        <Badge tone={STATUS_TONE[workspace.status]}>{STATUS_LABEL[workspace.status]}</Badge>
+        {workspace.build_status === "building" ? (
+          <Badge tone="amber">Building…</Badge>
+        ) : workspace.build_status === "failed" ? (
+          <Badge tone="red">Build failed</Badge>
+        ) : (
+          <Badge tone={STATUS_TONE[workspace.status]}>{STATUS_LABEL[workspace.status]}</Badge>
+        )}
       </div>
       <h3 className="mt-3 font-serif text-lg font-semibold leading-snug text-ink transition-colors group-hover:text-accent">
         {workspace.name}

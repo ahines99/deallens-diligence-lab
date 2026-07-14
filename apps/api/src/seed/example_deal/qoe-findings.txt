@@ -1,0 +1,25 @@
+FICTIONAL EXAMPLE — synthetic data prepared for product demonstration.
+
+QUALITY OF EARNINGS — PRELIMINARY FINDINGS — Project Meridian
+
+Reported EBITDA for fiscal year 2025 was $12.1 million per management accounts.
+
+Proposed adjustments for review
+
+1. Owner compensation normalization: the founder-CEO drew total compensation of $2.3 million
+   in fiscal 2025. Market compensation for a replacement chief executive is estimated at
+   $0.9 million, supporting a $1.4 million add-back. Verified against payroll registers.
+
+2. One-time ERP implementation: the company incurred $0.6 million of non-recurring consulting
+   and migration costs completing its ERP cutover in fiscal 2025. Invoices reviewed; the
+   project closed in November 2025 and no further spend is budgeted.
+
+3. Pricing initiative run-rate (management proposed): management proposes a $0.9 million
+   credit for a price increase announced to customers in December 2025 but not yet effective.
+   This adjustment is unverified and rests on renewal behavior that has not yet occurred.
+   Diligence should treat it as an aggressive sponsor-case item.
+
+Working capital observations
+
+Days sales outstanding rose from 58 days in fiscal 2024 to 66 days in fiscal 2025, driven by
+two large customers moving to 90-day terms. Deferred revenue grew in line with billings.

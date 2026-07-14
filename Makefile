@@ -6,7 +6,7 @@
 help:
 	@echo "DealLens Diligence Lab"
 	@echo "  make install      Install api + web dependencies"
-	@echo "  make seed         Load live-SEC demo workspaces (MSFT, CRWD) into the DB"
+	@echo "  make seed         (dev utility) Pre-ingest MSFT/CRWD demo workspaces — the UI needs no seeding"
 	@echo "  make api          Run the FastAPI backend (uvicorn, reload)"
 	@echo "  make web          Run the Next.js frontend (dev)"
 	@echo "  make dev          Run API + web development servers"

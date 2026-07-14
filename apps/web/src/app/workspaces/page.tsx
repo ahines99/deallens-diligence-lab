@@ -1,8 +1,9 @@
 import { api, ApiError } from "@/lib/serverApi";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Button } from "@/components/ui/Button";
-import { EmptyState } from "@/components/ui/EmptyState";
 import { Callout } from "@/components/ui/Callout";
+import { Card } from "@/components/ui/Card";
+import { ExampleDealButton } from "@/components/ExampleDealButton";
 import { WorkspaceCard } from "@/components/WorkspaceCard";
 import type { Workspace } from "@/lib/types";
 
@@ -37,11 +38,28 @@ export default async function WorkspacesPage() {
           ))}
         </div>
       ) : (
-        <EmptyState
-          title="No workspaces yet"
-          description="Create your first diligence workspace by entering a public-company ticker (e.g. MSFT, NVDA, CRWD) — it pulls real SEC filings and financials."
-          action={<Button href="/workspaces/new">New workspace</Button>}
-        />
+        <div className="grid gap-4 md:grid-cols-2">
+          <Card eyebrow="Public company" title="Research any SEC registrant">
+            <p className="text-sm leading-relaxed text-muted">
+              Search for a company by name or ticker and watch the workspace build itself live
+              from SEC EDGAR — filings, XBRL financials, risk findings, forensics, and a draft
+              IC memo where every material claim cites its source.
+            </p>
+            <div className="mt-4">
+              <Button href="/workspaces/new">Start with a public company</Button>
+            </div>
+          </Card>
+          <Card eyebrow="Private target" title="Walk the underwriting workflow">
+            <p className="text-sm leading-relaxed text-muted">
+              Load a fully fictional example deal — management financials, a small data room,
+              and proposed QoE adjustments — imported through the same governed pipeline. Then
+              approve the add-backs, underwrite cases, and assemble an IC packet yourself.
+            </p>
+            <div className="mt-4">
+              <ExampleDealButton variant="primary" />
+            </div>
+          </Card>
+        </div>
       )}
     </div>
   );

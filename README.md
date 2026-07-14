@@ -84,10 +84,15 @@ On Windows PowerShell, set the SEC identity with `$env:SEC_USER_AGENT="DealLens 
 running `python -m alembic -c alembic.ini upgrade head` explicitly is still recommended before a demo
 or deployment.
 
-After registering the first owner, `python -m src.seed.load_seed` can ingest MSFT, CRWD, and their
-peers from live SEC EDGAR. It assigns the demo to the only organization automatically; when multiple
-organizations exist, set `SEED_ORGANIZATION_SLUG` first. The command is a no-op if workspaces already
-exist. You can also create workspaces from the UI by entering a ticker.
+No seeding is required. After registering the first owner, create workspaces directly from the UI:
+search any public company by name or ticker (the workspace builds itself live from SEC EDGAR with
+step-by-step progress), or click **Load the example private deal** to walk the full private
+underwriting workflow on clearly labeled fictional data — imported through the same governed
+pipeline, with QoE approvals, underwriting, and IC assembly left for you to drive.
+
+(`python -m src.seed.load_seed` remains available as a dev utility that pre-ingests MSFT and CRWD;
+when multiple organizations exist, set `SEED_ORGANIZATION_SLUG` first. It is a no-op if workspaces
+already exist.)
 
 **Frontend (Node 20.19+):**
 
@@ -126,7 +131,7 @@ Postgres. A real external deployment still requires TLS and a trusted reverse pr
 
 ```bash
 make install   # install api + web deps
-make seed      # seed real demo workspaces (MSFT, CRWD) from live SEC (needs network)
+make seed      # (dev utility) pre-ingest MSFT/CRWD from live SEC — the UI needs no seeding
 make dev       # run api + web together (GNU make launches both jobs)
 make test      # run backend pytest and frontend Vitest suites
 make up        # docker compose up --build

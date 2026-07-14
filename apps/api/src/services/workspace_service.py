@@ -1,6 +1,8 @@
 """Workspace lifecycle: create (optionally ingesting a real ticker), read, and overview."""
 from __future__ import annotations
 
+import logging
+
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -22,13 +24,22 @@ from src.schemas.workspace import WorkspaceCreate
 from src.services import edgar_client, sec_ingestion_service
 from src.services.common import NotFound
 
+logger = logging.getLogger("deallens.workspace")
+
 
 def create_workspace(
     session: Session,
     data: WorkspaceCreate,
     *,
     organization_id: str | None = None,
+    defer_build: bool = False,
 ) -> Workspace:
+    """Create a workspace, optionally ingesting a public ticker.
+
+    With ``defer_build=True`` the workspace is returned immediately in a ``building``
+    state and the caller is responsible for scheduling ``run_build`` (the API path).
+    The default remains fully synchronous for seeds, scripts, and direct service use.
+    """
     ticker = (data.ticker or "").strip().upper()
     name = data.name.strip()
     investment_question = data.investment_question.strip()
@@ -51,20 +62,97 @@ def create_workspace(
         deal_type=data.deal_type,
         investment_question=investment_question,
         status="draft",
+        build_status="building" if ticker else "ready",
+        build_ticker=ticker or None,
     )
     session.add(ws)
-    session.flush()
-
-    if ticker:
-        from src.services import analysis_service
-
-        sec_ingestion_service.ingest_company(session, ws.id, ticker)
-        session.commit()
-        analysis_service.run_full_analysis(session, ws.id)
-
     session.commit()
+
+    if ticker and not defer_build:
+        run_build(session, ws.id)
+        if session.scalar(
+            select(Workspace.build_status).where(Workspace.id == ws.id)
+        ) == "failed":
+            error = session.scalar(
+                select(Workspace.build_error).where(Workspace.id == ws.id)
+            )
+            raise edgar_client.EdgarError(error or f"Ingestion failed for {ticker}")
+
     session.refresh(ws)
     return ws
+
+
+def get_build_status(session: Session, workspace_id: str) -> dict:
+    ws = session.get(Workspace, workspace_id)
+    if ws is None:
+        raise NotFound(f"Workspace '{workspace_id}' not found")
+    return {
+        "workspace_id": ws.id,
+        "status": ws.build_status,
+        "step": ws.build_step,
+        "error": ws.build_error,
+        "ticker": ws.build_ticker,
+    }
+
+
+def retry_build(session: Session, workspace_id: str) -> dict:
+    """Re-arm a failed build so the caller can schedule ``run_build`` again."""
+    ws = session.get(Workspace, workspace_id)
+    if ws is None:
+        raise NotFound(f"Workspace '{workspace_id}' not found")
+    if ws.build_status != "failed":
+        raise ValueError(f"Workspace build is '{ws.build_status}', not 'failed'; nothing to retry")
+    if not ws.build_ticker:
+        raise ValueError("Workspace has no ticker to rebuild from")
+    ws.build_status = "building"
+    ws.build_step = None
+    ws.build_error = None
+    session.commit()
+    return get_build_status(session, workspace_id)
+
+
+def run_build(session: Session, workspace_id: str) -> None:
+    """Run the full ticker ingest + analysis, recording per-step progress on the workspace.
+
+    Never raises: failures are recorded as ``build_status='failed'`` with the error message,
+    since this usually executes outside a request (background task) with no caller to catch.
+    """
+    ws = session.get(Workspace, workspace_id)
+    if ws is None or not ws.build_ticker:
+        return
+    ticker = ws.build_ticker
+
+    def progress(step: str) -> None:
+        # Committing at step boundaries makes progress visible to concurrent status polls
+        # (ingestion is idempotent, so a partially committed build is safe to re-run).
+        ws.build_step = step
+        session.commit()
+
+    try:
+        from src.services import analysis_service
+
+        sec_ingestion_service.ingest_company(session, workspace_id, ticker, progress=progress)
+        session.commit()
+        progress("running_analysis")
+        analysis_service.run_full_analysis(session, workspace_id)
+        ws.build_status = "ready"
+        ws.build_step = None
+        ws.build_error = None
+        session.commit()
+    except Exception as exc:  # noqa: BLE001 — every failure must land in build_status
+        logger.exception("Workspace %s build failed during %s", workspace_id, ws.build_step)
+        session.rollback()
+        ws.build_status = "failed"
+        ws.build_error = str(exc) or exc.__class__.__name__
+        session.commit()
+
+
+def run_build_in_new_session(workspace_id: str) -> None:
+    """Background-task entry point: builds with a session independent of the request's."""
+    from src.db.session import SessionLocal
+
+    with SessionLocal() as session:
+        run_build(session, workspace_id)
 
 
 def list_workspaces(session: Session, organization_id: str | None = None) -> list[Workspace]:

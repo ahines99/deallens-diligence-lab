@@ -30,3 +30,11 @@ class Workspace(UUIDMixin, TimestampMixin, Base):
         String(30), nullable=False, default="confidential"
     )
     external_llm_allowed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Live-ingestion build state: ready | building | failed. `build_ticker` retains the
+    # requested ticker so a failed build can be retried before a Target row exists.
+    build_status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="ready", server_default="ready"
+    )
+    build_step: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    build_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    build_ticker: Mapped[str | None] = mapped_column(String(20), nullable=True)

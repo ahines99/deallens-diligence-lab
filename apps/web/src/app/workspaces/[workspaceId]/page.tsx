@@ -7,6 +7,7 @@ import { Card } from "@/components/ui/Card";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { DataTable } from "@/components/ui/Table";
 import { EmptyPanel, Metric, MetricStrip } from "@/components/workbench/Primitives";
+import { WorkspaceBuildProgress } from "@/components/WorkspaceBuildProgress";
 import { formatDate, titleCase } from "@/lib/formatting";
 
 const money = (value: number | string | null, currency = "USD") =>
@@ -39,6 +40,28 @@ export default async function WorkspaceCockpit({ params }: { params: Promise<{ w
   } catch (error) {
     if (error instanceof ApiError && error.status === 404) notFound();
     return <Callout tone="warning" title="Cannot reach the API">{error instanceof ApiError ? error.message : "Failed to load workspace."}</Callout>;
+  }
+
+  if (overview.workspace.build_status !== "ready") {
+    return (
+      <div className="mx-auto max-w-3xl space-y-6">
+        <PageHeader
+          eyebrow="Deal cockpit"
+          title={overview.workspace.name}
+          subtitle={overview.workspace.investment_question}
+        />
+        <WorkspaceBuildProgress
+          workspaceId={id}
+          initial={{
+            workspace_id: id,
+            status: overview.workspace.build_status,
+            step: overview.workspace.build_step,
+            error: overview.workspace.build_error,
+            ticker: overview.target?.ticker ?? null,
+          }}
+        />
+      </div>
+    );
   }
 
   const [sourcesResult, bridgeResult, casesResult, dealResult] = await Promise.allSettled([

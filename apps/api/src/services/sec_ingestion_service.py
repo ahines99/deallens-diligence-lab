@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Callable
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -30,18 +31,34 @@ def search(query: str) -> list[dict]:
         return []
 
 
-def ingest_company(session: Session, workspace_id: str, ticker: str, filing_limit: int = DEFAULT_FILING_LIMIT) -> Target:
-    """Resolve a ticker and populate the workspace's Target, filings, and 10-K chunks from EDGAR."""
+def ingest_company(
+    session: Session,
+    workspace_id: str,
+    ticker: str,
+    filing_limit: int = DEFAULT_FILING_LIMIT,
+    progress: Callable[[str], None] | None = None,
+) -> Target:
+    """Resolve a ticker and populate the workspace's Target, filings, and 10-K chunks from EDGAR.
+
+    ``progress`` (optional) is invoked with a step key before each network-bound stage so
+    long-running builds can surface live status.
+    """
     ws = session.get(Workspace, workspace_id)
     if ws is None:
         raise NotFound(f"Workspace '{workspace_id}' not found")
 
+    def report(step: str) -> None:
+        if progress is not None:
+            progress(step)
+
+    report("resolving_company")
     info = edgar_client.resolve_ticker(ticker)
     cik = info["cik"]
     name = info["name"]
     submissions = edgar_client.get_submissions(cik)
     sector = submissions.get("sicDescription") or ""
 
+    report("fetching_financials")
     try:
         facts = edgar_client.get_company_facts(cik)
         fin = sec_financials.extract_financials(facts)
@@ -52,6 +69,7 @@ def ingest_company(session: Session, workspace_id: str, ticker: str, filing_limi
         fin = {}
 
     # --- Filings (metadata) ---
+    report("indexing_filings")
     metas = edgar_client.recent_filings(cik, FILING_FORMS, filing_limit)
     existing_filings = list(
         session.scalars(select(Filing).where(Filing.workspace_id == workspace_id))
@@ -125,6 +143,7 @@ def ingest_company(session: Session, workspace_id: str, ticker: str, filing_limi
     session.flush()
 
     # --- 10-K sections -> chunks (for risk extraction / retrieval) ---
+    report("fetching_annual_report")
     business_text = ""
     if tenk_filing is None:
         latest = edgar_client.recent_filings(cik, ("10-K",), 1)

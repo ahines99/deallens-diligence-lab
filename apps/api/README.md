@@ -8,10 +8,13 @@ python -m venv .venv
 # Windows: .venv\Scripts\Activate.ps1  |  Unix: source .venv/bin/activate
 pip install -e ".[dev]"
 alembic upgrade head             # apply database migrations
-python -m src.seed.load_seed     # seed live-SEC demo workspaces (MSFT, CRWD; optional, needs network)
 uvicorn src.main:app --reload    # http://localhost:8000/docs
 pytest                           # run the test suite (live SEC tests skip when offline)
 ```
+
+No seeding is required: workspaces are created interactively (any public ticker builds live from
+SEC EDGAR; `POST /api/examples/private-deal` loads the fictional example private deal).
+`python -m src.seed.load_seed` remains a dev utility that pre-ingests MSFT/CRWD.
 
 Key env vars (see root `.env.example`): `SEC_USER_AGENT` (required for live SEC ingest),
 `LLM_MODE` (default `mock`), `DATABASE_URL` (default SQLite), `AUTH_REQUIRED` (default true),

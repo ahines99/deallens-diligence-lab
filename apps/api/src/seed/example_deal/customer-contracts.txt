@@ -1,0 +1,24 @@
+FICTIONAL EXAMPLE — synthetic data prepared for product demonstration.
+
+TOP CUSTOMER CONTRACT SUMMARY — Project Meridian
+
+Customer concentration
+
+The ten largest customers represented 41 percent of fiscal year 2025 revenue. The largest
+customer, a diversified industrial group, represented 11.5 percent of revenue and renews in
+March 2027. The second largest customer represented 7.2 percent of revenue and is currently
+in a renewal negotiation that management expects to close at a 4 percent price increase.
+
+Contract terms
+
+Standard subscription agreements run 36 months with annual advance billing and a 90-day
+termination notice after the initial term. Fourteen contracts, representing 9 percent of
+revenue, contain change-of-control consent clauses that require customer notification or
+consent on a sale of the company. Three contracts representing 3.1 percent of revenue
+include most-favored-nation pricing provisions.
+
+Churn history
+
+Gross revenue churn was 6.8 percent in fiscal 2025 and 7.4 percent in fiscal 2024. Net
+revenue retention was 104 percent in fiscal 2025, driven primarily by seat expansion in
+existing accounts rather than price increases.

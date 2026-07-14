@@ -1,0 +1,14 @@
+account,canonical_account,statement,period_end,period_type,value,scale,currency
+Total revenue,revenue,income_statement,2024-12-31,year,54.2,millions,USD
+Total revenue,revenue,income_statement,2025-12-31,year,61.8,millions,USD
+Gross profit,gross_profit,income_statement,2024-12-31,year,38.5,millions,USD
+Gross profit,gross_profit,income_statement,2025-12-31,year,44.7,millions,USD
+Reported EBITDA,ebitda,income_statement,2024-12-31,year,9.6,millions,USD
+Reported EBITDA,ebitda,income_statement,2025-12-31,year,12.1,millions,USD
+Net income,net_income,income_statement,2024-12-31,year,4.1,millions,USD
+Net income,net_income,income_statement,2025-12-31,year,5.9,millions,USD
+Cash and equivalents,cash_and_equivalents,balance_sheet,2025-12-31,instant,6.4,millions,USD
+Accounts receivable,accounts_receivable,balance_sheet,2025-12-31,instant,11.2,millions,USD
+Total assets,total_assets,balance_sheet,2025-12-31,instant,48.0,millions,USD
+Total debt,total_debt,balance_sheet,2025-12-31,instant,18.0,millions,USD
+Total liabilities and equity,total_liabilities_and_equity,balance_sheet,2025-12-31,instant,48.0,millions,USD

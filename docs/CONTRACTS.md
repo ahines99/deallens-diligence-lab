@@ -128,9 +128,14 @@ Base URL: `NEXT_PUBLIC_API_URL` (default `http://localhost:8000`). All app route
 | Method | Path | Body → Returns |
 |---|---|---|
 | GET  | `/api/health` | → `{ "status":"ok","llm_mode","database" }` |
-| POST | `/api/workspaces` | `{ticker?,name?,deal_type,investment_question?}` → `Workspace` (a `ticker` triggers real SEC ingestion + full analysis; unknown ticker → 404, network failure → 502) |
-| GET  | `/api/workspaces` | → `Workspace[]` |
+| POST | `/api/workspaces` | `{ticker?,name?,deal_type,investment_question?}` → `Workspace` (a `ticker` resolves synchronously — unknown ticker → 404 — then ingestion + analysis run in the background; poll `build-status`) |
+| GET  | `/api/workspaces/{id}/build-status` | → `{workspace_id,status:"ready"\|"building"\|"failed",step,error,ticker}` |
+| POST | `/api/workspaces/{id}/build/retry` | re-arms a `failed` build and re-runs it (409 unless failed) |
+| GET  | `/api/workspaces` | → `Workspace[]` (each carries `build_status`/`build_step`/`build_error`) |
 | GET  | `/api/workspaces/{id}` | → `WorkspaceOverview` |
+| POST | `/api/examples/private-deal` | → `{organization_id,fund_id,deal_id,workspace_id,deal_code,import_status,open_exceptions}` (loads the bundled fictional private deal through the real import/governance pipeline; QoE adjustments stay `proposed`) |
+| GET  | `/api/examples/templates` | → `[{name,description}]` |
+| GET  | `/api/examples/templates/{name}` | → file download (financials CSV + example data-room documents) |
 | GET  | `/api/workspaces/{id}/target` | → `Target` (404 if none) |
 | POST | `/api/workspaces/{id}/target` | `Target`-create fields → `Target` |
 | GET  | `/api/sec/search?q=` | → `[{ "cik","ticker","name" }]` (EDGAR company search; mock fixtures offline) |

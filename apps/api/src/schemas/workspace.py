@@ -28,8 +28,19 @@ class WorkspaceOut(ORMModel):
     status: str
     data_classification: str
     external_llm_allowed: bool
+    build_status: str = "ready"
+    build_step: str | None = None
+    build_error: str | None = None
     created_at: datetime
     updated_at: datetime
+
+
+class WorkspaceBuildStatus(BaseModel):
+    workspace_id: str
+    status: str
+    step: str | None = None
+    error: str | None = None
+    ticker: str | None = None
 
 
 class WorkspaceCounts(BaseModel):
