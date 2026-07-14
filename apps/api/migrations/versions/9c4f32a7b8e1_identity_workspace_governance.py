@@ -6,6 +6,7 @@ Create Date: 2026-07-13 12:00:00
 """
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Sequence
 
 from alembic import op
@@ -17,8 +18,29 @@ down_revision: str | Sequence[str] | None = "0fcfabe85d5e"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
+# PostgreSQL rejects identifiers longer than 63 characters (NAMEDATALEN - 1), so every
+# generated constraint name — explicit or convention-derived during SQLite batch
+# rebuilds — is capped deterministically with a hash suffix.
+_MAX_IDENTIFIER_LENGTH = 63
+
+
+def _fk_constraint_name(table_name: str, column_name: str, referred_table: str) -> str:
+    name = f"fk_{table_name}_{column_name}_{referred_table}"
+    if len(name) <= _MAX_IDENTIFIER_LENGTH:
+        return name
+    digest = hashlib.sha256(name.encode("utf-8")).hexdigest()[:8]
+    return f"{name[: _MAX_IDENTIFIER_LENGTH - 9]}_{digest}"
+
+
+def _fk_convention_name(constraint, table) -> str:
+    column_name = next(iter(constraint.columns)).name
+    referred_table = constraint.elements[0].target_fullname.split(".")[0]
+    return _fk_constraint_name(table.name, column_name, referred_table)
+
+
 _FK_NAMING = {
-    "fk": "fk_%(table_name)s_%(column_0_name)s_%(referred_table_name)s",
+    "deallens_fk": _fk_convention_name,
+    "fk": "%(deallens_fk)s",
 }
 
 
@@ -83,8 +105,12 @@ def _replace_foreign_key(
     )
     if foreign_key is None:
         raise RuntimeError(f"Expected foreign key {table_name}.{column_name} was not found")
-    existing_name = foreign_key["name"] or f"fk_{table_name}_{column_name}_{referred_table}"
-    target_name = f"fk_{table_name}_{column_name}_{referred_table}"
+    # Unnamed constraints resolve through _FK_NAMING during the batch rebuild, so the
+    # drop name must match the same capped convention.
+    existing_name = foreign_key["name"] or _fk_constraint_name(
+        table_name, column_name, referred_table
+    )
+    target_name = _fk_constraint_name(table_name, column_name, referred_table)
     with op.batch_alter_table(
         table_name,
         schema=None,

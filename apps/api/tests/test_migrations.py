@@ -5,7 +5,7 @@ from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, inspect, select
 from sqlalchemy.orm import Session
 
 from src.config import settings
@@ -59,3 +59,37 @@ def test_legacy_linked_workspace_ownership_is_backfilled(tmp_path, monkeypatch):
         )
     verify_engine.dispose()
     assert owner_id == organization_id
+
+
+def test_migrated_schema_identifiers_fit_postgres_limit(tmp_path, monkeypatch):
+    """PostgreSQL rejects identifiers over 63 chars; SQLite silently accepts them, so a
+    blank-database upgrade is inspected here to keep the Docker/Postgres path deployable."""
+    database_path = tmp_path / "identifier-length.sqlite3"
+    database_url = f"sqlite:///{database_path.as_posix()}"
+    monkeypatch.setattr(settings, "database_url", database_url)
+
+    api_root = Path(__file__).parents[1]
+    config = Config(str(api_root / "alembic.ini"))
+    config.set_main_option("script_location", str(api_root / "migrations"))
+    command.upgrade(config, "head")
+
+    engine = create_engine(database_url)
+    inspector = inspect(engine)
+    oversized: list[str] = []
+    for table_name in inspector.get_table_names():
+        names = [table_name]
+        names.extend(column["name"] for column in inspector.get_columns(table_name))
+        names.extend(
+            index["name"] for index in inspector.get_indexes(table_name) if index["name"]
+        )
+        names.extend(
+            fk["name"] for fk in inspector.get_foreign_keys(table_name) if fk["name"]
+        )
+        names.extend(
+            constraint["name"]
+            for constraint in inspector.get_unique_constraints(table_name)
+            if constraint["name"]
+        )
+        oversized.extend(name for name in names if len(name) > 63)
+    engine.dispose()
+    assert not oversized, f"identifiers exceed PostgreSQL's 63-char limit: {oversized}"
