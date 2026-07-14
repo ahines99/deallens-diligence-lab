@@ -8,10 +8,13 @@ All network access is centralized here so services stay testable.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import time
 from dataclasses import dataclass
 from functools import lru_cache
+from pathlib import Path
 
 import httpx
 
@@ -23,6 +26,11 @@ COMPANY_FACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik10}.json"
 ARCHIVES = "https://www.sec.gov/Archives/edgar/data/{cik}/{acc}/{doc}"
 
 _MAX_DOC_BYTES = 8_000_000
+
+# Optional on-disk response cache (apps/api/data/cache, gitignored). Off by default so
+# research always sees live EDGAR; demo deployments set EDGAR_CACHE_TTL_SECONDS so repeat
+# visitors don't re-download the same filings and the SEC fair-access budget is respected.
+_CACHE_DIR = Path(__file__).resolve().parents[2] / "data" / "cache"
 
 
 class EdgarError(Exception):
@@ -37,14 +45,44 @@ def _client() -> httpx.Client:
     return httpx.Client(timeout=30, headers=_headers(), follow_redirects=True)
 
 
+def _cache_read(url: str, kind: str) -> str | None:
+    ttl = settings.edgar_cache_ttl_seconds
+    if ttl <= 0:
+        return None
+    path = _CACHE_DIR / f"{kind}-{hashlib.sha256(url.encode('utf-8')).hexdigest()}.cache"
+    try:
+        if path.exists() and (time.time() - path.stat().st_mtime) < ttl:
+            return path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    return None
+
+
+def _cache_write(url: str, kind: str, payload: str) -> None:
+    if settings.edgar_cache_ttl_seconds <= 0:
+        return
+    try:
+        _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        path = _CACHE_DIR / f"{kind}-{hashlib.sha256(url.encode('utf-8')).hexdigest()}.cache"
+        path.write_text(payload, encoding="utf-8")
+    except OSError:
+        # Caching is best-effort; a full disk must never break live research.
+        pass
+
+
 def _get_json(url: str) -> dict:
+    cached = _cache_read(url, "json")
+    if cached is not None:
+        return json.loads(cached)
     try:
         with _client() as c:
             resp = c.get(url)
             resp.raise_for_status()
-            return resp.json()
+            payload = resp.json()
     except httpx.HTTPError as exc:
         raise EdgarError(f"EDGAR request failed for {url}: {exc}") from exc
+    _cache_write(url, "json", json.dumps(payload))
+    return payload
 
 
 # --- Ticker -> CIK --------------------------------------------------------
@@ -211,6 +249,9 @@ def pick_concept(
 def fetch_document_text(url: str) -> str:
     if not url:
         return ""
+    cached_text = _cache_read(url, "doc")
+    if cached_text is not None:
+        return cached_text
     try:
         with _client() as c:
             resp = c.get(url)
@@ -229,6 +270,7 @@ def fetch_document_text(url: str) -> str:
     # Normalize non-breaking spaces and collapse whitespace.
     text = text.replace("\xa0", " ").replace("​", "")
     text = re.sub(r"\s+", " ", text).strip()
+    _cache_write(url, "doc", text)
     return text
 
 

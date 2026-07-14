@@ -8,6 +8,7 @@ import { AuthShell } from "@/components/auth/AuthShell";
 import { useAuth } from "@/components/auth/AuthContext";
 import { Button } from "@/components/ui/Button";
 import { Field, TextInput } from "@/components/workbench/Primitives";
+import { api } from "@/lib/api";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -15,10 +16,34 @@ export default function LoginPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [organizationId, setOrganizationId] = useState("");
+  const [demoAvailable, setDemoAvailable] = useState(false);
 
   useEffect(() => {
     if (auth.status === "authenticated") router.replace("/portfolio");
   }, [auth.status, router]);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .health()
+      .then((health) => {
+        if (!cancelled) setDemoAvailable(health.demo_mode === true);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  async function tryDemo() {
+    auth.clearError();
+    try {
+      await auth.startDemo();
+      router.replace("/workspaces");
+    } catch {
+      // The context surfaces the error detail.
+    }
+  }
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -51,6 +76,17 @@ export default function LoginPage() {
         </details>
         {auth.error && <div role="alert" className="rounded border border-[#e5c9c3] bg-[#fbf1ef] px-3 py-2.5 text-xs leading-relaxed text-negative">{auth.error}</div>}
         <Button type="submit" disabled={auth.busy || auth.status === "loading"} className="w-full">{auth.busy ? "Signing in…" : "Sign in"}</Button>
+        {demoAvailable && (
+          <Button
+            type="button"
+            variant="secondary"
+            className="w-full"
+            disabled={auth.busy || auth.status === "loading"}
+            onClick={tryDemo}
+          >
+            Try the demo — no account needed
+          </Button>
+        )}
         <p className="text-center text-2xs leading-relaxed text-faint">The opaque session is held in a same-origin HttpOnly cookie and expires automatically; no bearer is stored in page-accessible storage.</p>
       </form>
     </AuthShell>

@@ -28,6 +28,7 @@ interface AuthContextValue {
   busy: boolean;
   error: string | null;
   login: (input: LoginInput) => Promise<BrowserAuthSession>;
+  startDemo: () => Promise<BrowserAuthSession>;
   register: (input: RegistrationInput) => Promise<BrowserAuthSession>;
   logout: () => Promise<void>;
   switchOrganization: (organizationId: string) => Promise<BrowserAuthSession>;
@@ -118,6 +119,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [resolveCurrentOrganization]);
 
+  const startDemo = useCallback(async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const next = await api.startDemoSession();
+      await installServerAuthSession(next);
+      const browserSession = saveAuthSession(next);
+      setSession(browserSession);
+      setStatus("authenticated");
+      setOrganizationNames((names) => ({
+        ...names,
+        [browserSession.principal.organization_id]: "Demo Sandbox",
+      }));
+      return browserSession;
+    } catch (caught) {
+      const detail = message(caught, "Could not start a demo session.");
+      setError(detail);
+      throw caught;
+    } finally {
+      setBusy(false);
+    }
+  }, []);
+
   const register = useCallback(async (input: RegistrationInput) => {
     setBusy(true);
     setError(null);
@@ -185,13 +209,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     busy,
     error,
     login,
+    startDemo,
     register,
     logout,
     switchOrganization,
     organizationLabel: (organizationId) => organizationNames[organizationId]
       ?? `Organization …${organizationId.slice(-6)}`,
     clearError: () => setError(null),
-  }), [busy, error, login, logout, organizationNames, register, session, status, switchOrganization]);
+  }), [busy, error, login, logout, organizationNames, register, session, startDemo, status, switchOrganization]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

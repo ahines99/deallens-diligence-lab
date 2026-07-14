@@ -93,13 +93,19 @@ _PUBLIC_PATHS = {
     "/api/health",
     "/api/auth/login",
     "/api/auth/register",
+    "/api/auth/demo",
     "/docs",
     "/openapi.json",
     "/redoc",
 }
 _SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 _VIEWER_SELF_SERVICE_PATHS = {"/api/auth/logout", "/api/auth/switch-organization"}
-_RATE_LIMITED_AUTH_PATHS = {"/api/auth/login", "/api/auth/register"}
+_RATE_LIMITED_AUTH_PATHS = {"/api/auth/login", "/api/auth/register", "/api/auth/demo"}
+# SEC-bound endpoints throttled per client IP when DEMO_MODE is on, so a public demo
+# box cannot be driven past EDGAR's fair-access guidance by one visitor.
+_DEMO_THROTTLED_BUILD_PATHS = re.compile(
+    r"^/api/(?:workspaces$|workspaces/[a-zA-Z0-9_-]+/(?:build/retry|refresh)$|sec/ingest$)"
+)
 
 
 class _AuthRateLimiter:
@@ -139,6 +145,34 @@ class _AuthRateLimiter:
 
 
 _auth_rate_limiter = _AuthRateLimiter()
+
+
+class _DemoBuildRateLimiter:
+    """Per-IP hourly cap on SEC-bound build endpoints, active only in DEMO_MODE."""
+
+    def __init__(self) -> None:
+        self._builds: dict[str, deque[float]] = defaultdict(deque)
+        self._lock = threading.Lock()
+
+    def check(self, key: str) -> int | None:
+        now = time.monotonic()
+        window = 3600.0
+        limit = max(settings.demo_builds_per_hour, 1)
+        with self._lock:
+            builds = self._builds[key]
+            while builds and builds[0] <= now - window:
+                builds.popleft()
+            if len(builds) >= limit:
+                return max(1, round(window - (now - builds[0])))
+            builds.append(now)
+            return None
+
+    def clear(self) -> None:
+        with self._lock:
+            self._builds.clear()
+
+
+_demo_build_rate_limiter = _DemoBuildRateLimiter()
 
 
 def _service_principal(request: Request, supplied: str) -> PrincipalContext | None:
@@ -181,6 +215,24 @@ async def identity_and_tenant_guard(request: Request, call_next):
             return JSONResponse(
                 status_code=429,
                 content={"detail": "Too many authentication attempts; retry later"},
+                headers={"Retry-After": str(retry_after)},
+            )
+    if (
+        settings.demo_mode
+        and request.method == "POST"
+        and _DEMO_THROTTLED_BUILD_PATHS.match(path)
+    ):
+        client_host = request.client.host if request.client else "unknown"
+        retry_after = _demo_build_rate_limiter.check(client_host)
+        if retry_after is not None:
+            return JSONResponse(
+                status_code=429,
+                content={
+                    "detail": (
+                        "Demo build limit reached for this hour; existing workspaces stay "
+                        "fully explorable while the limit resets"
+                    )
+                },
                 headers={"Retry-After": str(retry_after)},
             )
     authorization = request.headers.get("Authorization", "")
@@ -276,6 +328,7 @@ def health() -> dict:
         "database": "sqlite" if settings.is_sqlite else engine.dialect.name,
         "database_status": "ready",
         "schema_management": settings.schema_management,
+        "demo_mode": settings.demo_mode,
     }
 
 

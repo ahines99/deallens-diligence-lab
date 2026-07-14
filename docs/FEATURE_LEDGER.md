@@ -56,14 +56,14 @@ cannot be satisfied by relabeling repairs as features.
 | F25 | Cross-deal critical-risk register | done | severity/status tests |
 | F26 | Conditions-to-close tracker | done | open/due aggregation test |
 | F27 | Team workload by assignee | done | assignment aggregation test |
-| F28 | Deal stage-aging analytics | planned | transition-time calculation test |
-| F29 | Explainable deal-readiness score | planned | component scoring tests |
-| F30 | Latest base/upside/downside returns snapshot | planned | version-selection tests |
+| F28 | Deal stage-aging analytics | done | latest-transition stage-clock and CSV test (`test_stage_age_days_measures_time_in_stage_from_latest_transition`) |
+| F29 | Explainable deal-readiness score | done | weighted component reconciliation test (`test_readiness_score_is_explained_by_weighted_component_scores`) |
+| F30 | Latest base/upside/downside returns snapshot | done | latest-version-per-case selection test (`test_returns_snapshot_selects_latest_case_version_per_case_key`) |
 | F31 | Downside-protection watchlist | done | liquidity/return threshold tests |
 | F32 | Covenant-breach watchlist | done | breach extraction tests |
 | F33 | Portfolio dashboard CSV export | done | content/schema test |
-| F34 | Source-health status panel | planned | ready/partial/failed aggregation test |
-| F35 | Source-freshness and as-of aging | planned | freshness boundary tests |
+| F34 | Source-health status panel | done | ready/partial/failed + latest-version aggregation test (`test_source_health_aggregates_ready_partial_failed_from_latest_versions`) |
+| F35 | Source-freshness and as-of aging | done | day-boundary freshness/staleness/exception-age tests (`test_source_freshness_and_exception_aging_respect_day_boundaries`) |
 | F36 | Account-mapping coverage score | done | mapped/unmapped test |
 | F37 | Reconciliation-health score | done | passed/incomplete/failed test |
 | F38 | Import-exception aging queue | done | open-age sorting test |
@@ -79,7 +79,7 @@ cannot be satisfied by relabeling repairs as features.
 | F48 | Approved-claim-only IC inclusion policy | done | pending/rejected exclusion test |
 | F49 | IC packet verification endpoint | done | `GET /api/ic-exports/{id}/verification` valid/tampered test (`test_export_verification_endpoint_reports_valid_and_rehashed_tampering`) |
 | F50 | Unified cross-plane activity timeline | done | ordered event aggregation test |
-| F51 | Runtime memo faithfulness report | planned | citation/numeric diagnostics test |
+| F51 | Runtime memo faithfulness report | done | `GET /api/workspaces/{id}/memo/faithfulness` diagnostics test (`test_memo_faithfulness_report_flags_unresolved_refs`) |
 | F52 | Local actor/role switcher for governance demos | done | frontend interaction test |
 | F53 | Demonstrable second-actor four-eyes workflow | done | submitter/approver UI test |
 | F54 | Discoverable Signals navigation group | done | navigation/build test |
@@ -87,7 +87,7 @@ cannot be satisfied by relabeling repairs as features.
 | F56 | Expandable verbatim evidence excerpts | done | component test |
 | F57 | Model-input dirty-state indicator | done | frontend state test |
 | F58 | Stress-analysis stale-state indicator | done | frontend state test |
-| F59 | Decision-grade deal overview | planned | rendered KPI/risk/source test |
+| F59 | Decision-grade deal overview | done | rendered cockpit KPI/readiness/risk/source and unavailable-state test (`apps/web/src/app/workspaces/[workspaceId]/page.test.tsx`) |
 | F60 | Production Next.js standalone container | done | `apps/web/Dockerfile` (standalone output) built by the CI compose job; see B15 evidence |
 | F61 | GitHub CI quality pipeline | done | `.github/workflows/ci.yml` (api ruff/alembic/pytest, web audit/test/lint/typecheck/build, compose smoke) mirroring local commands |
 | F62 | Webhook dead-letter replay | done | replay state-machine test |
@@ -101,9 +101,9 @@ Completion requires at least 50 `F##` rows marked `done`, every B01-B15 gate eit
 removed from the shipped product, all tests/builds/migrations green, and a final requirement-by-requirement
 audit against the current worktree. Planned or partially implemented rows do not count.
 
-Current verified tally: **15/15 defect gates closed and 56/65 capabilities done**. F02 intentionally
+Current verified tally: **15/15 defect gates closed and 63/65 capabilities done**. F02 intentionally
 uses expiring, server-stored, hashed, revocable opaque tokens instead of self-contained signed tokens.
-The remaining 9 ideas (F28–F30, F34–F35, F41, F51, F55, and F59) stay planned and are not included in
-the completed count. Note: the portfolio dashboard already computes stage-age days, readiness component
-scores, returns snapshots, and per-deal source health (`portfolio_service.py`), so F28–F30 and F34–F35
-are partially implemented — they remain planned until their dedicated boundary/acceptance tests exist.
+The remaining 2 ideas (F41 and F55) stay planned and are not included in the completed count.
+F28–F30 and F34–F35 are covered by dedicated boundary/acceptance tests in
+`apps/api/tests/test_portfolio.py`, F51 by `apps/api/tests/test_filings_qa.py`, and F59 by
+`apps/web/src/app/workspaces/[workspaceId]/page.test.tsx`.

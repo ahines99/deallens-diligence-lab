@@ -304,10 +304,54 @@ export interface ExampleTemplateInfo {
   description: string;
 }
 
+export interface FilingsQACitation {
+  filing_id: string;
+  form_type: string | null;
+  filing_date: string | null;
+  section: string;
+  document_url: string | null;
+  quote: string;
+  retrieval_score: number;
+}
+
+export interface FilingsQAResult {
+  workspace_id: string;
+  question: string;
+  status: "answered" | "abstained";
+  answer: string;
+  citations: FilingsQACitation[];
+  retrieval: {
+    chunks_considered: number;
+    matched_terms: string[];
+    abstention_reason: string | null;
+  };
+  method: string;
+  generated_at: string;
+}
+
+export interface MemoFaithfulnessDocument {
+  document_type: string;
+  citation_count: number;
+  distinct_refs: number;
+  unresolved_refs: string[];
+  numeric_token_count: number;
+  uncited_numeric_sentences: string[];
+  uncited_numeric_sentence_count: number;
+  fully_resolved: boolean;
+}
+
+export interface MemoFaithfulnessReport {
+  workspace_id: string;
+  evidence_ref_count: number;
+  documents: MemoFaithfulnessDocument[];
+  generated_at: string;
+}
+
 export interface HealthStatus {
   status: string;
   llm_mode: string;
   database: string;
+  demo_mode?: boolean;
 }
 
 // --- Roadmap extensions: trends, macro, GovCon -----------------------------

@@ -133,6 +133,9 @@ Base URL: `NEXT_PUBLIC_API_URL` (default `http://localhost:8000`). All app route
 | POST | `/api/workspaces/{id}/build/retry` | re-arms a `failed` build and re-runs it (409 unless failed) |
 | GET  | `/api/workspaces` | → `Workspace[]` (each carries `build_status`/`build_step`/`build_error`) |
 | GET  | `/api/workspaces/{id}` | → `WorkspaceOverview` |
+| POST | `/api/workspaces/{id}/qa` | `{question}` → `FilingsQA` (deterministic BM25 retrieval over ingested filing sections; strictly extractive cited answer or explicit abstention) |
+| GET  | `/api/workspaces/{id}/memo/faithfulness` | → runtime report per memo document: citation counts, unresolved `EV-###` refs, uncited numeric sentences |
+| POST | `/api/auth/demo` | → `SessionToken` for a guest identity in the shared Demo Sandbox org (403 unless `DEMO_MODE=true`; rate-limited) |
 | POST | `/api/examples/private-deal` | → `{organization_id,fund_id,deal_id,workspace_id,deal_code,import_status,open_exceptions}` (loads the bundled fictional private deal through the real import/governance pipeline; QoE adjustments stay `proposed`) |
 | GET  | `/api/examples/templates` | → `[{name,description}]` |
 | GET  | `/api/examples/templates/{name}` | → file download (financials CSV + example data-room documents) |

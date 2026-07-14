@@ -17,7 +17,7 @@ from src.schemas.identity import (
     RegistrationCreate,
     SessionTokenOut,
 )
-from src.services import identity_service as service
+from src.services import demo_service, identity_service as service
 
 router = APIRouter(prefix="/api", tags=["identity"])
 T = TypeVar("T")
@@ -45,6 +45,18 @@ def register(
         service.register,
         session,
         payload,
+        user_agent=user_agent,
+        ip_address=ip_address,
+    )
+
+
+@router.post("/auth/demo", response_model=SessionTokenOut, status_code=201)
+def start_demo_session(request: Request, session: SessionDep) -> SessionTokenOut:
+    """One-click guest session inside the shared demo organization (DEMO_MODE only)."""
+    user_agent, ip_address = _client(request)
+    return _call(
+        demo_service.start_guest_session,
+        session,
         user_agent=user_agent,
         ip_address=ip_address,
     )

@@ -14,6 +14,7 @@ from src.models.deal_workflow import (
     Deal,
     DealLedgerEntry,
     DealStageGate,
+    DealStageTransition,
     DealTask,
     DealWorkstream,
     DiligenceRequest,
@@ -32,6 +33,7 @@ from src.models.underwriting_data import (
 )
 from src.models.underwriting_model import UnderwritingCaseVersion
 from src.models.workspace import Workspace
+from src.services.portfolio_service import _age_days, _source_health
 
 AS_OF = date(2026, 7, 13)
 
@@ -303,6 +305,7 @@ def portfolio_records(client):
             "organization_id": organization.id,
             "atlas_id": atlas.id,
             "atlas_workspace_id": workspace.id,
+            "atlas_source_id": source.id,
             "buyout_fund_id": buyout.id,
         }
 
@@ -402,6 +405,292 @@ def test_portfolio_search_stage_fund_export_health_and_tenant_scope(client, port
         ).status_code
         == 404
     )
+
+
+def _snapshot(
+    source_type: str,
+    source_name: str,
+    version: int,
+    status: str,
+    created_at: datetime,
+) -> SourceSnapshot:
+    """In-memory snapshot carrying only the fields _source_health reads."""
+    return SourceSnapshot(
+        source_type=source_type,
+        source_name=source_name,
+        version=version,
+        status=status,
+        created_at=created_at,
+    )
+
+
+def test_stage_age_days_measures_time_in_stage_from_latest_transition(client, portfolio_records):
+    base = f"/api/organizations/{portfolio_records['organization_id']}/portfolio"
+
+    body = client.get(base, params={"as_of": AS_OF.isoformat()}).json()
+    deals = {item["code"]: item for item in body["deals"]}
+    # Without any recorded transition the clock starts at deal creation (2026-06-01).
+    assert deals["ATL-101"]["stage_age_days"] == (AS_OF - date(2026, 6, 1)).days == 42
+    # Borealis was created after as_of; ages are clamped at zero, never negative.
+    assert deals["BOR-202"]["stage_age_days"] == 0
+
+    with SessionLocal() as session:
+        session.add_all(
+            (
+                DealStageTransition(
+                    deal_id=portfolio_records["atlas_id"],
+                    sequence=1,
+                    from_stage="diligence",
+                    to_stage="ic_review",
+                    created_at=datetime(2026, 6, 20, 9, 0, tzinfo=timezone.utc),
+                ),
+                DealStageTransition(
+                    deal_id=portfolio_records["atlas_id"],
+                    sequence=2,
+                    from_stage="ic_review",
+                    to_stage="ic_review",
+                    created_at=datetime(2026, 7, 3, 17, 30, tzinfo=timezone.utc),
+                ),
+            )
+        )
+        session.commit()
+
+    body = client.get(base, params={"as_of": AS_OF.isoformat()}).json()
+    atlas = next(item for item in body["deals"] if item["code"] == "ATL-101")
+    # The latest transition (2026-07-03) starts the stage clock, not the earlier one.
+    assert atlas["stage_age_days"] == (AS_OF - date(2026, 7, 3)).days == 10
+
+    export = client.get(f"{base}/export.csv", params={"as_of": AS_OF.isoformat()})
+    header, *rows = export.text.strip().splitlines()
+    atlas_row = dict(
+        zip(header.split(","), next(row for row in rows if row.startswith("ATL-101,")).split(","))
+    )
+    assert atlas_row["stage_age_days"] == "10"
+
+
+def test_readiness_score_is_explained_by_weighted_component_scores(client, portfolio_records):
+    body = client.get(
+        f"/api/organizations/{portfolio_records['organization_id']}/portfolio",
+        params={"as_of": AS_OF.isoformat()},
+    ).json()
+    deals = {item["code"]: item for item in body["deals"]}
+    atlas = deals["ATL-101"]
+    assert [item["key"] for item in atlas["readiness_components"]] == [
+        "stage_gates",
+        "tasks",
+        "requests",
+        "risks",
+        "sources",
+        "ic_packet",
+    ]
+    components = {item["key"]: item for item in atlas["readiness_components"]}
+    assert {key: item["weight"] for key, item in components.items()} == {
+        "stage_gates": 0.25,
+        "tasks": 0.20,
+        "requests": 0.15,
+        "risks": 0.20,
+        "sources": 0.10,
+        "ic_packet": 0.10,
+    }
+    expectations = {
+        # 1 of 2 required ic_review gates is satisfied.
+        "stage_gates": (1, 2, 50.0),
+        # 1 of 2 tasks is terminal (complete); the blocked task does not count.
+        "tasks": (1, 2, 50.0),
+        # The single request is still "requested", which is non-terminal.
+        "requests": (0, 1, 0.0),
+        # The critical risk is open, so no risk control has passed.
+        "risks": (0, 1, 0.0),
+        # The one registered source snapshot is ready.
+        "sources": (1, 1, 100.0),
+        # The latest IC packet is flagged ready_for_submission.
+        "ic_packet": (1, 1, 100.0),
+    }
+    for key, (passed, total, score) in expectations.items():
+        component = components[key]
+        assert (component["passed"], component["total"], component["score"]) == (
+            passed,
+            total,
+            score,
+        ), key
+    recomputed = round(
+        sum(item["score"] * item["weight"] for item in atlas["readiness_components"]), 1
+    )
+    assert atlas["readiness_score"] == recomputed == 42.5
+
+    # A deal with no configured controls scores zero and says why, per component.
+    borealis = deals["BOR-202"]
+    assert borealis["readiness_score"] == 0.0
+    borealis_sources = next(
+        item for item in borealis["readiness_components"] if item["key"] == "sources"
+    )
+    assert borealis_sources["total"] == 0
+    assert borealis_sources["explanation"] == "No source snapshots are registered"
+
+
+def test_returns_snapshot_selects_latest_case_version_per_case_key(client, portfolio_records):
+    with SessionLocal() as session:
+        downside_v2 = UnderwritingCaseVersion(
+            workspace_id=portfolio_records["atlas_workspace_id"],
+            case_key="downside",
+            label="Downside",
+            version=2,
+            assumptions={},
+            result={
+                "returns": {"moic": 1.8, "xirr": 0.22},
+                "summary": {
+                    "minimum_liquidity": 12.0,
+                    "first_covenant_breach": None,
+                    "first_debt_service_default": None,
+                },
+            },
+            input_hash="7" * 64,
+            output_hash="8" * 64,
+            created_by="associate@example.test",
+        )
+        base_v1 = UnderwritingCaseVersion(
+            workspace_id=portfolio_records["atlas_workspace_id"],
+            case_key="base",
+            label="Base",
+            version=1,
+            assumptions={},
+            result={
+                "returns": {"moic": 2.4, "xirr": 0.28},
+                "summary": {
+                    "minimum_liquidity": 30.0,
+                    "first_covenant_breach": None,
+                    "first_debt_service_default": None,
+                },
+            },
+            input_hash="9" * 64,
+            output_hash="a" * 64,
+            created_by="associate@example.test",
+        )
+        session.add_all((downside_v2, base_v1))
+        session.commit()
+        downside_v2_id = downside_v2.id
+
+    body = client.get(
+        f"/api/organizations/{portfolio_records['organization_id']}/portfolio",
+        params={"as_of": AS_OF.isoformat()},
+    ).json()
+    snapshot = next(
+        item for item in body["returns_snapshots"] if item["deal_code"] == "ATL-101"
+    )
+    cases = {item["case_key"]: item for item in snapshot["cases"]}
+    # One row per case_key, sorted by key, never one row per stored version.
+    assert [item["case_key"] for item in snapshot["cases"]] == ["base", "downside"]
+    assert (cases["downside"]["version"], cases["downside"]["case_version_id"]) == (
+        2,
+        downside_v2_id,
+    )
+    assert cases["downside"]["moic"] == 1.8
+    assert cases["downside"]["xirr"] == 0.22
+    assert cases["downside"]["minimum_liquidity"] == 12.0
+    assert cases["base"]["version"] == 1
+
+    # The superseded downside v1 (moic 1.2, breach in Y2, negative liquidity) would
+    # have tripped every watchlist; the latest version clears both of them.
+    assert body["downside_watchlist"] == []
+    assert body["covenant_watchlist"] == []
+
+
+def test_source_health_aggregates_ready_partial_failed_from_latest_versions():
+    fresh = datetime(2026, 7, 10, tzinfo=timezone.utc)
+    ready = _snapshot("management_financials", "Management P&L", 1, "ready", fresh)
+    partial = _snapshot("customer_data", "Cohort export", 1, "partial", fresh)
+    failed = _snapshot("bank_statements", "Bank feed", 1, "failed", fresh)
+
+    assert _source_health([], AS_OF)["status"] == "not_configured"
+
+    health = _source_health([ready], AS_OF)
+    assert health["status"] == "ready"
+    assert (health["ready"], health["partial"], health["failed"]) == (1, 0, 0)
+
+    # Any partial source degrades the aggregate to partial.
+    health = _source_health([ready, partial], AS_OF)
+    assert health["status"] == "partial"
+    assert (health["ready"], health["partial"], health["failed"]) == (1, 1, 0)
+    assert health["total_sources"] == 2
+
+    # A failed source dominates partial and ready.
+    health = _source_health([ready, partial, failed], AS_OF)
+    assert health["status"] == "failed"
+    assert (health["ready"], health["partial"], health["failed"]) == (1, 1, 1)
+    assert health["total_sources"] == 3
+
+    # Only the latest version per (source_type, source_name) counts: the partial v2
+    # supersedes the ready v1 of the same source instead of being double-counted.
+    superseding = _snapshot("management_financials", "Management P&L", 2, "partial", fresh)
+    health = _source_health([ready, superseding], AS_OF)
+    assert health["status"] == "partial"
+    assert (health["ready"], health["partial"], health["total_sources"]) == (0, 1, 1)
+
+
+def test_source_freshness_and_exception_aging_respect_day_boundaries(client, portfolio_records):
+    # _age_days truncates datetimes to calendar days and never goes negative.
+    assert _age_days(datetime(2026, 7, 13, 23, 59, tzinfo=timezone.utc), AS_OF) == 0
+    assert _age_days(datetime(2026, 7, 12, 23, 59, tzinfo=timezone.utc), AS_OF) == 1
+    assert _age_days(date(2026, 7, 14), AS_OF) == 0
+
+    # 90 days old is aged but not yet stale; the 91st day flips the source to
+    # partial because staleness is strictly greater-than 90.
+    aged = _snapshot(
+        "management_financials", "Management P&L", 1, "ready",
+        datetime(2026, 4, 14, tzinfo=timezone.utc),
+    )
+    health = _source_health([aged], AS_OF)
+    assert (health["oldest_age_days"], health["stale"], health["status"]) == (90, False, "ready")
+    stale = _snapshot(
+        "management_financials", "Management P&L", 1, "ready",
+        datetime(2026, 4, 13, tzinfo=timezone.utc),
+    )
+    health = _source_health([stale], AS_OF)
+    assert (health["oldest_age_days"], health["stale"], health["status"]) == (91, True, "partial")
+
+    # The dashboard applies the caller-supplied as_of to both source freshness
+    # and open import-exception ages at the same day boundaries.
+    with SessionLocal() as session:
+        session.add_all(
+            (
+                FinancialImportException(
+                    workspace_id=portfolio_records["atlas_workspace_id"],
+                    source_snapshot_id=portfolio_records["atlas_source_id"],
+                    code="SAME_DAY",
+                    severity="medium",
+                    state="open",
+                    message="Raised on the as_of date itself",
+                    created_at=datetime(2026, 7, 13, 0, 0, tzinfo=timezone.utc),
+                ),
+                FinancialImportException(
+                    workspace_id=portfolio_records["atlas_workspace_id"],
+                    source_snapshot_id=portfolio_records["atlas_source_id"],
+                    code="ONE_DAY",
+                    severity="medium",
+                    state="open",
+                    message="Raised late on the prior day",
+                    created_at=datetime(2026, 7, 12, 23, 59, tzinfo=timezone.utc),
+                ),
+            )
+        )
+        session.commit()
+
+    body = client.get(
+        f"/api/organizations/{portfolio_records['organization_id']}/portfolio",
+        params={"as_of": AS_OF.isoformat()},
+    ).json()
+    atlas = next(item for item in body["deals"] if item["code"] == "ATL-101")
+    # The fixture snapshot was sealed on 2026-07-10, three days before as_of.
+    assert atlas["source_health"]["oldest_age_days"] == 3
+    assert atlas["source_health"]["stale"] is False
+    ages = {item["code"]: item["age_days"] for item in body["import_exceptions"]}
+    assert ages == {"UNMAPPED_LABEL": 11, "ONE_DAY": 1, "SAME_DAY": 0}
+    # The queue is ordered oldest-first so the longest-open exception leads.
+    assert [item["code"] for item in body["import_exceptions"]] == [
+        "UNMAPPED_LABEL",
+        "ONE_DAY",
+        "SAME_DAY",
+    ]
 
 
 def test_unified_activity_timeline_filters_cross_plane_events(client, portfolio_records):

@@ -43,6 +43,7 @@ const GROUPS: { label: string; items: { label: string; seg: string }[] }[] = [
       { label: "Target profile", seg: "target" },
       { label: "Financial trends", seg: "trends" },
       { label: "SEC filings", seg: "filings" },
+      { label: "Ask the filings", seg: "qa" },
       { label: "Comps & benchmark", seg: "comps" },
       { label: "QoE forensics", seg: "forensics" },
       { label: "Red-flag matrix", seg: "risks" },

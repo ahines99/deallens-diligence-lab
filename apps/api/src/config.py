@@ -53,6 +53,16 @@ class Settings(BaseSettings):
     webhook_encryption_key: str = ""
     webhook_allow_insecure_http: bool = False
 
+    # --- Public demo posture -------------------------------------------------
+    # DEMO_MODE=true enables one-click guest sessions and per-IP throttling of the
+    # SEC-bound build endpoints so a hosted demo respects EDGAR fair access.
+    demo_mode: bool = False
+    demo_builds_per_hour: int = 6
+    # Guest-created demo data older than this is purged by `python -m src.workers.demo_cleanup`.
+    demo_retention_hours: int = 72
+    # On-disk EDGAR response cache TTL (0 = disabled; live research always refetches).
+    edgar_cache_ttl_seconds: int = 0
+
     # --- Public data sources (live mode / extensions) ----------------------
     sec_user_agent: str = "DealLens Diligence Lab (portfolio project) contact@example.com"
     fred_api_key: str = ""

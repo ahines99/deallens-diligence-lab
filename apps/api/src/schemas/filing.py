@@ -34,3 +34,34 @@ class SecIngestRequest(BaseModel):
     cik: str | None = None
     form_types: list[str] | None = None
     limit: int = 3
+
+
+class FilingsQARequest(BaseModel):
+    question: str
+
+
+class FilingsQACitation(BaseModel):
+    filing_id: str
+    form_type: str | None
+    filing_date: str | None
+    section: str
+    document_url: str | None
+    quote: str
+    retrieval_score: float
+
+
+class FilingsQARetrieval(BaseModel):
+    chunks_considered: int
+    matched_terms: list[str]
+    abstention_reason: str | None
+
+
+class FilingsQAOut(BaseModel):
+    workspace_id: str
+    question: str
+    status: str  # answered | abstained
+    answer: str
+    citations: list[FilingsQACitation]
+    retrieval: FilingsQARetrieval
+    method: str
+    generated_at: str

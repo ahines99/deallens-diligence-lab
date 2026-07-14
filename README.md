@@ -1,7 +1,16 @@
 # DealLens Diligence Lab
 
+[![CI](https://github.com/ahines99/deallens-diligence-lab/actions/workflows/ci.yml/badge.svg)](https://github.com/ahines99/deallens-diligence-lab/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white)
+![Next.js 15](https://img.shields.io/badge/Next.js-15-black?logo=nextdotjs)
+
 **A private-equity underwriting and diligence workbench with deterministic models, governed evidence,
 deal execution, and investment-committee controls.**
+
+Type a ticker and watch a diligence workspace build itself live from SEC EDGAR:
+
+![Live workspace build with step-by-step progress](docs/images/build-progress.png)
 
 DealLens Diligence Lab is an independent, non-commercial portfolio project demonstrating an end-to-end
 investment workflow for private and public targets. Teams can import management financials and deal-room
@@ -13,6 +22,24 @@ targets can additionally ingest live SEC EDGAR filings and XBRL facts
 > The point is not to automate investment judgment. The point is to show how AI can accelerate the
 > evidence-gathering, issue-spotting, memo-drafting, and red-team process while keeping humans
 > accountable for decisions.
+
+---
+
+## What this demonstrates
+
+| Capability | Where to see it |
+|---|---|
+| **Grounded, abstaining AI** — extractive Q&A over 10-K sections (BM25 retrieval, verbatim quotes, explicit abstention when evidence is missing) and a fail-closed citation auditor that rejects any LLM rewrite that drifts a number or citation | "Ask the filings" tab · [`citation_auditor.py`](apps/api/src/agents/citation_auditor.py) · [`filings_qa_service.py`](apps/api/src/services/filings_qa_service.py) |
+| **Evidence governance** — append-only evidence with monotonic `EV-###` refs enforced at the ORM layer, plus a runtime faithfulness report that re-verifies every memo citation on demand | Evidence tab · memo faithfulness panel · [`evidence.py`](apps/api/src/models/evidence.py) |
+| **Deterministic financial engineering** — XBRL-derived forensics (Altman Z″, Piotroski F, Beneish M, accrual quality), WACC/DCF, multi-tranche LBO with covenants, sensitivity and reverse-stress — no imputation: missing data degrades to "n/a", never to a guess | Forensics / Valuation / Underwriting tabs · [`underwriting_model_service.py`](apps/api/src/services/underwriting_model_service.py) |
+| **Institutional governance** — multi-tenant auth with org-scoped 404s, four-eyes QoE and IC approvals, content-hash-frozen IC packets, HMAC-signed webhooks with a durable outbox | IC readiness tab · [`deal_workflow_service.py`](apps/api/src/services/deal_workflow_service.py) |
+| **Production shape** — Alembic migrations, hash-pinned dependency lockfile, CI (lint, migration drift check, ~200 backend + ~50 frontend tests, compose smoke test), hardened same-origin auth proxy, standalone Docker images | [`.github/workflows/ci.yml`](.github/workflows/ci.yml) · [`docs/deploy-demo.md`](docs/deploy-demo.md) |
+
+| | |
+|---|---|
+| ![Ask the filings — cited extractive Q&A](docs/images/ask-filings.png) *Cited, abstaining Q&A over the real 10-K* | ![QoE bridge with proposed adjustments](docs/images/qoe-bridge.png) *QoE bridge: proposed add-backs awaiting four-eyes approval* |
+| ![Evidence table](docs/images/evidence.png) *Every material claim resolves to an evidence row* | ![Forensic screens from XBRL](docs/images/forensics.png) *Deterministic forensics computed from XBRL facts* |
+| ![IC memo with runtime faithfulness report](docs/images/memo-faithfulness.png) *IC memo with a live citation-faithfulness report* | ![Multi-year trends](docs/images/trends.png) *Multi-year trends extracted from company facts* |
 
 ---
 
@@ -29,10 +56,13 @@ market and transaction data must be supplied by the analyst or a licensed source
 
 ## The demo in one minute
 
-Enter a public-company **ticker** (e.g. **MSFT**, **NVDA**, **CRWD**) and get a **real, SEC-grounded
-diligence pack**. On creation the backend resolves the ticker against SEC EDGAR, pulls XBRL company facts,
-lists recent 10-K / 10-Q / 8-K filings, fetches the latest 10-K and extracts its risk factors, then
-deterministically builds the whole pack:
+Search any public company by **name or ticker** (e.g. **MSFT**, **NVDA**, **CRWD**) and get a **real,
+SEC-grounded diligence pack**. The backend resolves the company against SEC EDGAR, pulls XBRL company
+facts, lists recent 10-K / 10-Q / 8-K filings, fetches the latest 10-K and extracts its risk factors,
+then deterministically builds the whole pack — with live step-by-step progress while it works. Prefer
+the private-deal story? One click loads a clearly-labeled **fictional example deal** (management
+financials, data room, proposed QoE adjustments) through the same governed import pipeline, leaving the
+approvals, underwriting, and IC assembly for you to drive:
 
 > **Example — CRWD (CrowdStrike):** ~$4.8B revenue, ~22% growth, ~75% gross margin, a **negative GAAP
 > operating margin**, and a Rule-of-40 around 16% — benchmarked against real peers (PANW, ZS, S). Red
@@ -137,6 +167,12 @@ make test      # run backend pytest and frontend Vitest suites
 make up        # docker compose up --build
 make down      # docker compose down
 ```
+
+### Hosting a public demo
+
+The repo ships a hardened demo posture — one-click guest sessions, per-IP throttling of SEC-bound
+builds, an EDGAR response cache, and a retention-cleanup worker — so a public instance is a
+configuration decision, not a project. See [`docs/deploy-demo.md`](docs/deploy-demo.md).
 
 ---
 
@@ -255,6 +291,7 @@ Details: [`docs/architecture.md`](docs/architecture.md) ·
 [`docs/evidence-model.md`](docs/evidence-model.md) ·
 [`docs/example-case-study.md`](docs/example-case-study.md) ·
 [`docs/demo-script.md`](docs/demo-script.md) ·
+[`docs/deploy-demo.md`](docs/deploy-demo.md) ·
 [`docs/disclaimers.md`](docs/disclaimers.md)
 
 ## Public data sources

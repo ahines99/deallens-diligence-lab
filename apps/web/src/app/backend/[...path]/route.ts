@@ -12,7 +12,12 @@ export const runtime = "nodejs";
 
 const METHODS_WITHOUT_BODY = new Set(["GET", "HEAD"]);
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
-const PUBLIC_UPSTREAM_PATHS = new Set(["api/health", "api/auth/login", "api/auth/register"]);
+const PUBLIC_UPSTREAM_PATHS = new Set([
+  "api/health",
+  "api/auth/login",
+  "api/auth/register",
+  "api/auth/demo",
+]);
 const REQUEST_HEADERS_TO_STRIP = [
   "authorization",
   "connection",

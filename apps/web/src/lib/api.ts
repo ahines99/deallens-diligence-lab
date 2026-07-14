@@ -4,6 +4,8 @@
 import type {
   ExampleDealResult,
   ExampleTemplateInfo,
+  FilingsQAResult,
+  MemoFaithfulnessReport,
   Workspace,
   WorkspaceBuildStatus,
   WorkspaceOverview,
@@ -282,6 +284,8 @@ export const api = {
     request<AuthSessionToken>("/api/auth/register", { method: "POST", body, auth: "omit" }),
   login: (body: LoginInput) =>
     request<AuthSessionToken>("/api/auth/login", { method: "POST", body, auth: "omit" }),
+  startDemoSession: () =>
+    request<AuthSessionToken>("/api/auth/demo", { method: "POST", auth: "omit" }),
   currentIdentity: () => request<CurrentIdentity>("/api/auth/me"),
   logout: () => request<{ revoked: boolean }>("/api/auth/logout", { method: "POST" }),
   switchOrganization: (organizationId: string) =>
@@ -305,6 +309,11 @@ export const api = {
   loadExampleDeal: (actor: WorkflowActor = {}) =>
     workflowRequest<ExampleDealResult>("/api/examples/private-deal", { method: "POST" }, actor),
   listExampleTemplates: () => request<ExampleTemplateInfo[]>("/api/examples/templates"),
+
+  askFilings: (id: string, question: string) =>
+    request<FilingsQAResult>(`/api/workspaces/${id}/qa`, { method: "POST", body: { question } }),
+  getMemoFaithfulness: (id: string) =>
+    request<MemoFaithfulnessReport>(`/api/workspaces/${id}/memo/faithfulness`),
 
   getTarget: (id: string) => requestOrNull<Target>(`/api/workspaces/${id}/target`),
   setTarget: (id: string, body: Partial<Target>) =>
