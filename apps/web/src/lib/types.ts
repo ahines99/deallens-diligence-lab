@@ -1503,3 +1503,42 @@ export interface ActivistStakes {
   note: string | null;
   generated_at: string;
 }
+
+export interface DebtMaturityRow { bucket: string; amount: number | null; source_concept: string; }
+export interface DebtMaturitySchedule {
+  workspace_id: string;
+  schedule: DebtMaturityRow[];
+  total_scheduled: number | null;
+  missing_buckets: string[];
+  source_status: ExternalSourceStatus;
+  source_note: string | null;
+  generated_at: string;
+}
+
+export interface GovernanceRedFlag { flag: string; label: string; present: boolean; evidence: string | null; }
+export interface ExecCompRow {
+  name: string; title: string | null;
+  salary: number | null; bonus: number | null; stock_awards: number | null; total: number | null;
+}
+export interface GovernanceProfile {
+  workspace_id: string;
+  def14a_accession: string | null;
+  filing_date: string | null;
+  exec_comp: ExecCompRow[];
+  red_flags: GovernanceRedFlag[];
+  source_status: ExternalSourceStatus;
+  raw_note: string | null;
+}
+
+export interface CompSimilarityRow { ticker: string; company_name: string; similarity?: number; in_sic_set?: boolean; in_embedding_top?: boolean; }
+export interface CompSimilarity {
+  workspace_id: string;
+  target_name: string;
+  target_description: string;
+  available: boolean;
+  embedding_ranked: CompSimilarityRow[];
+  sic_ranked: CompSimilarityRow[];
+  disagreements: { embedding_only: CompSimilarityRow[]; sic_only: CompSimilarityRow[] };
+  note: string | null;
+  generated_at: string;
+}

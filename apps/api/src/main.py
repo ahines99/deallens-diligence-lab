@@ -29,6 +29,7 @@ from src.routers import (
     filings,
     financials,
     forensics,
+    governance,
     govcon,
     identity,
     integrations,
@@ -336,7 +337,7 @@ def health() -> dict:
 
 for module in (
     activity, workspaces, targets, sec, filings, comps, financials, risks, questions,
-    memos, red_team, evidence, examples, govcon, portfolio, notifications,
+    memos, red_team, evidence, examples, governance, govcon, portfolio, notifications,
     forensics, valuation, feeds, signals, ownership,
     underwriting_data, underwriting_model, deal_workflow, deal_intelligence,
     integrations, identity,

@@ -30,6 +30,9 @@ import type {
   SegmentRevenue,
   InstitutionalOwnership,
   ActivistStakes,
+  DebtMaturitySchedule,
+  GovernanceProfile,
+  CompSimilarity,
   CovenantHeadroomResult,
   CaseVarianceResult,
   ExitReadinessResult,
@@ -394,6 +397,14 @@ export const api = {
     requestOrNull<InstitutionalOwnership>(`/api/workspaces/${id}/institutional-ownership`),
   getActivistStakes: (id: string) =>
     requestOrNull<ActivistStakes>(`/api/workspaces/${id}/activist-stakes`),
+  getDebtMaturities: (id: string) =>
+    requestOrNull<DebtMaturitySchedule>(`/api/workspaces/${id}/debt-maturities`),
+  getGovernanceProfile: (id: string) =>
+    requestOrNull<GovernanceProfile>(`/api/workspaces/${id}/governance-profile`),
+  buildGovernanceProfile: (id: string) =>
+    request<GovernanceProfile>(`/api/workspaces/${id}/governance-profile`, { method: "POST" }),
+  getCompSimilarity: (id: string) =>
+    requestOrNull<CompSimilarity>(`/api/workspaces/${id}/comps/similarity`),
 
   // Underwriting analytics (Wave 4)
   covenantHeadroom: (id: string, body: unknown) =>

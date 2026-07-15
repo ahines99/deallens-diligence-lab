@@ -1,0 +1,167 @@
+{
+  "_comment": "Offline golden set for the retrieval eval harness (G03) and abstention calibration study (G06). The corpus is a fixed set of 10-K-style filing chunks with stable string keys; questions map to the chunk key(s) that genuinely answer them. `should_answer` labels the calibration classes: true = the filings contain a majority-coverage answer; false = the filings cannot answer it (off-topic -> abstain, or a thin single-term hit -> partial). Everything here is deterministic and needs no network.",
+  "corpus": [
+    {
+      "key": "customer-concentration",
+      "section": "Item 1A Risk Factors",
+      "text": "Customer concentration remains a material risk. Our largest customer represented approximately 14 percent of consolidated revenue during the fiscal year, and the loss of this customer would materially harm our operating results and future prospects."
+    },
+    {
+      "key": "supply-chain",
+      "section": "Item 1A Risk Factors",
+      "text": "We depend on a limited number of third-party component suppliers, and any disruption in our supply chain could delay product shipments and increase our manufacturing costs."
+    },
+    {
+      "key": "cybersecurity",
+      "section": "Item 1A Risk Factors",
+      "text": "A cybersecurity breach or unauthorized access to customer data could expose us to litigation, regulatory penalties, and reputational damage that harms our brand and results of operations."
+    },
+    {
+      "key": "revenue-growth",
+      "section": "Item 7 Management Discussion and Analysis",
+      "text": "Total revenue increased 12 percent year over year, driven primarily by growth in our subscription and recurring software offerings across enterprise customers."
+    },
+    {
+      "key": "operating-margin",
+      "section": "Item 7 Management Discussion and Analysis",
+      "text": "Operating expenses grew more slowly than revenue, expanding operating margin by two percentage points to 21 percent for the fiscal year."
+    },
+    {
+      "key": "liquidity",
+      "section": "Item 7 Liquidity and Capital Resources",
+      "text": "We believe our existing cash and cash equivalents of 480 million dollars together with expected operating cash flow are sufficient to meet our working capital and capital expenditure needs for at least the next twelve months."
+    },
+    {
+      "key": "debt-maturities",
+      "section": "Item 7 Liquidity and Capital Resources",
+      "text": "Our long-term debt consists of senior notes maturing in 2028 and a revolving credit facility, with no significant principal repayments due within the next two fiscal years."
+    },
+    {
+      "key": "goodwill-impairment",
+      "section": "Item 8 Notes to Financial Statements",
+      "text": "Goodwill is tested for impairment annually in the fourth quarter and whenever events indicate the carrying value may not be recoverable; no impairment charges were recorded during the periods presented."
+    },
+    {
+      "key": "stock-repurchase",
+      "section": "Item 5 Market for Registrant Common Equity",
+      "text": "During the year we repurchased 3.2 million shares of our common stock under our board-authorized share repurchase program for an aggregate purchase price of 210 million dollars."
+    },
+    {
+      "key": "segment-revenue",
+      "section": "Item 8 Notes to Financial Statements",
+      "text": "The Cloud Platform segment generated the majority of our revenue growth, while the Legacy Licenses segment declined as customers migrated to subscription plans."
+    },
+    {
+      "key": "legal-proceedings",
+      "section": "Item 3 Legal Proceedings",
+      "text": "We are party to various legal proceedings and claims arising in the ordinary course of business; management does not currently expect the outcome to have a material adverse effect on our financial position."
+    },
+    {
+      "key": "rd-investment",
+      "section": "Item 7 Management Discussion and Analysis",
+      "text": "Research and development spending increased to 18 percent of revenue as we invested in new artificial intelligence features and improved platform reliability."
+    },
+    {
+      "key": "workforce",
+      "section": "Item 1 Business",
+      "text": "As of fiscal year end we employed approximately 6,400 full-time employees, and competition for skilled engineering and product talent in our industry remains intense."
+    },
+    {
+      "key": "dividends",
+      "section": "Item 5 Market for Registrant Common Equity",
+      "text": "We have never declared or paid any cash dividends on our common stock and currently intend to retain all future earnings to fund the development and growth of our business."
+    }
+  ],
+  "questions": [
+    {
+      "id": "q-concentration",
+      "question": "How concentrated is revenue among the largest customer?",
+      "relevant": ["customer-concentration"],
+      "should_answer": true
+    },
+    {
+      "id": "q-supply",
+      "question": "What supply chain disruption risks affect product shipments?",
+      "relevant": ["supply-chain"],
+      "should_answer": true
+    },
+    {
+      "id": "q-cyber",
+      "question": "What cybersecurity and data breach risks does the company face?",
+      "relevant": ["cybersecurity"],
+      "should_answer": true
+    },
+    {
+      "id": "q-revenue",
+      "question": "How much did total revenue grow year over year?",
+      "relevant": ["revenue-growth"],
+      "should_answer": true
+    },
+    {
+      "id": "q-margin",
+      "question": "What happened to operating margin and operating expenses?",
+      "relevant": ["operating-margin"],
+      "should_answer": true
+    },
+    {
+      "id": "q-liquidity",
+      "question": "Does the company have sufficient cash and liquidity to fund operations?",
+      "relevant": ["liquidity"],
+      "should_answer": true
+    },
+    {
+      "id": "q-debt",
+      "question": "When does the long-term debt and senior notes mature?",
+      "relevant": ["debt-maturities"],
+      "should_answer": true
+    },
+    {
+      "id": "q-goodwill",
+      "question": "Were any goodwill impairment charges recorded?",
+      "relevant": ["goodwill-impairment"],
+      "should_answer": true
+    },
+    {
+      "id": "q-repurchase",
+      "question": "Did the company repurchase shares of common stock this year?",
+      "relevant": ["stock-repurchase"],
+      "should_answer": true
+    },
+    {
+      "id": "q-legal",
+      "question": "What legal proceedings is the company party to?",
+      "relevant": ["legal-proceedings"],
+      "should_answer": true
+    },
+    {
+      "id": "q-rd",
+      "question": "How much did research and development spending increase?",
+      "relevant": ["rd-investment"],
+      "should_answer": true
+    },
+    {
+      "id": "q-dividends",
+      "question": "Does the company pay dividends on its common stock?",
+      "relevant": ["dividends"],
+      "should_answer": true
+    },
+    {
+      "id": "q-antarctica",
+      "question": "What is the company's lithium mining strategy in Antarctica?",
+      "relevant": [],
+      "should_answer": false
+    },
+    {
+      "id": "q-satellites",
+      "question": "How many communications satellites does the company operate in orbit?",
+      "relevant": [],
+      "should_answer": false
+    },
+    {
+      "id": "q-thin-customer",
+      "question": "customer aardvark zeppelin quarterly lithium",
+      "relevant": ["customer-concentration"],
+      "should_answer": false
+    }
+  ]
+}

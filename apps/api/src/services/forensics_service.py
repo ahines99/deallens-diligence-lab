@@ -530,6 +530,48 @@ def _finding(cat, label, title, finding, severity, score, conf, followup, eviden
     }
 
 
+# A near-term "maturity wall": at least this share of the fully-tagged maturity schedule falls due
+# within the next two fiscal years (Y1 + Y2).
+_NEAR_TERM_WALL_THRESHOLD = 0.5
+
+
+def _append_maturity_wall_flag(flags: list[dict], target, year: str | None) -> None:
+    """Flag a near-term debt maturity wall when Y1+Y2 dominate a COMPLETE maturity schedule.
+
+    Only fires on ``status == "available"`` (every bucket tagged) so the denominator is the full
+    schedule — never a partial one that would overstate the near-term share. Additive: leaves all
+    existing flags untouched.
+    """
+    maturities = (target.financials or {}).get("debt_maturities")
+    if not maturities or maturities.get("status") != "available":
+        return
+    total = maturities.get("total_scheduled")
+    if not total or total <= 0:
+        return
+    by_bucket = {row["bucket"]: row["amount"] for row in maturities.get("schedule", [])}
+    near_term = by_bucket.get("Y1", 0.0) + by_bucket.get("Y2", 0.0)
+    share = near_term / total
+    if share < _NEAR_TERM_WALL_THRESHOLD:
+        return
+    as_of = maturities.get("as_of")
+    flags.append(_finding(
+        "debt_liquidity", "Debt & liquidity",
+        "Near-term debt maturity wall",
+        f"{target.name} has {share:.0%} of its scheduled long-term-debt principal "
+        f"({near_term:,.0f} of {total:,.0f}) maturing within two fiscal years (as of {as_of}). "
+        "A concentrated near-term maturity wall raises refinancing risk, especially in a higher-rate "
+        "environment; the repayment or refinancing plan warrants scrutiny.",
+        "high", 6, 0.8,
+        "How is the near-term maturity wall funded — refinancing commitments, cash on hand, or free "
+        "cash flow — and at what expected cost?",
+        _evidence(target, year, f"{share:.0%} of scheduled principal matures within two years.",
+                  f"Y1+Y2 maturities = {near_term:,.0f} of {total:,.0f} scheduled principal "
+                  f"(as of {as_of}).",
+                  "LongTermDebtMaturitiesRepaymentsOfPrincipalInNextTwelveMonths / ...InYearTwo",
+                  0.8),
+    ))
+
+
 def risk_flags(session: Session, workspace_id: str) -> list[dict]:
     """Deterministic forensic red flags in the RiskAnalyst.financial_flags shape.
 
@@ -596,6 +638,8 @@ def risk_flags(session: Session, workspace_id: str) -> list[dict]:
                       "NetIncomeLoss, CFO, Assets, LongTermDebt, LiabilitiesCurrent, Revenues, GrossProfit",
                       0.78),
         ))
+
+    _append_maturity_wall_flag(flags, target, year)
 
     diagnostics = fiscal_diagnostics(target.financials)
     if diagnostics:

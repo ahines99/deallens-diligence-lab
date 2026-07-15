@@ -575,6 +575,133 @@ def _reconcile_segments(
     return "available", None
 
 
+# --- G16: debt maturity schedule ("maturity wall") --------------------------
+# Long-term-debt principal maturities by year are tagged as instant facts on the balance-sheet
+# date. Each year bucket is a distinct us-gaap concept; XBRL never emits a combined schedule. We
+# read the standard concepts (and their rolling-window variants) verbatim. A filer that does not
+# tag a bucket leaves it ABSENT — it is reported in ``missing_buckets`` and omitted from the
+# schedule, never zero-filled or interpolated (the never-impute discipline this feature exists to
+# demonstrate).
+DEBT_MATURITY_BUCKETS: list[tuple[str, list[str]]] = [
+    ("Y1", [
+        "LongTermDebtMaturitiesRepaymentsOfPrincipalInNextTwelveMonths",
+        "LongTermDebtMaturitiesRepaymentsOfPrincipalInNextRollingTwelveMonths",
+    ]),
+    ("Y2", [
+        "LongTermDebtMaturitiesRepaymentsOfPrincipalInYearTwo",
+        "LongTermDebtMaturitiesRepaymentsOfPrincipalInNextRollingYearTwo",
+    ]),
+    ("Y3", [
+        "LongTermDebtMaturitiesRepaymentsOfPrincipalInYearThree",
+        "LongTermDebtMaturitiesRepaymentsOfPrincipalInNextRollingYearThree",
+    ]),
+    ("Y4", [
+        "LongTermDebtMaturitiesRepaymentsOfPrincipalInYearFour",
+        "LongTermDebtMaturitiesRepaymentsOfPrincipalInNextRollingYearFour",
+    ]),
+    ("Y5", [
+        "LongTermDebtMaturitiesRepaymentsOfPrincipalInYearFive",
+        "LongTermDebtMaturitiesRepaymentsOfPrincipalInNextRollingYearFive",
+    ]),
+    ("thereafter", [
+        "LongTermDebtMaturitiesRepaymentsOfPrincipalAfterYearFive",
+        "LongTermDebtMaturitiesRepaymentsOfPrincipalInRollingAfterYearFive",
+    ]),
+]
+
+_DEBT_MATURITY_UNAVAILABLE_NOTE = (
+    "debt maturity schedule not tagged in companyfacts (no LongTermDebtMaturities... concepts)"
+)
+
+
+def extract_debt_maturities(facts: dict) -> dict:
+    """Long-term-debt principal maturity schedule ("maturity wall") from XBRL company facts.
+
+    Returns ``{"status", "as_of", "schedule", "missing_buckets", "total_scheduled", "note"}`` where
+    ``schedule`` is a list of ``{bucket, amount, source_concept, period_end}`` in year order (Y1..Y5,
+    thereafter). ``status`` is:
+
+    * ``available``   — every bucket is tagged as of the reference balance-sheet date;
+    * ``partial``     — some buckets are tagged and others are not (the untagged ones are listed in
+      ``missing_buckets`` and left out of the schedule — NEVER zero-filled or interpolated);
+    * ``unavailable`` — no maturity concepts are tagged at all.
+
+    Only points dated at the single most recent balance-sheet date are used, so a prior year's
+    bucket is never blended into the current schedule. ``total_scheduled`` sums ONLY the tagged
+    buckets; it is not a claim about total debt when buckets are missing.
+    """
+    us_gaap = facts.get("facts", {}).get("us-gaap", {})
+    # bucket -> {period_end -> (latest-filed point, source concept)}.
+    bucket_points: dict[str, dict[str, tuple[dict, str]]] = {}
+    for bucket, concepts in DEBT_MATURITY_BUCKETS:
+        by_end: dict[str, tuple[dict, str]] = {}
+        for concept in concepts:
+            series = us_gaap.get(concept, {}).get("units", {}).get("USD", [])
+            for point in series:
+                end = point.get("end")
+                if not end or point.get("val") is None:
+                    continue
+                existing = by_end.get(end)
+                ordering = (point.get("filed", ""), point.get("accn", ""))
+                if existing is None or ordering >= (
+                    existing[0].get("filed", ""),
+                    existing[0].get("accn", ""),
+                ):
+                    by_end[end] = (point, concept)
+        if by_end:
+            bucket_points[bucket] = by_end
+
+    if not bucket_points:
+        return {
+            "status": "unavailable",
+            "as_of": None,
+            "schedule": [],
+            "missing_buckets": [bucket for bucket, _ in DEBT_MATURITY_BUCKETS],
+            "total_scheduled": None,
+            "note": _DEBT_MATURITY_UNAVAILABLE_NOTE,
+        }
+
+    # Reference date = the most recent balance-sheet date any bucket was tagged as of. Only points
+    # at this exact date populate the schedule, so periods are never mixed.
+    as_of = max(end for by_end in bucket_points.values() for end in by_end)
+
+    schedule: list[dict] = []
+    for bucket, _concepts in DEBT_MATURITY_BUCKETS:
+        entry = bucket_points.get(bucket, {}).get(as_of)
+        if entry is None:
+            continue  # untagged bucket — reported as missing, never imputed
+        point, concept = entry
+        schedule.append(
+            {
+                "bucket": bucket,
+                "amount": float(point["val"]),
+                "source_concept": concept,
+                "period_end": as_of,
+            }
+        )
+
+    present = {row["bucket"] for row in schedule}
+    missing = [bucket for bucket, _ in DEBT_MATURITY_BUCKETS if bucket not in present]
+    total_scheduled = sum(row["amount"] for row in schedule)
+    if missing:
+        status = "partial"
+        note = (
+            "maturity buckets not tagged by the filer are omitted from the schedule and listed in "
+            "missing_buckets — never zero-filled or interpolated: " + ", ".join(missing)
+        )
+    else:
+        status = "available"
+        note = None
+    return {
+        "status": status,
+        "as_of": as_of,
+        "schedule": schedule,
+        "missing_buckets": missing,
+        "total_scheduled": total_scheduled,
+        "note": note,
+    }
+
+
 def extract_trends(facts: dict, n: int = 5) -> dict:
     """Multi-year revenue + margin trend (last `n` fiscal years) from XBRL company facts."""
     rev = _annual_by_year(facts, REVENUE_CONCEPTS)

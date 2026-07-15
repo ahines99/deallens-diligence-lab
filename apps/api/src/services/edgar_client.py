@@ -321,6 +321,35 @@ def fetch_document_text(url: str) -> str:
     return text
 
 
+def fetch_document_html(url: str) -> str:
+    """Fetch a filing's primary document as decoded HTML (tags preserved).
+
+    Unlike ``fetch_document_text`` (which strips markup for prose extraction), this keeps the
+    HTML intact so table-structured disclosures — notably the DEF 14A Summary Compensation
+    Table — can be parsed by row/column. Same byte cap and on-disk cache discipline.
+    """
+    if not url:
+        return ""
+    cached = _cache_read(url, "html")
+    if cached is not None:
+        return cached
+    try:
+        with _client() as c:
+            resp = c.get(url)
+            resp.raise_for_status()
+            raw = resp.content[:_MAX_DOC_BYTES]
+    except httpx.HTTPError as exc:
+        raise EdgarError(f"Failed to fetch filing document {url}: {exc}") from exc
+
+    from bs4 import BeautifulSoup
+
+    # Parse raw bytes so BeautifulSoup honors the declared charset, then re-serialize to a
+    # normalized HTML string suitable for caching and downstream table parsing.
+    html = str(BeautifulSoup(raw, "html.parser"))
+    _cache_write(url, "html", html)
+    return html
+
+
 # A courtesy throttle so we stay well under SEC's 10 req/s guidance.
 def polite_pause(seconds: float = 0.2) -> None:
     time.sleep(seconds)

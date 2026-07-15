@@ -76,3 +76,34 @@ class FinancialBenchmark(BaseModel):
     metrics: list[BenchmarkMetric]
     notes: list[str]
     generated_at: datetime
+
+
+# --- Embedding-similarity comp discovery (G09) -------------------------------
+class EmbeddingRankedPeer(BaseModel):
+    ticker: str
+    company_name: str
+    similarity: float
+    in_sic_set: bool
+
+
+class SicRankedPeer(BaseModel):
+    ticker: str
+    company_name: str
+    in_embedding_top: bool
+
+
+class CompDisagreements(BaseModel):
+    embedding_only: list[str]
+    sic_only: list[str]
+
+
+class CompSimilarity(BaseModel):
+    workspace_id: str
+    target_name: str
+    target_description: str
+    available: bool
+    embedding_ranked: list[EmbeddingRankedPeer]
+    sic_ranked: list[SicRankedPeer]
+    disagreements: CompDisagreements
+    note: str
+    generated_at: datetime

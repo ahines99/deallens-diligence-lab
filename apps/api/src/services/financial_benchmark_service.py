@@ -14,7 +14,7 @@ from src.agents.financial_analyst import FinancialAnalyst
 from src.db.base import now_utc
 from src.models import ComparableCompany, Target
 from src.schemas.comp import CompCreate
-from src.services import edgar_client, sec_financials
+from src.services import edgar_client, embedding_service, sec_financials
 from src.services.common import NotFound
 from src.services.edgar_client import EdgarError
 from src.services.workspace_service import get_target
@@ -125,6 +125,142 @@ def _stats(values: list[float | None]) -> tuple[float | None, float | None, floa
     if not clean:
         return None, None, None
     return _fin.median(clean), min(clean), max(clean)
+
+
+# --- Embedding-similarity comp discovery (G09) -------------------------------
+# A second, independent lens on peer selection: rank candidate peers by cosine similarity of their
+# business-description embeddings to the target's description, then set that ranking SIDE-BY-SIDE with
+# the SIC-code method (same-SIC-description peers) and surface where the two disagree. The embedding
+# is deterministic and keyless (see embedding_service), so the ranking is reproducible offline.
+
+
+def _norm_sic(text: str) -> str:
+    """Normalize a SIC/sector description for equality comparison (whitespace + case folded)."""
+    return " ".join((text or "").lower().split())
+
+
+def rank_comps_by_similarity(
+    target_description: str,
+    target_sic: str,
+    peers: list,
+    top_n: int = 5,
+) -> dict:
+    """Pure, deterministic ranking of ``peers`` by description-embedding similarity to the target.
+
+    ``peers`` are duck-typed on ``ticker`` / ``business_description`` / ``sector`` / ``company_name``
+    (real ``ComparableCompany`` rows or synthetic stand-ins). The SIC-code method's peer set is the
+    subset whose ``sector`` (SIC description) matches ``target_sic``. Returns the data contract:
+    ``{target_description, available, embedding_ranked, sic_ranked, disagreements, note}``.
+
+    Honesty invariant: if the target has no usable description, or no peer has one, ``available`` is
+    False and no similarity is fabricated — the SIC method is still reported since it needs no text.
+    """
+    peers = list(peers)
+    tgt_sic = _norm_sic(target_sic)
+
+    def _in_sic(peer) -> bool:
+        return bool(tgt_sic) and _norm_sic(getattr(peer, "sector", "")) == tgt_sic
+
+    def _sic_rows(top_tickers: set[str]) -> list[dict]:
+        # Deterministic order for the SIC method (which carries no similarity score): by ticker.
+        sic_peers = sorted((p for p in peers if _in_sic(p)), key=lambda p: p.ticker)
+        return [
+            {
+                "ticker": p.ticker,
+                "company_name": getattr(p, "company_name", "") or "",
+                "in_embedding_top": p.ticker in top_tickers,
+            }
+            for p in sic_peers
+        ]
+
+    target_vec = embedding_service.embed(target_description or "")
+    target_has_desc = any(value != 0.0 for value in target_vec)
+
+    # Peers that actually carry a description signal (never assign a fabricated similarity to those
+    # that don't — they are simply excluded from the embedding ranking).
+    scored: list[tuple[object, float]] = []
+    undescribed = 0
+    for peer in peers:
+        peer_vec = embedding_service.embed(getattr(peer, "business_description", "") or "")
+        if target_has_desc and any(value != 0.0 for value in peer_vec):
+            scored.append((peer, embedding_service.cosine(target_vec, peer_vec)))
+        else:
+            undescribed += 1
+
+    sic_count = sum(1 for p in peers if _in_sic(p))
+
+    if not target_has_desc or not scored:
+        reason = (
+            "the target has no business description"
+            if not target_has_desc
+            else "no candidate peer has a business description"
+        )
+        return {
+            "target_description": target_description or "",
+            "available": False,
+            "embedding_ranked": [],
+            "sic_ranked": _sic_rows(set()),
+            "disagreements": {
+                "embedding_only": [],
+                "sic_only": [row["ticker"] for row in _sic_rows(set())],
+            },
+            "note": (
+                f"Embedding-similarity comp discovery is unavailable: {reason}. Similarity is never "
+                "fabricated; only the SIC-code peer set is shown."
+            ),
+        }
+
+    # Deterministic ordering: similarity desc, ticker asc as a stable tie-break.
+    scored.sort(key=lambda item: (-item[1], item[0].ticker))
+    top_tickers = {peer.ticker for peer, _ in scored[:top_n]}
+
+    embedding_ranked = [
+        {
+            "ticker": peer.ticker,
+            "company_name": getattr(peer, "company_name", "") or "",
+            "similarity": round(sim, 6),
+            "in_sic_set": _in_sic(peer),
+        }
+        for peer, sim in scored
+    ]
+    embedding_only = [peer.ticker for peer, _ in scored[:top_n] if not _in_sic(peer)]
+    sic_only = [row["ticker"] for row in _sic_rows(top_tickers) if not row["in_embedding_top"]]
+
+    note = (
+        f"Ranked {len(scored)} peer(s) by embedding similarity of business descriptions"
+        + (f" ({undescribed} peer(s) lacked descriptions and were excluded)" if undescribed else "")
+        + f"; the SIC-code method matched {sic_count} peer(s). The two methods disagree on "
+        f"{len(embedding_only) + len(sic_only)} peer(s): "
+        f"{len(embedding_only)} embedding-only, {len(sic_only)} SIC-only."
+    )
+    return {
+        "target_description": target_description or "",
+        "available": True,
+        "embedding_ranked": embedding_ranked,
+        "sic_ranked": _sic_rows(top_tickers),
+        "disagreements": {"embedding_only": embedding_only, "sic_only": sic_only},
+        "note": note,
+    }
+
+
+def similarity_comps(session: Session, workspace_id: str, top_n: int = 5) -> dict:
+    """DB-facing wrapper: discover comps by description similarity for a workspace's target + peers."""
+    target: Target | None = get_target(session, workspace_id)
+    if target is None:
+        raise NotFound("No target set for this workspace; cannot discover comps by similarity.")
+    comps = list_comps(session, workspace_id)
+    result = rank_comps_by_similarity(
+        target_description=target.description or "",
+        target_sic=target.sector or "",
+        peers=comps,
+        top_n=top_n,
+    )
+    return {
+        "workspace_id": workspace_id,
+        "target_name": target.name,
+        "generated_at": now_utc(),
+        **result,
+    }
 
 
 def compute_benchmark(session: Session, workspace_id: str) -> dict:

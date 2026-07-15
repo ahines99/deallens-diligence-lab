@@ -4,6 +4,7 @@ from fastapi import APIRouter
 
 from src.db.base import now_utc
 from src.routers.deps import SessionDep
+from src.schemas.debt_maturities import DebtMaturitySchedule
 from src.schemas.macro import MacroOverlay
 from src.schemas.quarterly import QuarterlyFinancials
 from src.schemas.segments import SegmentRevenue
@@ -101,6 +102,52 @@ def get_segments(workspace_id: str, session: SessionDep) -> SegmentRevenue:
             "source_note": segments.get("note"),
             "axis": segments.get("axis"),
             "segments": segments.get("segments", []),
+            "generated_at": now_utc(),
+        }
+    )
+
+
+@router.get("/{workspace_id}/debt-maturities", response_model=DebtMaturitySchedule)
+def get_debt_maturities(workspace_id: str, session: SessionDep) -> DebtMaturitySchedule:
+    """Long-term-debt principal maturity schedule ("maturity wall"), extracted at ingestion.
+
+    Buckets a filer does not tag are reported in ``missing_buckets`` and left out of the schedule —
+    never zero-filled or interpolated. Workspaces ingested before this feature have no stored key
+    and return an explicit ``source_status: "unavailable"`` (refresh required) instead of a
+    false-clean empty.
+    """
+    get_workspace_or_404(session, workspace_id)
+    target = workspace_service.get_target(session, workspace_id)
+    if target is None:
+        raise NotFound("No target set; ingest a company with a ticker first.")
+    maturities = (target.financials or {}).get("debt_maturities")
+    if maturities is None:
+        return DebtMaturitySchedule.model_validate(
+            {
+                "workspace_id": workspace_id,
+                "target_name": target.name,
+                "source_status": "unavailable",
+                "source_note": (
+                    "Debt-maturity XBRL extraction is not stored for this workspace — "
+                    "refresh (re-ingest) required."
+                ),
+                "as_of": None,
+                "schedule": [],
+                "total_scheduled": None,
+                "missing_buckets": [],
+                "generated_at": now_utc(),
+            }
+        )
+    return DebtMaturitySchedule.model_validate(
+        {
+            "workspace_id": workspace_id,
+            "target_name": target.name,
+            "source_status": maturities.get("status", "unavailable"),
+            "source_note": maturities.get("note"),
+            "as_of": maturities.get("as_of"),
+            "schedule": maturities.get("schedule", []),
+            "total_scheduled": maturities.get("total_scheduled"),
+            "missing_buckets": maturities.get("missing_buckets", []),
             "generated_at": now_utc(),
         }
     )

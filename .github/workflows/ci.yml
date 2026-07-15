@@ -44,6 +44,15 @@ jobs:
         run: python -m alembic -c alembic.ini upgrade head
       - name: Assert migration metadata is current
         run: python -m alembic -c alembic.ini check
+      # Explicit retrieval-eval + abstention-calibration gate (G03/G06). These are ordinary
+      # pytest tests, so the full "Test" step below already runs them; this step surfaces the
+      # regression gate as its own CI signal — it fails if any ranker slips below the committed
+      # baseline in src/eval/retrieval_metrics.json or the calibrated thresholds drift.
+      - name: Retrieval eval + calibration gate
+        env:
+          DATABASE_URL: sqlite:///./ci-eval.sqlite3
+          SCHEMA_MANAGEMENT: create_all
+        run: python -m pytest tests/test_retrieval_eval.py tests/test_calibration.py -q
       - name: Test
         env:
           DATABASE_URL: sqlite:///./ci-tests.sqlite3

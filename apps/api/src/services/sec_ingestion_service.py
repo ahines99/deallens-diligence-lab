@@ -80,6 +80,12 @@ def ingest_company(
             fin["segments"] = sec_financials.extract_segments(facts)
         except Exception as exc:  # noqa: BLE001 — segments is a best-effort enrichment
             logger.warning("Segment extraction failed for %s: %s", ticker, exc)
+        # Debt maturity schedule ("maturity wall") is likewise best-effort: a bug must degrade to
+        # financials-without-maturities, never fail the whole build.
+        try:
+            fin["debt_maturities"] = sec_financials.extract_debt_maturities(facts)
+        except Exception as exc:  # noqa: BLE001 — debt maturities is a best-effort enrichment
+            logger.warning("Debt-maturity extraction failed for %s: %s", ticker, exc)
 
     # --- Filings (metadata) ---
     report("indexing_filings")

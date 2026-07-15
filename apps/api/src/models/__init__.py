@@ -35,6 +35,7 @@ from src.models.deal_intelligence import (
 )
 from src.models.evidence import Evidence
 from src.models.filing import Filing
+from src.models.governance import GovernanceProfile
 from src.models.govcon import GovConProfile
 from src.models.integration import WebhookDelivery, WebhookEndpoint
 from src.models.identity import AuthSession, OrganizationMembership, User
@@ -90,6 +91,7 @@ __all__ = [
     "FinancialReconciliation",
     "Fund",
     "GovConProfile",
+    "GovernanceProfile",
     "ICComment",
     "ICDecision",
     "ICPacket",

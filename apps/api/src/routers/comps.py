@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from src.routers.deps import SessionDep
-from src.schemas.comp import CompOut, CompsRequest, FinancialBenchmark
+from src.schemas.comp import CompOut, CompSimilarity, CompsRequest, FinancialBenchmark
 from src.services import analysis_service, financial_benchmark_service as bench
 from src.services import workspace_service
 from src.services.common import get_workspace_or_404
@@ -35,3 +35,10 @@ def list_comps(workspace_id: str, session: SessionDep) -> list[CompOut]:
 def get_benchmark(workspace_id: str, session: SessionDep) -> FinancialBenchmark:
     get_workspace_or_404(session, workspace_id)
     return FinancialBenchmark.model_validate(bench.compute_benchmark(session, workspace_id))
+
+
+@router.get("/{workspace_id}/comps/similarity", response_model=CompSimilarity)
+def comp_similarity(workspace_id: str, session: SessionDep, top_n: int = 5) -> CompSimilarity:
+    """Discover comps by business-description embedding similarity, side-by-side with the SIC method."""
+    get_workspace_or_404(session, workspace_id)
+    return CompSimilarity.model_validate(bench.similarity_comps(session, workspace_id, top_n=top_n))
