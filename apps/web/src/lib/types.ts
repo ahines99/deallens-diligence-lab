@@ -1468,3 +1468,38 @@ export interface NotificationItem {
   read_at: string | null;
   created_at: string;
 }
+
+export interface SegmentSeriesPoint { period_end: string; revenue: number | null; }
+export interface SegmentRevenue {
+  workspace_id: string;
+  segments: { segment_name: string; source_concept: string; periods: SegmentSeriesPoint[] }[];
+  source_status: ExternalSourceStatus;
+  note: string | null;
+  generated_at: string;
+}
+
+export interface InstitutionalOwnership {
+  workspace_id: string;
+  scope: string;
+  concentration: { hhi: number | null; top5_share: number | null; holder_count: number | null; total_value: number | null };
+  holdings: { name: string; value: number | null; weight: number | null }[];
+  source_status: ExternalSourceStatus;
+  note: string | null;
+  generated_at: string;
+}
+
+export interface ActivistStakeEvent {
+  type: "13D" | "13G";
+  filer: string | null;
+  filing_date: string;
+  percent_owned: number | null;
+  is_activist: boolean;
+  is_amendment?: boolean;
+}
+export interface ActivistStakes {
+  workspace_id: string;
+  events: ActivistStakeEvent[];
+  source_status: ExternalSourceStatus;
+  note: string | null;
+  generated_at: string;
+}

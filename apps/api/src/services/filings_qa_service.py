@@ -34,7 +34,13 @@ _MAX_QUESTION_CHARS = 2_000
 _PARTIAL_COVERAGE_THRESHOLD = 0.5
 
 
-def ask(session: Session, workspace_id: str, question: str, k: int = 6) -> dict:
+def ask(
+    session: Session,
+    workspace_id: str,
+    question: str,
+    k: int = 6,
+    use_hybrid: bool | None = None,
+) -> dict:
     get_workspace_or_404(session, workspace_id)
     question = (question or "").strip()
     if not question:
@@ -42,7 +48,17 @@ def ask(session: Session, workspace_id: str, question: str, k: int = 6) -> dict:
     if len(question) > _MAX_QUESTION_CHARS:
         raise ValueError(f"Question must be at most {_MAX_QUESTION_CHARS} characters.")
 
-    retrieved = retrieval_service.retrieve(session, workspace_id, question, k=k)
+    # Default to hybrid retrieval (BM25 ⊕ vector via RRF) whenever the workspace has embeddings;
+    # fall back to pure BM25 otherwise so pre-embedding corpora behave exactly as before.
+    # Callers may force either mode explicitly (tests, contract checks).
+    if use_hybrid is None:
+        use_hybrid = retrieval_service.workspace_has_embeddings(session, workspace_id)
+    if use_hybrid:
+        retrieved = retrieval_service.retrieve_hybrid(session, workspace_id, question, k=k)
+        method = "extractive_hybrid_rrf"
+    else:
+        retrieved = retrieval_service.retrieve(session, workspace_id, question, k=k)
+        method = "extractive_bm25"
     question_terms = set(_TOKENS(question))
 
     # Sentence-level candidates within the BM25-selected chunks.
@@ -62,7 +78,7 @@ def ask(session: Session, workspace_id: str, question: str, k: int = 6) -> dict:
     base = {
         "workspace_id": workspace_id,
         "question": question,
-        "method": "extractive_bm25",
+        "method": method,
         "generated_at": generated_at,
     }
     if not candidates:

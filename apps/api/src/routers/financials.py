@@ -6,6 +6,7 @@ from src.db.base import now_utc
 from src.routers.deps import SessionDep
 from src.schemas.macro import MacroOverlay
 from src.schemas.quarterly import QuarterlyFinancials
+from src.schemas.segments import SegmentRevenue
 from src.schemas.trends import FinancialTrends
 from src.services import financial_benchmark_service as bench
 from src.services import fred_service, workspace_service
@@ -58,6 +59,48 @@ def get_quarterly(workspace_id: str, session: SessionDep) -> QuarterlyFinancials
             "quarters": quarterly.get("quarters", []),
             "ttm": quarterly.get("ttm", {}),
             "ttm_basis": quarterly.get("ttm_basis", {}),
+            "generated_at": now_utc(),
+        }
+    )
+
+
+@router.get("/{workspace_id}/financials/segments", response_model=SegmentRevenue)
+def get_segments(workspace_id: str, session: SessionDep) -> SegmentRevenue:
+    """Per-segment revenue trend from dimensional XBRL facts, computed at ingestion.
+
+    Standard SEC company facts publish only consolidated totals, so most real filers return
+    ``source_status: "unavailable"`` (segment detail not in companyfacts) — segment splits are
+    never fabricated. Workspaces ingested before this feature have no stored key and likewise
+    return ``unavailable`` (refresh required).
+    """
+    get_workspace_or_404(session, workspace_id)
+    target = workspace_service.get_target(session, workspace_id)
+    if target is None:
+        raise NotFound("No target set; ingest a company with a ticker first.")
+    segments = (target.financials or {}).get("segments")
+    if segments is None:
+        return SegmentRevenue.model_validate(
+            {
+                "workspace_id": workspace_id,
+                "target_name": target.name,
+                "source_status": "unavailable",
+                "source_note": (
+                    "Segment XBRL extraction is not stored for this workspace — "
+                    "refresh (re-ingest) required."
+                ),
+                "axis": None,
+                "segments": [],
+                "generated_at": now_utc(),
+            }
+        )
+    return SegmentRevenue.model_validate(
+        {
+            "workspace_id": workspace_id,
+            "target_name": target.name,
+            "source_status": segments.get("status", "unavailable"),
+            "source_note": segments.get("note"),
+            "axis": segments.get("axis"),
+            "segments": segments.get("segments", []),
             "generated_at": now_utc(),
         }
     )

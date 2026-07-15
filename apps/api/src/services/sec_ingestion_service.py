@@ -12,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from src.models import DocumentChunk, Filing, Target, Workspace
-from src.services import edgar_client, sec_financials
+from src.services import edgar_client, embedding_service, sec_financials
 from src.services.common import NotFound
 from src.services.edgar_client import EdgarError
 from src.services.filing_sections import extract_sections, split_paragraphs
@@ -74,6 +74,12 @@ def ingest_company(
             fin["quarterly"] = sec_financials.extract_quarterly(facts)
         except Exception as exc:  # noqa: BLE001 — quarterly is a best-effort enrichment
             logger.warning("Quarterly extraction failed for %s: %s", ticker, exc)
+        # Dimensional segment revenue is likewise best-effort: a bug must degrade to
+        # financials-without-segments, never fail the whole build.
+        try:
+            fin["segments"] = sec_financials.extract_segments(facts)
+        except Exception as exc:  # noqa: BLE001 — segments is a best-effort enrichment
+            logger.warning("Segment extraction failed for %s: %s", ticker, exc)
 
     # --- Filings (metadata) ---
     report("indexing_filings")
@@ -202,6 +208,10 @@ def ingest_company(
                     continue
                 unique_by_index[key] = chunk
                 chunk.source_url = tenk_filing.document_url
+                # Backfill embeddings for legacy chunks stored before hybrid retrieval existed,
+                # so a re-ingest heals them without waiting for the standalone backfill worker.
+                if chunk.embedding is None:
+                    embedding_service.embed_chunk(chunk)
             kept_chunks = list(unique_by_index.values())
             tenk_filing.section_count = len(kept_chunks)
             business_text = " ".join(
@@ -218,16 +228,17 @@ def ingest_company(
                 index = 0
                 for section_name, body in sections.items():
                     for para in split_paragraphs(body):
-                        session.add(
-                            DocumentChunk(
-                                filing_id=tenk_filing.id,
-                                workspace_id=workspace_id,
-                                section=section_name,
-                                chunk_text=para,
-                                chunk_index=index,
-                                source_url=tenk_filing.document_url,
-                            )
+                        chunk = DocumentChunk(
+                            filing_id=tenk_filing.id,
+                            workspace_id=workspace_id,
+                            section=section_name,
+                            chunk_text=para,
+                            chunk_index=index,
+                            source_url=tenk_filing.document_url,
                         )
+                        # Persist the embedding at ingest so hybrid retrieval works immediately.
+                        embedding_service.embed_chunk(chunk)
+                        session.add(chunk)
                         index += 1
                 tenk_filing.section_count = index
                 session.flush()

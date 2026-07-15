@@ -27,6 +27,9 @@ import type {
   EventTimeline,
   InsiderActivity,
   InsiderPatterns,
+  SegmentRevenue,
+  InstitutionalOwnership,
+  ActivistStakes,
   CovenantHeadroomResult,
   CaseVarianceResult,
   ExitReadinessResult,
@@ -385,6 +388,12 @@ export const api = {
   getInsiders: (id: string) => requestOrNull<InsiderActivity>(`/api/workspaces/${id}/insiders`),
   getInsiderPatterns: (id: string) =>
     requestOrNull<InsiderPatterns>(`/api/workspaces/${id}/insider-patterns`),
+  getSegments: (id: string) =>
+    requestOrNull<SegmentRevenue>(`/api/workspaces/${id}/financials/segments`),
+  getInstitutionalOwnership: (id: string) =>
+    requestOrNull<InstitutionalOwnership>(`/api/workspaces/${id}/institutional-ownership`),
+  getActivistStakes: (id: string) =>
+    requestOrNull<ActivistStakes>(`/api/workspaces/${id}/activist-stakes`),
 
   // Underwriting analytics (Wave 4)
   covenantHeadroom: (id: string, body: unknown) =>

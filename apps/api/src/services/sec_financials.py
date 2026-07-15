@@ -411,6 +411,170 @@ def extract_quarterly(facts: dict, n: int = 8) -> dict:
     return {"quarters": quarters, "ttm": ttm, "ttm_basis": ttm_basis}
 
 
+# --- G12: XBRL segment-level revenue (dimensional facts) --------------------
+# XBRL reality: the standard SEC Company Facts endpoint publishes only UNDIMENSIONED points —
+# i.e. the consolidated total for each concept. True per-segment revenue lives on dimensional
+# contexts (a member on a reporting axis such as us-gaap:StatementBusinessSegmentsAxis) and is NOT
+# emitted by companyfacts; it exists only in the raw filing instance / frames. So for real filers
+# this extractor almost always reports "consolidated only" — it NEVER imputes a segment split.
+# When a facts payload does carry dimensional qualifiers (synthetic fixtures, or the rare source
+# that preserves them under a per-point ``segments`` axis/member list), the members are read back
+# verbatim into per-segment period series.
+#
+# Reporting axes we recognise, in preference order. Only ONE axis is used per company (the first
+# present) so members from different breakdowns (business vs geography vs product) are never mixed
+# into a single, double-counted list.
+SEGMENT_AXIS_PRIORITY = [
+    "us-gaap:StatementBusinessSegmentsAxis",
+    "srt:ProductOrServiceAxis",
+    "us-gaap:ProductOrServiceAxis",
+    "us-gaap:StatementGeographicalAxis",
+    "srt:StatementGeographicalAxis",
+]
+# A duration this long or longer is an annual segment figure (excludes ~91d quarters, ~182d halves).
+_ANNUAL_MIN_DAYS = 340
+# Segment members should sum to the consolidated total; a larger relative gap means an untagged
+# Other/Corporate/eliminations member, i.e. only partial segment detail.
+_SEGMENT_RECONCILE_TOLERANCE = 0.005
+
+_CONSOLIDATED_ONLY_NOTE = (
+    "segment detail not available in companyfacts (consolidated only)"
+)
+
+
+def _point_dimensions(point: dict) -> list[tuple[str, str]]:
+    """Return the (axis, member) qualifiers carried by a companyfacts point.
+
+    Standard SEC companyfacts points are undimensioned and return ``[]`` here. A dimensional point
+    is expected to carry a ``segments`` list of ``{"dim"/"axis", "member"/"value"}`` entries.
+    """
+    dims = point.get("segments")
+    if not isinstance(dims, list):
+        return []
+    out: list[tuple[str, str]] = []
+    for entry in dims:
+        if not isinstance(entry, dict):
+            continue
+        axis = entry.get("dim") or entry.get("axis") or ""
+        member = entry.get("member") or entry.get("value") or ""
+        if axis and member:
+            out.append((axis, member))
+    return out
+
+
+def _clean_member(member: str) -> str:
+    """Human label for an XBRL member QName (e.g. ``xyz:CloudServicesMember`` -> ``Cloud Services``)."""
+    local = member.split(":")[-1]
+    if local.endswith("Member"):
+        local = local[: -len("Member")]
+    spaced = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", local)
+    spaced = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", " ", spaced)
+    return spaced.strip() or local
+
+
+def extract_segments(facts: dict, n: int = 6) -> dict:
+    """Per-segment revenue time series from dimensional XBRL facts, or an honest "unavailable".
+
+    Returns ``{"status", "axis", "segments", "note"}`` where ``segments`` is a list of
+    ``{segment_name, member, source_concept, periods:[{period_end, revenue}]}`` ordered oldest
+    period first. ``status`` is:
+
+    * ``available`` — dimensional members found and (where a consolidated total exists) they
+      reconcile to it;
+    * ``partial``   — dimensional members found but they do not fully reconcile to the consolidated
+      total for at least one period (an untagged Other/eliminations member is implied);
+    * ``unavailable`` — no dimensional segment members are present (the companyfacts norm); the
+      consolidated-only figures are all that exist. Segment splits are NEVER fabricated.
+    """
+    us_gaap = facts.get("facts", {}).get("us-gaap", {})
+    for concept in REVENUE_CONCEPTS:
+        series = us_gaap.get(concept, {}).get("units", {}).get("USD", [])
+        # axis -> member -> period_end -> latest-filed point; plus consolidated (undimensioned).
+        buckets: dict[str, dict[str, dict[str, dict]]] = {}
+        consolidated: dict[str, dict] = {}
+        for point in series:
+            start, end = point.get("start"), point.get("end")
+            if not start or not end:
+                continue
+            days = edgar_client._duration_days(start, end)
+            if days is None or days < _ANNUAL_MIN_DAYS:
+                continue
+            dims = [d for d in _point_dimensions(point) if d[0] in SEGMENT_AXIS_PRIORITY]
+            if not dims:
+                if not _point_dimensions(point):  # truly undimensioned = consolidated total
+                    _keep_latest(consolidated, end, point)
+                continue
+            if len(dims) != 1:
+                continue  # a cross-tabulated cell (e.g. segment x geography) — never partial-count
+            axis, member = dims[0]
+            _keep_latest(buckets.setdefault(axis, {}).setdefault(member, {}), end, point)
+
+        axis = next((a for a in SEGMENT_AXIS_PRIORITY if buckets.get(a)), None)
+        if axis is None:
+            continue
+
+        segments = []
+        for member, by_end in sorted(buckets[axis].items()):
+            periods = [
+                {"period_end": e, "revenue": float(by_end[e]["val"])}
+                for e in sorted(by_end)
+            ][-n:]
+            segments.append(
+                {
+                    "segment_name": _clean_member(member),
+                    "member": member,
+                    "source_concept": concept,
+                    "periods": periods,
+                }
+            )
+
+        status, note = _reconcile_segments(buckets[axis], consolidated)
+        return {"status": status, "axis": axis, "segments": segments, "note": note}
+
+    return {
+        "status": "unavailable",
+        "axis": None,
+        "segments": [],
+        "note": _CONSOLIDATED_ONLY_NOTE,
+    }
+
+
+def _keep_latest(slot: dict[str, dict], end: str, point: dict) -> None:
+    """Retain the most recently filed point per period end (amendment/restatement precedence)."""
+    existing = slot.get(end)
+    ordering = (point.get("filed", ""), point.get("accn", ""))
+    if existing is None or ordering >= (existing.get("filed", ""), existing.get("accn", "")):
+        slot[end] = point
+
+
+def _reconcile_segments(
+    by_member: dict[str, dict[str, dict]], consolidated: dict[str, dict]
+) -> tuple[str, str | None]:
+    """Reconcile the tagged segment members against the consolidated total, period by period."""
+    ends = {e for member in by_member.values() for e in member}
+    mismatches: list[str] = []
+    for end in sorted(ends):
+        total_point = consolidated.get(end)
+        if total_point is None:
+            continue
+        total = float(total_point["val"])
+        seg_sum = sum(
+            float(member[end]["val"]) for member in by_member.values() if end in member
+        )
+        if abs(seg_sum - total) > max(_SEGMENT_RECONCILE_TOLERANCE * abs(total), 1.0):
+            mismatches.append(
+                f"segments sum to {seg_sum:,.0f} vs consolidated {total:,.0f} "
+                f"for period ending {end}"
+            )
+    if mismatches:
+        return "partial", (
+            "segment members do not fully reconcile to consolidated revenue "
+            "(an untagged Other/Corporate/eliminations member is implied): "
+            + "; ".join(mismatches)
+        )
+    return "available", None
+
+
 def extract_trends(facts: dict, n: int = 5) -> dict:
     """Multi-year revenue + margin trend (last `n` fiscal years) from XBRL company facts."""
     rev = _annual_by_year(facts, REVENUE_CONCEPTS)

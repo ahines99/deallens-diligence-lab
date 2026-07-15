@@ -140,7 +140,7 @@ the async ingestion progress (`ready`|`building`|`failed`).
 | POST | `/api/workspaces/{id}/build/retry` | re-arms a `failed` build and re-runs it (409 unless failed) |
 | GET  | `/api/workspaces` | → `Workspace[]` (each carries `build_status`/`build_step`/`build_error`) |
 | GET  | `/api/workspaces/{id}` | → `WorkspaceOverview` |
-| POST | `/api/workspaces/{id}/qa` | `{question}` → `FilingsQA` (deterministic BM25 retrieval over ingested filing sections; strictly extractive cited answer or explicit abstention) |
+| POST | `/api/workspaces/{id}/qa` | `{question}` → `FilingsQA` (deterministic hybrid retrieval — BM25 fused with local keyless embeddings via reciprocal-rank fusion, falling back to BM25 when a workspace has no embeddings — over ingested filing sections; strictly extractive cited answer or explicit abstention; response `method` is `extractive_hybrid_rrf` or `extractive_bm25`) |
 | GET  | `/api/workspaces/{id}/memo/faithfulness` | → runtime report per memo document: citation counts, unresolved `EV-###` refs, uncited numeric sentences |
 | POST | `/api/auth/demo` | → `SessionToken` for a guest identity in the shared Demo Sandbox org (403 unless `DEMO_MODE=true`; rate-limited) |
 | POST | `/api/examples/private-deal` | → `{organization_id,fund_id,deal_id,workspace_id,deal_code,import_status,open_exceptions}` (loads the bundled fictional private deal through the real import/governance pipeline; QoE adjustments stay `proposed`) |
@@ -167,6 +167,7 @@ the async ingestion progress (`ready`|`building`|`failed`).
 | GET  | `/api/workspaces/{id}/evidence` | → `Evidence[]` |
 | GET  | `/api/workspaces/{id}/trends` | → `FinancialTrends` (multi-year XBRL; 404 if unavailable) |
 | GET  | `/api/workspaces/{id}/financials/quarterly` | → `QuarterlyFinancials` (last 8 discrete/derived 10-Q quarters + per-metric TTM; TTM is null-with-reason unless four contiguous quarters exist — Q4 may be derived as FY−(Q1+Q2+Q3), labeled `fy_minus_q123`; workspaces ingested before this feature return `source_status:"unavailable"` until refreshed) |
+| GET  | `/api/workspaces/{id}/financials/segments` | → `SegmentRevenue` (per-segment revenue trend from dimensional XBRL facts on a reporting axis, e.g. `StatementBusinessSegmentsAxis`; `source_status:"available"` when members reconcile to consolidated, `"partial"` when they don't fully reconcile (untagged Other/eliminations), `"unavailable"` when companyfacts is consolidated-only — standard SEC company facts publish no dimensional facts, so segment splits are never fabricated; workspaces ingested before this feature return `"unavailable"` until refreshed) |
 | GET  | `/api/workspaces/{id}/macro` | → `MacroOverlay` (FRED series relevant to the target's sector) |
 | POST | `/api/workspaces/{id}/govcon` | `{recipient_name?}` → `GovConProfile` (fetches USAspending federal awards, re-runs analysis; 502 on upstream failure) |
 | GET  | `/api/workspaces/{id}/govcon` | → `GovConProfile` (404 if not fetched) |
@@ -176,6 +177,8 @@ the async ingestion progress (`ready`|`building`|`failed`).
 | GET  | `/api/workspaces/{id}/events` | → `EventTimeline` (8-K item-code material events; 4.02 flagged significant) |
 | GET  | `/api/workspaces/{id}/insiders` | → `InsiderActivity` (Form 4 buys/sells) |
 | GET  | `/api/workspaces/{id}/insider-patterns` | → `InsiderPatterns` (clustered buy/sell windows, 10b5-1 plan summary, officer/director/10%-owner split; same Form 4 feed + source_status) |
+| GET  | `/api/workspaces/{id}/institutional-ownership` | → `InstitutionalOwnership` (13F holder-concentration: HHI, top-5 share, holder count. `scope=manager_portfolio` when the target itself files 13F-HR — reports ITS holdings' concentration; `scope=not_applicable` otherwise — keyless reverse holder-lookup by CUSIP is unavailable) |
+| GET  | `/api/workspaces/{id}/activist-stakes` | → `ActivistStakes` (SC 13D/13G filings about the target, classified activist=13D vs passive=13G, as timeline events; filer/percent best-effort from cover page) |
 | GET  | `/api/workspaces/{id}/themes` | → `ThemeScan` (SEC full-text red-flag theme scan) |
 | GET  | `/api/workspaces/{id}/news` | → `NewsSignals` (GDELT media — unverified, not evidence) |
 | GET  | `/api/workspaces/{id}/filing-watch` | → `FilingWatch` (new filings since last analysis) |
