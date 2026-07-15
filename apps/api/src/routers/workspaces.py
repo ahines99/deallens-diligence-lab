@@ -11,7 +11,7 @@ from src.schemas.workspace import (
     WorkspaceOut,
     WorkspaceOverview,
 )
-from src.services import diligence_question_service, workspace_service
+from src.services import diligence_question_service, job_service, workspace_service
 from src.services.edgar_client import EdgarError
 
 router = APIRouter(prefix="/api/workspaces", tags=["workspaces"])
@@ -37,7 +37,10 @@ def create_workspace(
         status = 404 if "not found" in str(exc).lower() else 502
         raise HTTPException(status_code=status, detail=str(exc)) from exc
     if ws.build_status == "building":
-        background.add_task(workspace_service.run_build_in_new_session, ws.id)
+        # Durable queue first (a crashed process can never lose the build), then an
+        # in-process drain so single-process deployments finish without a separate worker.
+        job = job_service.enqueue(session, "workspace_build", {"workspace_id": ws.id})
+        background.add_task(job_service.drain_job_in_new_session, job.id)
     return WorkspaceOut.model_validate(ws)
 
 
@@ -56,7 +59,8 @@ def retry_build(
         status = workspace_service.retry_build(session, workspace_id)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    background.add_task(workspace_service.run_build_in_new_session, workspace_id)
+    job = job_service.enqueue(session, "workspace_build", {"workspace_id": workspace_id})
+    background.add_task(job_service.drain_job_in_new_session, job.id)
     return WorkspaceBuildStatus.model_validate(status)
 
 

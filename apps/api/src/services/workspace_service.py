@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -111,11 +112,17 @@ def retry_build(session: Session, workspace_id: str) -> dict:
     return get_build_status(session, workspace_id)
 
 
-def run_build(session: Session, workspace_id: str) -> None:
+def run_build(
+    session: Session,
+    workspace_id: str,
+    heartbeat: Callable[[], None] | None = None,
+) -> None:
     """Run the full ticker ingest + analysis, recording per-step progress on the workspace.
 
     Never raises: failures are recorded as ``build_status='failed'`` with the error message,
     since this usually executes outside a request (background task) with no caller to catch.
+    ``heartbeat`` (optional) is invoked at every step boundary so a durable job runner can
+    prove liveness during long ingests.
     """
     ws = session.get(Workspace, workspace_id)
     if ws is None or not ws.build_ticker:
@@ -127,6 +134,8 @@ def run_build(session: Session, workspace_id: str) -> None:
         # (ingestion is idempotent, so a partially committed build is safe to re-run).
         ws.build_step = step
         session.commit()
+        if heartbeat is not None:
+            heartbeat()
 
     try:
         from src.services import analysis_service
@@ -134,7 +143,11 @@ def run_build(session: Session, workspace_id: str) -> None:
         sec_ingestion_service.ingest_company(session, workspace_id, ticker, progress=progress)
         session.commit()
         progress("running_analysis")
-        analysis_service.run_full_analysis(session, workspace_id)
+        # Heartbeat through the long analysis phase (LLM-bound in live mode) so a durable job
+        # runner does not mistake a still-working build for a crashed one and requeue it.
+        analysis_service.run_full_analysis(
+            session, workspace_id, heartbeat=heartbeat
+        )
         ws.build_status = "ready"
         ws.build_step = None
         ws.build_error = None

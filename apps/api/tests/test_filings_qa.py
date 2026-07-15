@@ -134,3 +134,27 @@ def test_memo_faithfulness_report_flags_unresolved_refs(client, filing_workspace
     assert any(
         "21%" in sentence for sentence in memo_report["uncited_numeric_sentences"]
     )
+
+
+def test_qa_rejects_an_overlong_question(client, filing_workspace):
+    """LOW: an unbounded question is a CPU/bandwidth amplification vector — cap it."""
+    resp = client.post(
+        f"/api/workspaces/{filing_workspace}/qa",
+        json={"question": "revenue " * 500},  # ~4000 chars, over the 2000 cap
+    )
+    assert resp.status_code == 422
+
+
+def test_thin_single_term_match_is_labeled_partial(client, filing_workspace):
+    """LOW: a one-term lexical hit must not present as a confident full answer."""
+    # 'customer' matches the risk-factor sentence, but the other four terms don't appear —
+    # coverage falls below the threshold, so the answer is 'partial', not 'answered'.
+    resp = client.post(
+        f"/api/workspaces/{filing_workspace}/qa",
+        json={"question": "customer aardvark zeppelin quarterly lithium"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["status"] == "partial"
+    assert body["retrieval"]["coverage"] < 0.5
+    assert body["citations"]  # citations still resolve

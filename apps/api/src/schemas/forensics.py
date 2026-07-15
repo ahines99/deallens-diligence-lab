@@ -33,6 +33,16 @@ class QoEMetric(BaseModel):
     commentary: str
 
 
+class FiscalDiagnostic(BaseModel):
+    """A derived metric whose operands come from different fiscal reporting periods (G17)."""
+
+    metric: str
+    period_a: str
+    period_b: str
+    severity: Literal["high", "medium"]
+    detail: str
+
+
 class Forensics(BaseModel):
     workspace_id: str
     target_name: str
@@ -40,4 +50,6 @@ class Forensics(BaseModel):
     scores: list[ForensicScore]
     qoe: list[QoEMetric]
     notes: list[str]
+    # [] = all derived metrics are period-consistent; None = not computable (no stored sources).
+    fiscal_diagnostics: list[FiscalDiagnostic] | None = None
     generated_at: datetime

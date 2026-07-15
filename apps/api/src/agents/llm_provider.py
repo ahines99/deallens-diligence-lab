@@ -6,6 +6,8 @@ This is a wired extension point; the default demo path is fully deterministic.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import httpx
 
 from src.agents.citation_auditor import CitationAuditor
@@ -17,6 +19,24 @@ SYSTEM_PROMPT = (
     "number, fact, or citation, do NOT add claims, and keep every [EV-###] tag exactly where it is. "
     "Never present the output as investment advice."
 )
+# Bump when SYSTEM_PROMPT changes so sealed runs record which prompt produced their prose.
+PROMPT_VERSION = "ic-editor-v1"
+
+
+@dataclass(frozen=True)
+class PolishOutcome:
+    """Result of an attempted LLM re-voice, carrying honest provenance for the sealed run.
+
+    ``applied`` is True only when a live rewrite passed the citation auditor and was used;
+    every other path (mock, no consent, no key, audit rejection, error) returns the original
+    deterministic text with ``applied=False`` and a machine-readable ``reason``.
+    """
+
+    text: str
+    applied: bool
+    reason: str
+    model: str | None = None
+    prompt_version: str | None = None
 
 
 class LiveProvider:
@@ -63,13 +83,24 @@ class LiveProvider:
             return resp.json()["choices"][0]["message"]["content"]
 
 
-def polish_markdown(markdown: str, *, external_allowed: bool = False) -> str:
-    """Re-voice a grounded draft only with workspace consent, failing closed on drift."""
-    if not external_allowed or settings.is_mock or not settings.llm_api_key:
-        return markdown
+def polish_markdown(markdown: str, *, external_allowed: bool = False) -> PolishOutcome:
+    """Re-voice a grounded draft only with workspace consent, failing closed on drift.
+
+    Returns a :class:`PolishOutcome` so callers can record whether the external LLM actually
+    touched the artifact — the sealed ``AnalysisRun`` must never claim determinism when it did.
+    """
+    if not external_allowed:
+        return PolishOutcome(markdown, False, "no_consent")
+    if settings.is_mock:
+        return PolishOutcome(markdown, False, "mock")
+    if not settings.llm_api_key:
+        return PolishOutcome(markdown, False, "no_api_key")
     try:
-        candidate = LiveProvider().complete(SYSTEM_PROMPT, markdown)
+        provider = LiveProvider()
+        candidate = provider.complete(SYSTEM_PROMPT, markdown)
         audit = CitationAuditor.audit_rewrite(markdown, candidate)
-        return candidate if audit.faithful else markdown
+        if audit.faithful:
+            return PolishOutcome(candidate, True, "applied", provider.model, PROMPT_VERSION)
+        return PolishOutcome(markdown, False, "audit_rejected", provider.model, PROMPT_VERSION)
     except Exception:
-        return markdown
+        return PolishOutcome(markdown, False, "error")

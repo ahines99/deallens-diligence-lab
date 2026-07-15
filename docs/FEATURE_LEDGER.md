@@ -69,7 +69,7 @@ cannot be satisfied by relabeling repairs as features.
 | F38 | Import-exception aging queue | done | open-age sorting test |
 | F39 | QoE adjustment materiality analysis | done | percentage/band tests |
 | F40 | Reported-to-sponsor EBITDA variance | done | bridge aggregation test |
-| F41 | Fiscal-period consistency diagnostics | planned | mismatch detection tests (carried into Wave 4 as G17 — see `ROADMAP-WAVE4.md`) |
+| F41 | Fiscal-period consistency diagnostics | done | mismatch detection tests (`apps/api/tests/test_fiscal_diagnostics.py`; delivered in Wave 4 as G17) |
 | F42 | Server-owned provenance labels | done | user/XBRL source tests |
 | F43 | Financial-import dry-run preview | done | no-write preview test |
 | F44 | Approved intelligence claims promoted to governed evidence | done | claim approval bridge test |
@@ -101,9 +101,9 @@ Completion requires at least 50 `F##` rows marked `done`, every B01-B15 gate eit
 removed from the shipped product, all tests/builds/migrations green, and a final requirement-by-requirement
 audit against the current worktree. Planned or partially implemented rows do not count.
 
-Current verified tally: **15/15 defect gates closed and 63/65 capabilities done**. F02 intentionally
+Current verified tally: **15/15 defect gates closed and 64/65 capabilities done**. F02 intentionally
 uses expiring, server-stored, hashed, revocable opaque tokens instead of self-contained signed tokens.
-The remaining 2 ideas (F41 and F55) stay planned and are not included in the completed count.
+The remaining idea (F55) stays planned and is not included in the completed count.
 F28–F30 and F34–F35 are covered by dedicated boundary/acceptance tests in
 `apps/api/tests/test_portfolio.py`, F51 by `apps/api/tests/test_filings_qa.py`, and F59 by
 `apps/web/src/app/workspaces/[workspaceId]/page.test.tsx`.

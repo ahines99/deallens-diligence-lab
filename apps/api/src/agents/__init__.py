@@ -1,5 +1,5 @@
 """Named diligence agents and the LLM provider abstraction."""
-from src.agents.base import BaseAgent, LLMProvider, get_provider
+from src.agents.base import BaseAgent, LLMProvider
 from src.agents.citation_auditor import CitationAuditor
 from src.agents.diligence_lead import DiligenceLead
 from src.agents.filing_analyst import FilingAnalyst
@@ -12,7 +12,6 @@ from src.agents.risk_analyst import RiskAnalyst
 __all__ = [
     "BaseAgent",
     "LLMProvider",
-    "get_provider",
     "CitationAuditor",
     "DiligenceLead",
     "FilingAnalyst",

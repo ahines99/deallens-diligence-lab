@@ -28,6 +28,17 @@ def test_demo_session_disabled_by_default(client):
     assert resp.status_code == 403
 
 
+def test_purge_refuses_to_run_when_demo_mode_is_off(client):
+    """M1 regression: the raw-SQL retention purge must never execute on a non-demo deployment,
+    so a misplaced cleanup worker cannot destroy a real org that shares the demo slug."""
+    from src.services.identity_service import IdentityForbidden
+
+    assert settings.demo_mode is False
+    with SessionLocal() as session:
+        with pytest.raises(IdentityForbidden):
+            demo_service.purge_expired_demo_data(session)
+
+
 def test_guest_session_is_a_real_scoped_identity(client, demo_mode):
     resp = client.post("/api/auth/demo")
     assert resp.status_code == 201, resp.text

@@ -29,7 +29,9 @@ def offline_build(monkeypatch):
         return None
 
     monkeypatch.setattr(sec_ingestion_service, "ingest_company", fake_ingest)
-    monkeypatch.setattr(analysis_service, "run_full_analysis", lambda session, ws_id: None)
+    monkeypatch.setattr(
+        analysis_service, "run_full_analysis", lambda session, ws_id, heartbeat=None: None
+    )
 
 
 def test_create_with_ticker_builds_in_background_and_reports_ready(client, offline_build):

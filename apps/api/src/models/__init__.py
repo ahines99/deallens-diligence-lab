@@ -38,6 +38,7 @@ from src.models.filing import Filing
 from src.models.govcon import GovConProfile
 from src.models.integration import WebhookDelivery, WebhookEndpoint
 from src.models.identity import AuthSession, OrganizationMembership, User
+from src.models.job import BackgroundJob
 from src.models.memo import Memo
 from src.models.plan import DiligencePlan
 from src.models.question import DiligenceQuestion
@@ -60,6 +61,7 @@ from src.models.workspace import Workspace
 __all__ = [
     "AuditLog",
     "AuthSession",
+    "BackgroundJob",
     "ComparableCompany",
     "CitedQARun",
     "ClaimReviewEvent",

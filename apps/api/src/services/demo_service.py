@@ -10,13 +10,14 @@ import secrets
 from datetime import timedelta
 
 import sqlalchemy as sa
+from sqlalchemy import delete as sa_delete
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from src.config import settings
 from src.models import Organization, User, Workspace
 from src.models.deal_workflow import Deal
-from src.models.identity import OrganizationMembership
+from src.models.identity import AuthSession, OrganizationMembership
 from src.schemas.identity import SessionTokenOut
 from src.db.base import now_utc
 from src.services import identity_service
@@ -85,6 +86,10 @@ def purge_expired_demo_data(session: Session) -> dict:
     append-only at the ORM layer; retention cleanup of an expired demo tenant is the one
     sanctioned destructive maintenance path, and it never touches non-demo organizations.
     """
+    # Hard guard: this raw-SQL delete path only ever runs on a deployment that opted into demo
+    # mode, so scheduling the cleanup worker elsewhere cannot destroy a real org that happens
+    # to share the demo slug.
+    _require_demo_mode()
     cutoff = now_utc() - timedelta(hours=max(settings.demo_retention_hours, 1))
     organization = session.scalar(
         select(Organization).where(Organization.slug == DEMO_ORG_SLUG)
@@ -96,7 +101,7 @@ def purge_expired_demo_data(session: Session) -> dict:
             session.scalars(
                 select(Workspace.id).where(
                     Workspace.organization_id == organization.id,
-                    Workspace.created_at < cutoff.replace(tzinfo=None),
+                    Workspace.created_at < cutoff,
                 )
             )
         )
@@ -104,7 +109,7 @@ def purge_expired_demo_data(session: Session) -> dict:
             session.scalars(
                 select(Deal.id).where(
                     Deal.organization_id == organization.id,
-                    Deal.created_at < cutoff.replace(tzinfo=None),
+                    Deal.created_at < cutoff,
                 )
             )
         )
@@ -133,14 +138,24 @@ def purge_expired_demo_data(session: Session) -> dict:
         counts["workspaces"] = len(workspace_ids)
         counts["deals"] = len(deal_ids)
 
-    guest_ids = list(
-        session.scalars(
-            select(User.id).where(
-                User.email_normalized.like(f"guest-%@{_GUEST_EMAIL_DOMAIN}"),
-                User.created_at < cutoff.replace(tzinfo=None),
+    # Guest deletion is bounded to actual members of the demo organization, not the email
+    # pattern alone — a real (admin-registered) user who happens to match the pattern is never
+    # deleted. Guests only ever hold a membership in the demo org, so this is exact.
+    guest_ids: list[str] = []
+    if organization is not None:
+        guest_ids = list(
+            session.scalars(
+                select(User.id).where(
+                    User.email_normalized.like(f"guest-%@{_GUEST_EMAIL_DOMAIN}"),
+                    User.created_at < cutoff,
+                    User.id.in_(
+                        select(OrganizationMembership.user_id).where(
+                            OrganizationMembership.organization_id == organization.id
+                        )
+                    ),
+                )
             )
         )
-    )
     if guest_ids:
         session.connection().execute(
             sa.text("DELETE FROM users WHERE id IN :ids").bindparams(
@@ -149,10 +164,10 @@ def purge_expired_demo_data(session: Session) -> dict:
         )
         counts["guest_users"] = len(guest_ids)
 
-    expired = session.connection().execute(
-        sa.text("DELETE FROM auth_sessions WHERE expires_at < :cutoff").bindparams(
-            cutoff=cutoff.replace(tzinfo=None)
-        )
+    # Typed ORM delete so the aware cutoff is compared correctly against the timezone-aware
+    # column on both SQLite and Postgres (a naive comparand shifts the window on a non-UTC server).
+    expired = session.execute(
+        sa_delete(AuthSession).where(AuthSession.expires_at < cutoff)
     )
     counts["expired_sessions"] = expired.rowcount or 0
 

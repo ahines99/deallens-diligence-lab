@@ -33,8 +33,13 @@ Base URL: `NEXT_PUBLIC_API_URL` (default `http://localhost:8000`). All app route
 
 ### Workspace
 ```json
-{ "id","name","target_id"|null,"deal_type","investment_question","status","created_at","updated_at" }
+{ "id","name","organization_id"|null,"target_id"|null,"deal_type","investment_question","status",
+  "data_classification","external_llm_allowed","build_status","build_step"|null,"build_error"|null,
+  "created_at","updated_at" }
 ```
+`data_classification` is `public`|`internal`|`confidential`|`restricted`; `external_llm_allowed` gates
+external LLM processing (always false for `restricted`). `build_status`/`build_step`/`build_error` mirror
+the async ingestion progress (`ready`|`building`|`failed`).
 
 ### Target (real, from SEC EDGAR XBRL for public companies)
 ```json
@@ -127,7 +132,8 @@ Base URL: `NEXT_PUBLIC_API_URL` (default `http://localhost:8000`). All app route
 
 | Method | Path | Body → Returns |
 |---|---|---|
-| GET  | `/api/health` | → `{ "status":"ok","llm_mode","database" }` |
+| GET  | `/api/health` | → `{ "status":"ok","llm_mode","database","database_status","schema_management","demo_mode" }` |
+| PATCH | `/api/workspaces/{id}/governance` | `{data_classification?,external_llm_allowed?}` (at least one) → `Workspace` (owners/admins only; a `restricted` class cannot enable external LLM) |
 | POST | `/api/workspaces` | `{ticker?,name?,deal_type,investment_question?}` → `Workspace` (a `ticker` resolves synchronously — unknown ticker → 404 — then ingestion + analysis run in the background; poll `build-status`) |
 | GET  | `/api/workspaces/{id}/build-status` | → `{workspace_id,status:"ready"\|"building"\|"failed",step,error,ticker}` |
 | POST | `/api/workspaces/{id}/build/retry` | re-arms a `failed` build and re-runs it (409 unless failed) |
@@ -159,10 +165,11 @@ Base URL: `NEXT_PUBLIC_API_URL` (default `http://localhost:8000`). All app route
 | GET  | `/api/workspaces/{id}/red-team` | → `RedTeam` (404 if not generated) |
 | GET  | `/api/workspaces/{id}/evidence` | → `Evidence[]` |
 | GET  | `/api/workspaces/{id}/trends` | → `FinancialTrends` (multi-year XBRL; 404 if unavailable) |
+| GET  | `/api/workspaces/{id}/financials/quarterly` | → `QuarterlyFinancials` (last 8 discrete/derived 10-Q quarters + per-metric TTM; TTM is null-with-reason unless four contiguous quarters exist — Q4 may be derived as FY−(Q1+Q2+Q3), labeled `fy_minus_q123`; workspaces ingested before this feature return `source_status:"unavailable"` until refreshed) |
 | GET  | `/api/workspaces/{id}/macro` | → `MacroOverlay` (FRED series relevant to the target's sector) |
 | POST | `/api/workspaces/{id}/govcon` | `{recipient_name?}` → `GovConProfile` (fetches USAspending federal awards, re-runs analysis; 502 on upstream failure) |
 | GET  | `/api/workspaces/{id}/govcon` | → `GovConProfile` (404 if not fetched) |
-| GET  | `/api/workspaces/{id}/forensics` | → `Forensics` (Altman Z″, Piotroski F, Beneish M, accruals + QoE metrics; from XBRL) |
+| GET  | `/api/workspaces/{id}/forensics` | → `Forensics` (Altman Z″, Piotroski F, Beneish M, accruals + QoE metrics; from XBRL). Carries `fiscal_diagnostics`: `[]` = all derived metrics used same-period operands, `[{metric,period_a,period_b,severity,detail}]` = mixed-period operands flagged, `null` = not computable (no stored source points) |
 | GET  | `/api/workspaces/{id}/valuation` | → `Valuation` (WACC from FRED, DCF-lite; assumptions labeled) |
 | POST | `/api/workspaces/{id}/lbo` | `LboInputs` → `LboResult` (IRR/MOIC + entry×exit sensitivity grid) |
 | GET  | `/api/workspaces/{id}/events` | → `EventTimeline` (8-K item-code material events; 4.02 flagged significant) |
@@ -200,19 +207,46 @@ Notes:
 - Generating risks/questions/memo/red-team also creates the Evidence rows they cite.
 
 ## Frontend pages (App Router)
+
+The app under `apps/web/src/app` currently ships ~32 routes: seven top-level pages plus ~25 workspace
+tabs.
+
 ```
+# Top level
 /                                     landing + disclaimer + "New workspace"
+/login                                sign in (same-origin session bridge)
+/register                             first-user bootstrap + self-registration
+/pipeline                             deal pipeline across the organization
+/portfolio                            portfolio command center (KPIs, funnel, exposure, health)
 /workspaces                           list of workspaces
 /workspaces/new                       create form (enter a ticker → real SEC ingest)
+
+# Workspace detail — /workspaces/[workspaceId]/*
 /workspaces/[workspaceId]             overview: plan, progress, top risks, generate actions
 /workspaces/[workspaceId]/target      target profile
 /workspaces/[workspaceId]/filings     filings table + SEC ingest
 /workspaces/[workspaceId]/comps       comps table + financial benchmark
 /workspaces/[workspaceId]/risks       red-flag matrix
 /workspaces/[workspaceId]/questions   diligence questions by workstream
-/workspaces/[workspaceId]/memo        IC memo viewer
+/workspaces/[workspaceId]/qa          "Ask the filings" — cited extractive Q&A (BM25)
+/workspaces/[workspaceId]/memo        IC memo viewer + faithfulness report
 /workspaces/[workspaceId]/red-team    bear case + unsupported claims + missing evidence
 /workspaces/[workspaceId]/evidence    evidence & audit table
+/workspaces/[workspaceId]/trends      multi-year XBRL trends
+/workspaces/[workspaceId]/macro       FRED macro overlay
+/workspaces/[workspaceId]/govcon      GovCon federal-award profile
+/workspaces/[workspaceId]/forensics   QoE / forensics (Altman, Piotroski, Beneish, accruals)
+/workspaces/[workspaceId]/valuation   WACC / DCF-lite / LBO sensitivity
+/workspaces/[workspaceId]/events      8-K material-event timeline
+/workspaces/[workspaceId]/insiders    Form 4 insider activity
+/workspaces/[workspaceId]/news        GDELT news signals (unverified media)
+/workspaces/[workspaceId]/data-room   private-deal document room
+/workspaces/[workspaceId]/qoe         QoE adjustment ledger + bridge
+/workspaces/[workspaceId]/underwriting versioned LBO/operating model + cases
+/workspaces/[workspaceId]/stress      sensitivity / reverse-stress / Monte Carlo
+/workspaces/[workspaceId]/execution   deal execution (gates, workstreams, tasks)
+/workspaces/[workspaceId]/intelligence document intelligence + SEC comparisons
+/workspaces/[workspaceId]/ic          IC packet assembly, readiness, decisions
 ```
 
 Components: `WorkspaceCard`, `TargetProfile`, `FilingTable`, `CompsTable`, `RiskMatrix`,
@@ -240,8 +274,13 @@ Endpoint families:
 | Private financials | `/api/workspaces/{id}/underwriting/sources`, `/financial-imports/{csv,xlsx}`, `/financial-facts`, `/reconciliations`, `/import-exceptions` |
 | QoE | `/api/workspaces/{id}/underwriting/qoe-adjustments`, `/qoe-bridge` |
 | Model | `/api/workspaces/{id}/underwriting/{calculate,cases,case-set,working-capital-peg,valuation-triangulation,sensitivity,reverse-stress}` |
+| Monte Carlo LBO | `/api/workspaces/{id}/underwriting/monte-carlo` — seeded driver-distribution simulation; percentile IRR/MoIC bands, reproducible for identical seed + inputs |
+| Returns attribution | `/api/workspaces/{id}/underwriting/returns-attribution` — EBITDA growth / multiple change / deleveraging / cross-term bridge; components sum exactly to total value creation |
+| Identity & sessions | `POST /api/auth/{register,login,demo,logout,switch-organization}` → `SessionToken`; `GET /api/auth/me` → `CurrentIdentity`; `GET`/`POST /api/organizations/{id}/members`, `PATCH /api/memberships/{id}` (org membership admin) |
+| Portfolio | `GET /api/organizations/{id}/portfolio` → `PortfolioDashboard` (filters: `search,stage,fund_id,as_of,ic_window_days`); `/portfolio/export.csv` (CSV download); `/portfolio/health` → `PortfolioHealth` |
+| Activity | `GET /api/organizations/{id}/activity` → `ActivityTimeline` (unified timeline; filters `deal_id,actor_id,category,before,limit`) |
 | Deal execution | `/api/organizations`, `/api/funds/{id}/deals`, `/api/deals/{id}/{gates,team,workstreams,milestones,tasks,diligence-requests,ledger}` |
-| IC governance | `/api/deals/{id}/ic-packets`, `/api/ic-packets/{id}/{readiness,submit,comments,decisions,exports}` |
+| IC governance | `/api/deals/{id}/ic-packets`, `/api/ic-packets/{id}/{readiness,submit,comments,decisions,exports}`, `GET /api/ic-exports/{id}/verification` → `ExportVerificationResult` (recomputes the manifest hash to detect tampering) |
 | Documents/evidence | `/api/deals/{id}/intelligence/{documents,qa,extractions,claims,comparisons,evaluations}` |
 | SEC changes | `/api/workspaces/{id}/intelligence/sec-comparisons` |
 | Integrations | `/api/organizations/{id}/webhooks`, `/api/organizations/{id}/webhook-deliveries`, `/api/webhook-deliveries/{id}/send` |

@@ -7,6 +7,9 @@ always resolve. Optional live-LLM polish re-voices the memos without changing nu
 """
 from __future__ import annotations
 
+import logging
+from collections.abc import Callable
+
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
@@ -29,6 +32,8 @@ from src.models.underwriting_data import AnalysisRun, ArtifactVersion
 from src.seed import loader
 from src.services import evidence_service
 from src.services.common import NotFound, get_workspace_or_404, touch_status
+
+logger = logging.getLogger("deallens.analysis")
 
 # (target attr, label, claim_type, source-concept key)
 _FIN_METRICS = [
@@ -65,16 +70,29 @@ def _latest_10k(session: Session, workspace_id: str) -> Filing | None:
     )
 
 
-def run_full_analysis(session: Session, workspace_id: str) -> None:
-    """Run and seal the projection atomically; any failure restores the prior current view."""
+def run_full_analysis(
+    session: Session, workspace_id: str, heartbeat: Callable[[], None] | None = None
+) -> None:
+    """Run and seal the projection atomically; any failure restores the prior current view.
+
+    ``heartbeat`` (optional) is pinged between the long analysis stages so a durable job
+    runner can prove liveness through the LLM-bound phases (memo, red team) and avoid a
+    stale-recovery double-build.
+    """
     try:
-        _run_full_analysis(session, workspace_id)
+        _run_full_analysis(session, workspace_id, heartbeat)
     except Exception:
         session.rollback()
         raise
 
 
-def _run_full_analysis(session: Session, workspace_id: str) -> None:
+def _run_full_analysis(
+    session: Session, workspace_id: str, heartbeat: Callable[[], None] | None = None
+) -> None:
+    def beat() -> None:
+        if heartbeat is not None:
+            heartbeat()
+
     ws = get_workspace_or_404(session, workspace_id)
     target: Target | None = session.scalar(select(Target).where(Target.workspace_id == workspace_id))
     if target is None:
@@ -170,16 +188,20 @@ def _run_full_analysis(session: Session, workspace_id: str) -> None:
         + analyst.govcon_flags(govcon)
     )
     # Wave 2 extension flags (forensics + SEC feeds). Each is best-effort: a failure
-    # (e.g. missing forensic_inputs, SEC unreachable) must never break analysis.
+    # (e.g. missing forensic_inputs, SEC unreachable) must never break analysis — but it is
+    # recorded as a degraded source so the sealed run never infers "clean" from a failure.
     import importlib
 
+    degraded_sources: list[str] = []
     for mod_name in ("forensics_service", "sec_feeds_service"):
         try:
             module = importlib.import_module(f"src.services.{mod_name}")
             raw_findings += module.risk_flags(session, workspace_id)
-        except Exception:  # pragma: no cover - defensive; extensions are optional
-            pass
+        except Exception as exc:  # noqa: BLE001 — extensions are optional but their failure is not silent
+            logger.warning("Risk-flag source '%s' unavailable during analysis: %s", mod_name, exc)
+            degraded_sources.append(mod_name)
     raw_findings.sort(key=lambda f: f["severity_score"], reverse=True)
+    beat()
 
     for f in raw_findings:
         ev = evidence_service.create(session, workspace_id, **f["evidence"])
@@ -248,10 +270,12 @@ def _run_full_analysis(session: Session, workspace_id: str) -> None:
     }
 
     # 5) IC memo.
+    beat()
     external_llm_allowed = ws.external_llm_allowed and ws.data_classification != "restricted"
-    memo_md = polish_markdown(
+    memo_polish = polish_markdown(
         ICMemoWriter().draft(ctx), external_allowed=external_llm_allowed
     )
+    memo_md = memo_polish.text
     session.add(
         Memo(
             workspace_id=workspace_id,
@@ -262,10 +286,12 @@ def _run_full_analysis(session: Session, workspace_id: str) -> None:
     )
 
     # 6) Red-team / bear-case.
+    beat()
     rt = RedTeamReviewer().build(ctx)
-    bear_md = polish_markdown(
+    bear_polish = polish_markdown(
         rt["bear_case_markdown"], external_allowed=external_llm_allowed
     )
+    bear_md = bear_polish.text
     session.add(
         RedTeamReport(
             workspace_id=workspace_id,
@@ -300,11 +326,20 @@ def _run_full_analysis(session: Session, workspace_id: str) -> None:
         "filing_accession": tenk.accession_number if tenk else None,
         "financial_sources": sources,
     }
+    # Provenance is honest: a run is only "deterministic" when no external LLM touched it.
+    llm_applied = memo_polish.applied or bear_polish.applied
     output_summary = {
         "risk_count": len(raw_findings),
         "question_count": len(question_data),
         "financial_evidence_count": len(fin_refs),
         "artifacts": ["plan", "ic_memo", "bear_case"],
+        # Explicit source status: extension failures are recorded, never inferred clean.
+        "degraded_sources": degraded_sources,
+        "llm_polished": llm_applied,
+        "llm_polish_outcome": {
+            "ic_memo": memo_polish.reason,
+            "bear_case": bear_polish.reason,
+        },
     }
     latest_run = session.scalar(
         select(AnalysisRun)
@@ -326,8 +361,14 @@ def _run_full_analysis(session: Session, workspace_id: str) -> None:
         source_snapshot_ids=[],
         input_manifest=input_manifest,
         output_summary=output_summary,
-        model_version="deterministic-wave3",
-        prompt_version=None,
+        model_version=(
+            (memo_polish.model or bear_polish.model or "external-llm")
+            if llm_applied
+            else "deterministic-wave3"
+        ),
+        prompt_version=(
+            (memo_polish.prompt_version or bear_polish.prompt_version) if llm_applied else None
+        ),
         code_version="wave3",
         error_message=None,
         created_by="analysis_service",

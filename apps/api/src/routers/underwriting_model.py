@@ -10,6 +10,10 @@ from src.routers.deps import OptionalPrincipalDep, SessionDep
 from src.schemas.deal_workflow import ActorContext
 from src.schemas.underwriting_model import (
     CaseKey,
+    MonteCarloRequest,
+    MonteCarloResult,
+    ReturnsAttributionRequest,
+    ReturnsAttributionResult,
     ReverseStressRequest,
     ReverseStressResult,
     SensitivityRequest,
@@ -237,6 +241,34 @@ def reverse_stress(
     get_workspace_or_404(session, workspace_id)
     try:
         return service.calculate_reverse_stress(payload)
+    except service.UnderwritingCalculationError as exc:
+        raise _calculation_error(exc) from exc
+
+
+@router.post(
+    "/{workspace_id}/underwriting/monte-carlo",
+    response_model=MonteCarloResult,
+)
+def monte_carlo(
+    workspace_id: str, payload: MonteCarloRequest, session: SessionDep
+) -> MonteCarloResult:
+    get_workspace_or_404(session, workspace_id)
+    try:
+        return service.run_monte_carlo(payload)
+    except service.UnderwritingCalculationError as exc:
+        raise _calculation_error(exc) from exc
+
+
+@router.post(
+    "/{workspace_id}/underwriting/returns-attribution",
+    response_model=ReturnsAttributionResult,
+)
+def returns_attribution(
+    workspace_id: str, payload: ReturnsAttributionRequest, session: SessionDep
+) -> ReturnsAttributionResult:
+    get_workspace_or_404(session, workspace_id)
+    try:
+        return service.calculate_returns_attribution(payload)
     except service.UnderwritingCalculationError as exc:
         raise _calculation_error(exc) from exc
 

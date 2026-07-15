@@ -14,6 +14,8 @@ cash-conversion cycle, FCF, cash conversion, interest coverage, EBITDA, net debt
 """
 from __future__ import annotations
 
+from datetime import date
+
 from sqlalchemy.orm import Session
 
 from src.db.base import now_utc
@@ -338,6 +340,105 @@ def _m(key: str, label: str, unit: str, value: float | None, commentary: str) ->
     return {"key": key, "label": label, "unit": unit, "value": value, "commentary": commentary}
 
 
+# --- fiscal-period consistency diagnostics (G17 / ledger F41) ---------------
+# Operand end dates within this many days count as the same reporting period (52/53-week drift).
+_PERIOD_TOLERANCE_DAYS = 7
+
+# Derived headline metric -> the (numerator, denominator) source points it was computed from.
+_DERIVED_METRIC_OPERANDS = {
+    "gross_margin": ("gross_profit", "revenue"),
+    "operating_margin": ("operating_income", "revenue"),
+    "net_margin": ("net_income", "revenue"),
+    "rnd_pct": ("rnd", "revenue"),
+}
+# Balance-sheet instants that must be dated at the income-statement period end.
+_BALANCE_ALIGNED = ("cash", "total_debt")
+
+
+def _iso(value: str | None) -> date | None:
+    try:
+        return date.fromisoformat(value or "")
+    except ValueError:
+        return None
+
+
+def _period_label(point: dict) -> str:
+    fy = str(point.get("fy") or "").strip()
+    end = point.get("end") or "unknown end date"
+    return f"FY{fy} (ending {end})" if fy else f"period ending {end}"
+
+
+def _periods_differ(a: dict, b: dict) -> bool:
+    # End dates are authoritative: XBRL `fy` is the fiscal year of the *filing* that reported a
+    # fact, so a comparative instant retained from a newer 10-K can carry fy=N+1 while sharing an
+    # identical period end with an fy=N operand. Judge on dates first; the fy label is only a
+    # fallback signal when a date is missing, never an override of matching dates.
+    end_a, end_b = _iso(a.get("end")), _iso(b.get("end"))
+    if end_a is not None and end_b is not None:
+        return abs((end_a - end_b).days) > _PERIOD_TOLERANCE_DAYS
+    fy_a, fy_b = str(a.get("fy") or "").strip(), str(b.get("fy") or "").strip()
+    if fy_a and fy_b and fy_a != fy_b:
+        return True
+    return False  # not judgeable without both dates and no conflicting fy labels
+
+
+def _diagnostic(metric: str, a: dict, b: dict, detail: str, severity: str = "high") -> dict:
+    return {
+        "metric": metric,
+        "period_a": _period_label(a),
+        "period_b": _period_label(b),
+        "severity": severity,
+        "detail": detail,
+    }
+
+
+def fiscal_diagnostics(financials: dict | None) -> list[dict] | None:
+    """Verify every multi-operand derived metric used operands from the same reporting period.
+
+    Checks the stored headline metrics (margins, R&D %, and the balance-sheet instants behind net
+    cash/debt) against their per-metric XBRL source points: operand end dates must agree within
+    ``_PERIOD_TOLERANCE_DAYS`` and fiscal-year labels must match when both are present. The
+    Rule-of-40 growth leg intentionally spans two consecutive fiscal years and its margin leg is
+    covered by the operating-margin check. Forensic composites consume single-year rows keyed by
+    fiscal label at extraction (`forensic_inputs.by_year`), so cross-period blending cannot occur
+    there by construction.
+
+    Returns [] when consistent, mismatch diagnostics ({metric, period_a, period_b, severity,
+    detail}) otherwise, or None when the stored financials carry no source points (legacy
+    workspace — not computable). Purely diagnostic: numeric outputs are never modified.
+    """
+    if not financials or not isinstance(financials.get("sources"), dict):
+        return None
+    sources = financials["sources"]
+    diagnostics: list[dict] = []
+    for metric, (num_key, den_key) in _DERIVED_METRIC_OPERANDS.items():
+        if financials.get(metric) is None:
+            continue  # nothing was derived, so nothing could have been blended
+        num, den = sources.get(num_key), sources.get(den_key)
+        if not num or not den:
+            continue
+        if _periods_differ(num, den):
+            diagnostics.append(_diagnostic(
+                metric, num, den,
+                f"{metric} was derived from {num_key} for {_period_label(num)} and {den_key} "
+                f"for {_period_label(den)}; operands must share one reporting period.",
+            ))
+    revenue = sources.get("revenue")
+    if revenue:
+        for key in _BALANCE_ALIGNED:
+            point = sources.get(key)
+            if not point or financials.get(key) is None:
+                continue
+            if _periods_differ(point, revenue):
+                diagnostics.append(_diagnostic(
+                    key, point, revenue,
+                    f"balance-sheet {key} is dated {_period_label(point)} but the reporting "
+                    f"period is {_period_label(revenue)}; instants must match the period end.",
+                    severity="medium",
+                ))
+    return diagnostics
+
+
 # --- assembly --------------------------------------------------------------
 
 
@@ -384,6 +485,9 @@ def compute_forensics(session: Session, workspace_id: str) -> dict:
         "scores": core["scores"],
         "qoe": core["qoe"],
         "notes": core["notes"],
+        # [] = every derived metric used same-period operands; None = legacy workspace without
+        # stored source points (not computable). Additive: never changes any numeric output.
+        "fiscal_diagnostics": fiscal_diagnostics(target.financials),
         "generated_at": now_utc(),
     }
 
@@ -491,6 +595,26 @@ def risk_flags(session: Session, workspace_id: str) -> list[dict]:
                       f"score = {int(piotroski['value'])}.",
                       "NetIncomeLoss, CFO, Assets, LongTermDebt, LiabilitiesCurrent, Revenues, GrossProfit",
                       0.78),
+        ))
+
+    diagnostics = fiscal_diagnostics(target.financials)
+    if diagnostics:
+        listing = "; ".join(
+            f"{d['metric']} ({d['period_a']} vs {d['period_b']})" for d in diagnostics
+        )
+        flags.append(_finding(
+            "margin_pressure", "Reporting-period consistency",
+            "Derived metrics mix fiscal reporting periods",
+            f"{target.name} has {len(diagnostics)} stored derived metric(s) whose operands come from "
+            f"different reporting periods: {listing}. Mixed-period ratios are unreliable and are "
+            "flagged rather than silently blended; refresh the ingestion to recompute them from a "
+            "single reporting period.",
+            "medium", 5, 0.9,
+            "Re-ingest the target so every derived ratio uses operands from the same fiscal period.",
+            _evidence(target, year, "Fiscal-period consistency check flagged mixed-period operands.",
+                      f"Mismatched operand periods: {listing}.",
+                      "XBRL period end dates and fiscal-year labels per stored source point",
+                      0.9),
         ))
 
     return flags

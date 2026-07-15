@@ -171,7 +171,15 @@ def _readiness(
             "No IC packet is assembled",
         ),
     ]
-    score = sum(item["score"] * item["weight"] for item in components)
+    # Renormalize over components that actually have data: an unconfigured control is "unknown",
+    # not "failing", so it must not drag the headline readiness score toward zero. When every
+    # control is configured the denominator is the full weight (1.0) and this is a no-op.
+    assessed = [item for item in components if item["total"] > 0]
+    if assessed:
+        weight_sum = sum(item["weight"] for item in assessed)
+        score = sum(item["score"] * item["weight"] for item in assessed) / weight_sum
+    else:
+        score = 0.0
     return round(score, 1), components
 
 
@@ -781,6 +789,22 @@ def get_dashboard(
     }
 
 
+_CSV_FORMULA_TRIGGERS = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _csv_safe(value: Any) -> Any:
+    """Neutralize spreadsheet formula injection (CWE-1236).
+
+    Deal/target names and sectors are user-controlled free text. A value beginning with a
+    formula trigger (``=``, ``+``, ``-``, ``@``, tab, CR) is prefixed with a leading apostrophe
+    so Excel/Sheets render it as literal text instead of executing e.g. ``=WEBSERVICE(...)``.
+    Non-string cells (numbers, dates) pass through unchanged.
+    """
+    if isinstance(value, str) and value and value[0] in _CSV_FORMULA_TRIGGERS:
+        return "'" + value
+    return value
+
+
 def export_dashboard_csv(dashboard: dict[str, Any]) -> str:
     output = io.StringIO(newline="")
     fields = (
@@ -805,12 +829,13 @@ def export_dashboard_csv(dashboard: dict[str, Any]) -> str:
     for deal in dashboard["deals"]:
         writer.writerow(
             {
-                "code": deal["code"],
-                "name": deal["name"],
-                "target_company": deal["target_company"],
-                "fund_name": deal["fund_name"],
-                "strategy": deal["strategy"],
-                "sector": deal["sector"],
+                # User-controlled free-text fields are formula-neutralized on export.
+                "code": _csv_safe(deal["code"]),
+                "name": _csv_safe(deal["name"]),
+                "target_company": _csv_safe(deal["target_company"]),
+                "fund_name": _csv_safe(deal["fund_name"]),
+                "strategy": _csv_safe(deal["strategy"]),
+                "sector": _csv_safe(deal["sector"]),
                 "stage": deal["stage"],
                 "status": deal["status"],
                 "ic_date": deal["ic_date"].isoformat() if deal["ic_date"] else "",

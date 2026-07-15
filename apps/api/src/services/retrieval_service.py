@@ -8,7 +8,6 @@ change — `DocumentChunk.embedding_id` is already reserved for that store.
 from __future__ import annotations
 
 import math
-import re
 from collections import Counter
 from dataclasses import dataclass
 
@@ -16,21 +15,15 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from src.models import DocumentChunk
-
-_TOKEN = re.compile(r"[a-z0-9]+")
-_STOP = {
-    "the", "a", "an", "of", "to", "and", "or", "in", "on", "for", "is", "are", "was", "were",
-    "what", "how", "does", "do", "with", "by", "as", "at", "from", "that", "this", "it",
-}
+from src.services import textkit
 
 # Standard Okapi BM25 constants: k1 tempers term-frequency saturation, b scales length
 # normalization by the corpus-average chunk length.
 _BM25_K1 = 1.5
 _BM25_B = 0.75
 
-
-def _tokens(text: str) -> list[str]:
-    return [t for t in _TOKEN.findall(text.lower()) if t not in _STOP and len(t) > 2]
+# Retrieval and the Q&A that ranks on top of it share one tokenizer (see textkit).
+_tokens = textkit.tokens
 
 
 @dataclass

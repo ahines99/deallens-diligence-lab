@@ -554,20 +554,30 @@ def test_llm_rewrite_fails_closed_on_numeric_or_citation_drift(
         return safe
 
     monkeypatch.setattr(llm_provider.LiveProvider, "complete", record_call)
-    assert llm_provider.polish_markdown(source) == source
+    # Without consent the LLM is never called and the run stays deterministic.
+    no_consent = llm_provider.polish_markdown(source)
+    assert no_consent.text == source
+    assert no_consent.applied is False and no_consent.reason == "no_consent"
     assert calls == []
+    # A drifted rewrite is rejected: original text served, applied stays False.
     monkeypatch.setattr(
         llm_provider.LiveProvider,
         "complete",
         lambda self, system, user: numeric_drift,
     )
-    assert llm_provider.polish_markdown(source, external_allowed=True) == source
+    rejected = llm_provider.polish_markdown(source, external_allowed=True)
+    assert rejected.text == source
+    assert rejected.applied is False and rejected.reason == "audit_rejected"
+    # A faithful rewrite is applied and records its provenance.
     monkeypatch.setattr(
         llm_provider.LiveProvider,
         "complete",
         lambda self, system, user: safe,
     )
-    assert llm_provider.polish_markdown(source, external_allowed=True) == safe
+    applied = llm_provider.polish_markdown(source, external_allowed=True)
+    assert applied.text == safe
+    assert applied.applied is True and applied.reason == "applied"
+    assert applied.prompt_version == llm_provider.PROMPT_VERSION
 
 
 def test_verified_principal_overrides_spoofed_actor_headers():

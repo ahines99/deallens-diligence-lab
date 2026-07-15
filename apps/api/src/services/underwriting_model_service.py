@@ -7,8 +7,10 @@ import copy
 import hashlib
 import json
 import math
+import random
 import statistics
 from datetime import date, timedelta
+from decimal import Decimal
 
 from pydantic import ValidationError
 from sqlalchemy import select
@@ -20,7 +22,12 @@ from src.models.deal_workflow import Deal
 from src.models.underwriting_model import UnderwritingCaseDecision, UnderwritingCaseVersion
 from src.schemas.deal_workflow import ActorContext
 from src.schemas.underwriting_model import (
+    DriverDistribution,
+    MonteCarloRequest,
+    MonteCarloResult,
     OperatingPeriodAssumption,
+    ReturnsAttributionRequest,
+    ReturnsAttributionResult,
     ReverseStressRequest,
     ReverseStressResult,
     SensitivityRequest,
@@ -618,7 +625,13 @@ def calculate_projection(assumptions: UnderwritingAssumptions) -> list[dict]:
                     if covenant_metrics["fixed_charge_coverage"] is not None
                     else None
                 ),
-                "liquidity": _money(covenant_metrics["minimum_liquidity"] or 0.0),
+                # Preserve None like the sibling covenant metrics: a not-computed minimum
+                # liquidity must read as "n/a", never as $0 (which looks like zero liquidity).
+                "liquidity": (
+                    _money(covenant_metrics["minimum_liquidity"])
+                    if covenant_metrics["minimum_liquidity"] is not None
+                    else None
+                ),
                 "debt_tranches": public_debt_rows,
                 "covenants": covenant_rows,
             }
@@ -976,6 +989,177 @@ def calculate_reverse_stress(payload: ReverseStressRequest) -> ReverseStressResu
         lower_value=low_value,
         upper_value=high_value,
         iterations=payload.max_iterations,
+    )
+
+
+_MONTE_CARLO_PERCENTILES = (5.0, 25.0, 50.0, 75.0, 95.0)
+
+
+def _sample_driver(rng: random.Random, distribution: DriverDistribution) -> float:
+    if distribution.kind == "normal":
+        return rng.gauss(distribution.mean, distribution.std_dev)
+    if distribution.kind == "uniform":
+        return rng.uniform(distribution.low, distribution.high)
+    return rng.triangular(distribution.low, distribution.high, distribution.mode)
+
+
+def _percentile(sorted_values: list[float], percentile: float) -> float:
+    """Linear-interpolation percentile over an ascending list (matches numpy's default)."""
+    if not sorted_values:
+        raise UnderwritingCalculationError("Cannot compute percentiles of an empty sample")
+    rank = (len(sorted_values) - 1) * percentile / 100.0
+    lower = math.floor(rank)
+    upper = math.ceil(rank)
+    if lower == upper:
+        return sorted_values[lower]
+    fraction = rank - lower
+    return sorted_values[lower] * (1.0 - fraction) + sorted_values[upper] * fraction
+
+
+def _metric_band(values: list[float]) -> dict:
+    ordered = sorted(values)
+    band = {
+        f"p{int(percentile)}": _ratio(_percentile(ordered, percentile))
+        for percentile in _MONTE_CARLO_PERCENTILES
+    }
+    band["mean"] = _ratio(statistics.fmean(ordered))
+    return band
+
+
+def run_monte_carlo(payload: MonteCarloRequest) -> MonteCarloResult:
+    """Sample driver distributions and re-run the deterministic LBO engine per iteration.
+
+    A single ``random.Random(seed)`` generator drives every draw, so identical seed + inputs
+    always reproduce identical output. Iterations whose sampled drivers make the assumptions
+    invalid, or whose IRR/MoIC do not converge, are skipped and counted as ``failed``.
+    """
+    rng = random.Random(payload.seed)
+    irr_values: list[float] = []
+    moic_values: list[float] = []
+    samples: dict[str, list[float]] = {
+        distribution.driver: [] for distribution in payload.distributions
+    }
+    failed = 0
+    for _ in range(payload.iterations):
+        draws = [
+            (distribution, _sample_driver(rng, distribution))
+            for distribution in payload.distributions
+        ]
+        for distribution, value in draws:
+            samples[distribution.driver].append(value)
+        try:
+            scenario = payload.assumptions
+            for distribution, value in draws:
+                scenario = _apply_variable(scenario, distribution.driver, value)
+            sources_uses = calculate_sources_uses(scenario)
+            projection = calculate_projection(scenario)
+            returns = calculate_returns(scenario, sources_uses, projection)
+        except UnderwritingCalculationError:
+            failed += 1
+            continue
+        irr, moic = returns["xirr"], returns["moic"]
+        if irr is None or moic is None:
+            failed += 1
+            continue
+        irr_values.append(irr)
+        moic_values.append(moic)
+
+    converged = len(irr_values)
+    if converged == 0:
+        raise UnderwritingCalculationError(
+            "No Monte Carlo iteration produced a converged IRR and MoIC"
+        )
+    return MonteCarloResult.model_validate(
+        {
+            "iterations": payload.iterations,
+            "seed": payload.seed,
+            "converged": converged,
+            "failed": failed,
+            "irr": _metric_band(irr_values),
+            "moic": _metric_band(moic_values),
+            "probability_irr_below_zero": _ratio(
+                sum(1 for value in irr_values if value < 0) / converged
+            ),
+            "probability_moic_below_1": _ratio(
+                sum(1 for value in moic_values if value < 1.0) / converged
+            ),
+            "driver_summaries": [
+                {
+                    "driver": distribution.driver,
+                    "kind": distribution.kind,
+                    "sampled_mean": _ratio(statistics.fmean(samples[distribution.driver])),
+                    "sampled_min": _ratio(min(samples[distribution.driver])),
+                    "sampled_max": _ratio(max(samples[distribution.driver])),
+                }
+                for distribution in payload.distributions
+            ],
+        }
+    )
+
+
+def calculate_returns_attribution(payload: ReturnsAttributionRequest) -> ReturnsAttributionResult:
+    """Decompose total equity value creation with the standard PE bridge, exactly reconciled.
+
+    Entry state comes from the transaction assumptions (entry net debt is total new debt less the
+    funded minimum-cash balance, mirroring the projection's opening cash). Exit state comes from
+    the deterministic engine's final period. Legs use Decimal arithmetic and the cross term is
+    computed as ``total - other legs`` so the components always sum exactly to the total.
+    """
+    assumptions = payload.assumptions
+    sources_uses = calculate_sources_uses(assumptions)
+    projection = calculate_projection(assumptions)
+    returns = calculate_returns(assumptions, sources_uses, projection)
+
+    cent = Decimal("0.01")
+    entry_multiple = Decimal(str(assumptions.transaction.entry_multiple))
+    exit_multiple = Decimal(str(assumptions.transaction.exit_multiple))
+    entry_ebitda = Decimal(str(assumptions.historical.ltm_ebitda))
+    final = projection[-1]
+    exit_ebitda = Decimal(str(_money(final["ebitda"] / final["year_fraction"])))
+    entry_net_debt = sum(
+        (Decimal(str(tranche.initial_amount)) for tranche in assumptions.debt_tranches),
+        Decimal("0"),
+    ) - Decimal(str(assumptions.transaction.minimum_cash))
+    exit_net_debt = Decimal(str(returns["exit_debt"])) - Decimal(str(returns["exit_cash"]))
+
+    entry_equity = (entry_multiple * entry_ebitda - entry_net_debt).quantize(cent)
+    exit_equity = (exit_multiple * exit_ebitda - exit_net_debt).quantize(cent)
+    total = exit_equity - entry_equity
+
+    ebitda_growth = (entry_multiple * (exit_ebitda - entry_ebitda)).quantize(cent)
+    multiple_change = ((exit_multiple - entry_multiple) * entry_ebitda).quantize(cent)
+    deleveraging = (entry_net_debt - exit_net_debt).quantize(cent)
+    cross_term = total - ebitda_growth - multiple_change - deleveraging
+
+    components = [
+        ("ebitda_growth", "EBITDA growth at entry multiple", ebitda_growth),
+        ("multiple_change", "Multiple expansion (contraction)", multiple_change),
+        ("deleveraging", "Net-debt paydown (deleveraging)", deleveraging),
+        ("cross_term", "Cross term (multiple x EBITDA interaction)", cross_term),
+    ]
+    reconciles = sum(amount for _, _, amount in components) == total
+    return ReturnsAttributionResult.model_validate(
+        {
+            "entry_multiple": _ratio(assumptions.transaction.entry_multiple),
+            "entry_ebitda": float(entry_ebitda),
+            "entry_net_debt": float(entry_net_debt.quantize(cent)),
+            "entry_equity": float(entry_equity),
+            "exit_multiple": _ratio(assumptions.transaction.exit_multiple),
+            "exit_ebitda": float(exit_ebitda),
+            "exit_net_debt": float(exit_net_debt.quantize(cent)),
+            "exit_equity": float(exit_equity),
+            "total_value_creation": float(total),
+            "components": [
+                {
+                    "key": key,
+                    "label": label,
+                    "amount": float(amount),
+                    "share_of_total": _ratio(float(amount / total)) if total != 0 else None,
+                }
+                for key, label, amount in components
+            ],
+            "reconciles": reconciles,
+        }
     )
 
 

@@ -529,3 +529,118 @@ class ValuationTriangulationResult(BaseModel):
     valuation_low: float
     valuation_high: float
     warnings: list[str]
+
+
+DistributionKind = Literal["normal", "uniform", "triangular"]
+
+
+class DriverDistribution(BaseModel):
+    """Sampling specification for one Monte Carlo driver.
+
+    Drivers reuse the sensitivity variables: ``entry_multiple`` and ``exit_multiple`` are sampled
+    as absolute EV/EBITDA turns, while ``base_rate_shift``, ``revenue_growth_shift``, and
+    ``ebitda_margin_shift`` are sampled as additive shifts on the deterministic assumptions
+    (``0.01`` = +100 bps). ``normal`` requires ``mean``/``std_dev``; ``uniform`` requires
+    ``low``/``high``; ``triangular`` requires ``low``/``mode``/``high``.
+    """
+
+    driver: SensitivityVariable
+    kind: DistributionKind
+    mean: float | None = None
+    std_dev: float | None = Field(default=None, ge=0)
+    low: float | None = None
+    mode: float | None = None
+    high: float | None = None
+
+    @model_validator(mode="after")
+    def validate_parameters(self):
+        if self.kind == "normal":
+            if self.mean is None or self.std_dev is None:
+                raise ValueError("Normal distributions require mean and std_dev")
+        elif self.kind == "uniform":
+            if self.low is None or self.high is None:
+                raise ValueError("Uniform distributions require low and high")
+            if self.low > self.high:
+                raise ValueError("Uniform low cannot exceed high")
+        else:
+            if self.low is None or self.mode is None or self.high is None:
+                raise ValueError("Triangular distributions require low, mode, and high")
+            if not self.low <= self.mode <= self.high:
+                raise ValueError("Triangular distributions require low <= mode <= high")
+        return self
+
+
+class MonteCarloRequest(BaseModel):
+    assumptions: UnderwritingAssumptions
+    iterations: int = Field(default=1_000, ge=100, le=5_000)
+    seed: int = 42
+    distributions: list[DriverDistribution] = Field(min_length=1, max_length=5)
+
+    @model_validator(mode="after")
+    def unique_drivers(self):
+        drivers = [distribution.driver for distribution in self.distributions]
+        if len(drivers) != len(set(drivers)):
+            raise ValueError("Each Monte Carlo driver may appear at most once")
+        return self
+
+
+class MetricPercentileBand(BaseModel):
+    p5: float
+    p25: float
+    p50: float
+    p75: float
+    p95: float
+    mean: float
+
+
+class MonteCarloDriverSummary(BaseModel):
+    driver: SensitivityVariable
+    kind: DistributionKind
+    sampled_mean: float
+    sampled_min: float
+    sampled_max: float
+
+
+class MonteCarloResult(BaseModel):
+    iterations: int
+    seed: int
+    converged: int
+    failed: int
+    irr: MetricPercentileBand
+    moic: MetricPercentileBand
+    probability_irr_below_zero: float
+    probability_moic_below_1: float
+    driver_summaries: list[MonteCarloDriverSummary]
+
+
+AttributionComponentKey = Literal[
+    "ebitda_growth",
+    "multiple_change",
+    "deleveraging",
+    "cross_term",
+]
+
+
+class ReturnsAttributionRequest(BaseModel):
+    assumptions: UnderwritingAssumptions
+
+
+class AttributionComponent(BaseModel):
+    key: AttributionComponentKey
+    label: str
+    amount: float
+    share_of_total: float | None
+
+
+class ReturnsAttributionResult(BaseModel):
+    entry_multiple: float
+    entry_ebitda: float
+    entry_net_debt: float
+    entry_equity: float
+    exit_multiple: float
+    exit_ebitda: float
+    exit_net_debt: float
+    exit_equity: float
+    total_value_creation: float
+    components: list[AttributionComponent]
+    reconciles: bool

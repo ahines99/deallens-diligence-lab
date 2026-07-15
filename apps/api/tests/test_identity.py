@@ -392,3 +392,31 @@ def test_sqlite_foreign_keys_are_enforced(client):
         with pytest.raises(IntegrityError):
             session.commit()
         session.rollback()
+
+
+def test_sec_ingest_is_tenant_scoped_under_real_auth(client, monkeypatch):
+    """H1 end-to-end under production auth: the body-addressed /api/sec/ingest endpoint must
+    reject a member trying to ingest into another org's workspace (principal-based guard,
+    the branch conftest's auth-off default never exercises)."""
+    monkeypatch.setattr(settings, "auth_required", True)
+    from src.main import _auth_rate_limiter
+
+    _auth_rate_limiter.clear()
+    try:
+        owner = _register(client, "ingest-owner")
+        other = _register(client, "ingest-attacker")
+        victim_ws = client.post(
+            "/api/workspaces",
+            json={"name": "Victim workspace", "deal_type": "buyout"},
+            headers=_authorization(owner["access_token"]),
+        ).json()
+
+        # The attacker (a different org) cannot ingest into the victim's workspace.
+        attack = client.post(
+            "/api/sec/ingest",
+            json={"workspace_id": victim_ws["id"], "ticker": "AAPL"},
+            headers=_authorization(other["access_token"]),
+        )
+        assert attack.status_code == 404, attack.text  # 404, not an existence oracle
+    finally:
+        _auth_rate_limiter.clear()

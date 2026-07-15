@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -78,9 +78,13 @@ def clear(session: Session, workspace_id: str) -> None:
 
 
 def list_evidence(session: Session, workspace_id: str) -> list[Evidence]:
+    # Order by (length, ref) rather than ref alone so EV-1000 sorts after EV-999 instead of
+    # between EV-100 and EV-101 — a lexical sort of the zero-padded ref breaks past EV-999.
     return list(
         session.scalars(
-            select(Evidence).where(Evidence.workspace_id == workspace_id).order_by(Evidence.ref)
+            select(Evidence)
+            .where(Evidence.workspace_id == workspace_id)
+            .order_by(func.length(Evidence.ref), Evidence.ref)
         )
     )
 

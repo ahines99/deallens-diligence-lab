@@ -9,7 +9,7 @@ import re
 import socket
 from datetime import timedelta, timezone
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 from cryptography.fernet import Fernet, InvalidToken
@@ -170,7 +170,12 @@ def _validate_url(value: str) -> str:
     return url
 
 
-def _reject_non_public_host(hostname: str, *, resolve_dns: bool) -> None:
+def _reject_non_public_host(hostname: str, *, resolve_dns: bool) -> set[str]:
+    """Validate that ``hostname`` resolves only to public IPs, returning the validated set.
+
+    Callers pin the connection to one of the returned addresses so httpx cannot independently
+    re-resolve to a private/link-local address between validation and connect (DNS rebinding).
+    """
     normalized = hostname.rstrip(".").lower()
     if normalized == "localhost" or normalized.endswith(".localhost"):
         raise WebhookError("Webhook destinations cannot target localhost")
@@ -191,6 +196,31 @@ def _reject_non_public_host(hostname: str, *, resolve_dns: bool) -> None:
         ip = ipaddress.ip_address(address)
         if not ip.is_global:
             raise WebhookError("Webhook destinations must resolve only to public IP addresses")
+    return addresses
+
+
+def _pinned_destination(url: str) -> tuple[str, dict[str, str], dict[str, Any]]:
+    """Validate the URL and return (connect_url, extra_headers, extensions) pinned to a
+    validated public IP.
+
+    The request connects to the exact IP that passed validation — closing the resolve-then-
+    reconnect rebinding window — while the original hostname is preserved for the ``Host``
+    header, TLS SNI, and certificate verification via httpx's ``sni_hostname`` extension.
+    """
+    normalized = _validate_url(url)
+    if settings.webhook_allow_insecure_http:
+        return normalized, {}, {}
+    split = urlsplit(normalized)
+    hostname = split.hostname
+    if not hostname:
+        raise WebhookError("Webhook URL requires a hostname")
+    addresses = _reject_non_public_host(hostname, resolve_dns=True)
+    pinned_ip = sorted(addresses)[0]  # deterministic choice among validated public IPs
+    literal = f"[{pinned_ip}]" if ":" in pinned_ip else pinned_ip
+    netloc = literal if split.port is None else f"{literal}:{split.port}"
+    connect_url = urlunsplit((split.scheme, netloc, split.path, split.query, ""))
+    host_header = hostname if split.port is None else f"{hostname}:{split.port}"
+    return connect_url, {"Host": host_header}, {"sni_hostname": hostname}
 
 
 def _assert_delivery_destination(url: str) -> None:
@@ -660,7 +690,6 @@ def deliver(
 
     timestamp = str(int(now.timestamp()))
     try:
-        _assert_delivery_destination(endpoint.url)
         secret = _decrypt_secret(endpoint.secret_ciphertext)
         headers = {
             "Content-Type": "application/json",
@@ -671,9 +700,18 @@ def deliver(
             "X-DealLens-Signature": _signature(secret, timestamp, body),
         }
         if http_client is None:
+            # Pin the connection to a validated public IP so the destination cannot rebind DNS
+            # to a private address between validation and connect.
+            connect_url, pin_headers, extensions = _pinned_destination(endpoint.url)
             with httpx.Client(timeout=10.0, follow_redirects=False) as client:
-                response = client.post(endpoint.url, content=body, headers=headers)
+                response = client.post(
+                    connect_url,
+                    content=body,
+                    headers={**headers, **pin_headers},
+                    extensions=extensions,
+                )
         else:
+            _assert_delivery_destination(endpoint.url)
             response = http_client.post(endpoint.url, content=body, headers=headers)
     except (httpx.HTTPError, WebhookError, OSError) as exc:
         return _mark_failed(session, delivery, str(exc))

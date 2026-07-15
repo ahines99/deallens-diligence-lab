@@ -67,6 +67,13 @@ def ingest_company(
     except EdgarError as exc:
         logger.warning("No XBRL company facts for %s: %s", ticker, exc)
         fin = {}
+    else:
+        # Quarterly/TTM extraction is a newer, more speculative parse over the same facts; a bug
+        # in it must degrade to financials-without-quarterly, never fail the whole build.
+        try:
+            fin["quarterly"] = sec_financials.extract_quarterly(facts)
+        except Exception as exc:  # noqa: BLE001 — quarterly is a best-effort enrichment
+            logger.warning("Quarterly extraction failed for %s: %s", ticker, exc)
 
     # --- Filings (metadata) ---
     report("indexing_filings")

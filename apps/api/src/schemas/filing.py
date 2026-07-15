@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from src.schemas.common import ORMModel
 
@@ -37,7 +37,7 @@ class SecIngestRequest(BaseModel):
 
 
 class FilingsQARequest(BaseModel):
-    question: str
+    question: str = Field(min_length=1, max_length=2_000)
 
 
 class FilingsQACitation(BaseModel):
@@ -53,13 +53,14 @@ class FilingsQACitation(BaseModel):
 class FilingsQARetrieval(BaseModel):
     chunks_considered: int
     matched_terms: list[str]
+    coverage: float = 0.0
     abstention_reason: str | None
 
 
 class FilingsQAOut(BaseModel):
     workspace_id: str
     question: str
-    status: str  # answered | abstained
+    status: str  # answered | partial | abstained
     answer: str
     citations: list[FilingsQACitation]
     retrieval: FilingsQARetrieval

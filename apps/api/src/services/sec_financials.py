@@ -7,6 +7,7 @@ Margins/growth are deterministic calculations over the reported values.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date, timedelta
 import re
 
 from src.services import edgar_client
@@ -240,6 +241,174 @@ def extract_forensic_inputs(facts: dict, n: int = 6) -> dict:
     years = sorted(year_set)[-n:]
     by_year = {y: {field: maps[field].get(y) for field in maps} for y in years}
     return {"years": years, "by_year": by_year}
+
+
+# --- 10-Q quarterly extraction + trailing-twelve-month derivation (G11) -----
+# Flow metrics eligible for quarterly extraction and TTM summation.
+QUARTERLY_METRICS = {
+    "revenue": REVENUE_CONCEPTS,
+    "gross_profit": GROSS_PROFIT_CONCEPTS,
+    "operating_income": OPERATING_INCOME_CONCEPTS,
+    "net_income": NET_INCOME_CONCEPTS,
+}
+
+# The next quarter must start within this many days of the prior quarter's end (normally 1 day;
+# a small tolerance absorbs 52/53-week calendar drift). Anything larger is a gap — never blended.
+_CONTIGUITY_TOLERANCE_DAYS = 4
+
+
+def _iso_date(value: str | None) -> date | None:
+    try:
+        return date.fromisoformat(value or "")
+    except ValueError:
+        return None
+
+
+def _contiguous(prev_end: str | None, next_start: str | None) -> bool:
+    prev = _iso_date(prev_end)
+    nxt = _iso_date(next_start)
+    if prev is None or nxt is None:
+        return False
+    return 0 <= (nxt - prev).days <= _CONTIGUITY_TOLERANCE_DAYS
+
+
+def _derive_q4(annual_pts: list[dict], discrete: list[dict]) -> list[dict]:
+    """Derive Q4 = FY − (Q1+Q2+Q3) when the FY period exactly spans three contiguous discrete
+    quarters plus one missing quarter-length tail. XBRL reality: most issuers never tag Q4 as a
+    discrete duration. Derived points are labeled ``derivation: "fy_minus_q123"``; when the FY
+    period cannot be reconciled to the discrete quarters, nothing is derived (never impute)."""
+    derived: list[dict] = []
+    discrete_ends = {p.get("end") for p in discrete}
+    for fy_pt in annual_pts:
+        fy_start, fy_end = fy_pt.get("start") or "", fy_pt.get("end") or ""
+        if not fy_start or not fy_end or fy_end in discrete_ends:
+            continue  # no FY span, or Q4 is already tagged discretely
+        inside = sorted(
+            (
+                p
+                for p in discrete
+                if (p.get("start") or "") >= fy_start and (p.get("end") or "") <= fy_end
+            ),
+            key=lambda p: p.get("end", ""),
+        )
+        if len(inside) != 3:
+            continue
+        if not _contiguous(fy_start, inside[0].get("start")):
+            continue  # Q1 does not begin the FY period — the FY span is not Q1..Q3 + a tail
+        if not all(
+            _contiguous(inside[i].get("end"), inside[i + 1].get("start")) for i in range(2)
+        ):
+            continue
+        q3_end = _iso_date(inside[2].get("end"))
+        fye = _iso_date(fy_end)
+        if q3_end is None or fye is None:
+            continue
+        tail_days = (fye - q3_end).days
+        if not (edgar_client.QUARTER_MIN_DAYS <= tail_days <= edgar_client.QUARTER_MAX_DAYS):
+            continue  # fiscal-year-end change or a hidden gap — do not derive
+        derived.append(
+            {
+                "start": (q3_end + timedelta(days=1)).isoformat(),
+                "end": fy_end,
+                "val": float(fy_pt["val"]) - sum(float(p["val"]) for p in inside),
+                "fy": fy_pt.get("fy"),
+                "fp": "Q4",
+                "form": fy_pt.get("form", ""),
+                "accn": fy_pt.get("accn", ""),
+                "derivation": "fy_minus_q123",
+            }
+        )
+    return derived
+
+
+def _ttm(points: list[dict]) -> tuple[float | None, dict]:
+    """Sum the last four quarters ONLY when they are contiguous; otherwise (None, reason).
+
+    ``points`` are quarterly dicts (discrete + derived) sorted by end date. A partial or
+    gap-spanning sum is never returned.
+    """
+
+    def periods(pts: list[dict]) -> list[dict]:
+        return [
+            {"start": p.get("start"), "end": p.get("end"), "derivation": p.get("derivation")}
+            for p in pts
+        ]
+
+    if len(points) < 4:
+        return None, {
+            "periods": periods(points),
+            "reason": (
+                f"only {len(points)} quarterly period(s) available; "
+                "four contiguous quarters are required for a TTM sum"
+            ),
+        }
+    last4 = points[-4:]
+    for prev, nxt in zip(last4, last4[1:]):
+        if not _contiguous(prev.get("end"), nxt.get("start")):
+            return None, {
+                "periods": periods(last4),
+                "reason": (
+                    f"quarters are not contiguous: gap between period ending {prev.get('end')} "
+                    f"and period starting {nxt.get('start')}; TTM is not computed across gaps"
+                ),
+            }
+    return sum(float(p["val"]) for p in last4), {"periods": periods(last4), "reason": None}
+
+
+def extract_quarterly(facts: dict, n: int = 8) -> dict:
+    """Last ``n`` quarters of flow metrics plus per-metric TTM from XBRL company facts.
+
+    Returns {"quarters": [...], "ttm": {metric: value|None}, "ttm_basis": {metric: {...}}}.
+    Q4 may be derived as FY − (Q1+Q2+Q3) (labeled in ``derived``/``derivation``); a metric's TTM
+    is None with an explicit reason whenever four contiguous quarters cannot be established.
+    """
+    per_metric: dict[str, list[dict]] = {}
+    for key, concepts in QUARTERLY_METRICS.items():
+        concept, discrete = None, []
+        for candidate in concepts:
+            pts = edgar_client.quarterly_points(facts, candidate)
+            if pts:
+                concept, discrete = candidate, pts
+                break
+        if concept is None:
+            per_metric[key] = []
+            continue
+        # Derive Q4 strictly from the same concept's annual series — concepts are never mixed.
+        annual = edgar_client.annual_points(facts, concept)
+        merged = discrete + _derive_q4(annual, discrete)
+        merged.sort(key=lambda p: (p.get("end", ""), p.get("start", "")))
+        per_metric[key] = merged
+
+    ttm: dict[str, float | None] = {}
+    ttm_basis: dict[str, dict] = {}
+    for key, pts in per_metric.items():
+        value, basis = _ttm(pts)
+        ttm[key] = value
+        ttm_basis[key] = basis
+
+    rows: dict[str, dict] = {}
+    for key, pts in per_metric.items():
+        for p in pts:
+            row = rows.setdefault(
+                p.get("end", ""),
+                {
+                    "start": p.get("start"),
+                    "end": p.get("end"),
+                    "fy": str(p.get("fy") or "") or None,
+                    "fp": p.get("fp") or None,
+                    "form": p.get("form") or None,
+                    "revenue": None,
+                    "gross_profit": None,
+                    "operating_income": None,
+                    "net_income": None,
+                    "derived": {},
+                },
+            )
+            row[key] = float(p["val"])
+            if p.get("derivation"):
+                row["derived"][key] = p["derivation"]
+    quarters = [rows[end] for end in sorted(rows)][-n:]
+    return {"quarters": quarters, "ttm": ttm, "ttm_basis": ttm_basis}
 
 
 def extract_trends(facts: dict, n: int = 5) -> dict:

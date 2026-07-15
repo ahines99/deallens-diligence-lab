@@ -2,7 +2,7 @@
 
 Planning ledger for the next development wave. Same rules as `FEATURE_LEDGER.md`: an item is
 `done` only when its implementation **and** the named acceptance evidence exist in the worktree.
-Nothing here is started; this document is the groomed backlog, sequenced by portfolio value.
+Sequenced by portfolio value; items flip to `done` as they land with their acceptance evidence.
 
 **Design constraints carried forward from Waves 1–3** (non-negotiable):
 keyless-by-default data sources; deterministic outputs unless a human explicitly enables the LLM;
@@ -37,13 +37,13 @@ Widens the moat of "real data, no keys" — the research-analyst credibility lay
 
 | ID | Capability | Effort | Acceptance evidence |
 |---|---|---|---|
-| G11 | 10-Q quarterly ingestion + trailing-twelve-month metric derivation | M | TTM arithmetic tests across fiscal-year boundaries |
+| G11 | 10-Q quarterly ingestion + trailing-twelve-month metric derivation | M | `done` — TTM arithmetic tests across fiscal-year boundaries (`apps/api/tests/test_quarterly_ttm.py`) |
 | G12 | XBRL segment-level revenue (dimensional facts) with segment trend charts | L | dimensional-fact extraction tests on real filers |
 | G13 | DEF 14A proxy ingestion: executive compensation table + governance red flags (staggered board, dual-class) | L | comp-table parse tests + flag rule tests |
 | G14 | 13F institutional ownership snapshot + holder-concentration analysis | M | parse + concentration math tests |
 | G15 | 13D/13G activist-stake detection wired into the signals timeline | S | event classification tests |
 | G16 | Debt maturity schedule extraction from filings + maturity-wall chart | L | schedule extraction tests + never-impute gaps test |
-| G17 | Fiscal-period consistency diagnostics (carryover F41): mixed-period operands flagged, never silently blended | M | mismatch detection tests |
+| G17 | Fiscal-period consistency diagnostics (carryover F41): mixed-period operands flagged, never silently blended | M | `done` — mismatch detection tests (`apps/api/tests/test_fiscal_diagnostics.py`) |
 | G18 | Consolidated signals overview page (carryover F55): one screen aggregating events/insiders/news/themes with per-source status | S | page/API rendering test |
 | G19 | Watchlists with scheduled refresh: track N companies, detect new filings, emit notification/webhook events through the existing outbox | M | scheduler + dedup + outbox event tests |
 | G20 | Insider-pattern analytics: clustered buying/selling windows, 10b5-1 plan flags, officer-vs-director splits | M | clustering + classification tests |
@@ -54,8 +54,8 @@ The PE-domain fluency layer — complex, and exactly what a diligence/valuation 
 
 | ID | Capability | Effort | Acceptance evidence |
 |---|---|---|---|
-| G21 | Monte Carlo LBO: driver distributions, percentile IRR/MoIC bands, deterministic seeding so runs are reproducible | L | seeded-distribution tests + percentile assertions |
-| G22 | Returns attribution bridge: entry/exit multiple vs deleveraging vs EBITDA growth decomposition, reconciling exactly to total return | M | attribution-sums-to-total test |
+| G21 | Monte Carlo LBO: driver distributions, percentile IRR/MoIC bands, deterministic seeding so runs are reproducible | L | **done** — `tests/test_monte_carlo_attribution.py::test_same_seed_is_byte_identical_and_different_seed_moves_the_median`, `::test_monte_carlo_percentiles_are_ordered_and_iterations_are_accounted_for`, `::test_zero_variance_distributions_collapse_to_the_deterministic_result`, `::test_monte_carlo_validation_rejects_bad_iterations_and_unknown_drivers` |
+| G22 | Returns attribution bridge: entry/exit multiple vs deleveraging vs EBITDA growth decomposition, reconciling exactly to total return | M | **done** — `tests/test_monte_carlo_attribution.py::test_attribution_components_sum_exactly_to_total_value_creation`, `::test_attribution_endpoint_reconciles` |
 | G23 | Covenant headroom projection: quarter-by-quarter headroom under each case with breach-quarter detection | M | breach boundary tests |
 | G24 | Driver-based operating model: user-defined drivers with formula validation, cycle detection, and provenance on every derived line | L | formula parser + cycle rejection tests |
 | G25 | Working-capital seasonality modeling from monthly imports (peg by month, not annual average) | M | seasonal peg tests on fixture monthlies |
@@ -71,7 +71,7 @@ The senior-engineer credibility layer: the app already works; this makes it *ope
 
 | ID | Capability | Effort | Acceptance evidence |
 |---|---|---|---|
-| G31 | Durable job queue: workspace builds move from in-process BackgroundTasks to a DB-backed job table + worker with retries, heartbeats, and stale-claim recovery (generalizes the webhook outbox pattern) | L | crash-recovery + at-least-once tests |
+| G31 | Durable job queue: workspace builds move from in-process BackgroundTasks to a DB-backed job table + worker with retries, heartbeats, and stale-claim recovery (generalizes the webhook outbox pattern) | L | **done** — `tests/test_job_queue.py::test_two_workers_claim_exactly_once`, `::test_stale_claim_is_recovered_and_reprocessed`, `::test_stale_claim_on_final_attempt_goes_dead`, `::test_transient_failures_retry_until_success`, `::test_exhausted_attempts_mark_job_dead_with_last_error`, `::test_workspace_build_completes_through_job_queue`, `::test_worker_batch_processes_queued_jobs` |
 | G32 | Server-sent events for live build progress and notifications (polling kept as fallback) | M | SSE stream integration test |
 | G33 | In-app notification center fed by the existing audit outbox | M | event-to-notification mapping tests |
 | G34 | Full-text search across all workspace artifacts (SQLite FTS5 / Postgres tsvector behind one interface) | L | parity tests on both engines |

@@ -8,14 +8,13 @@ inputs produce identical answers.
 """
 from __future__ import annotations
 
-import re
 from datetime import datetime, timezone
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from src.models import Filing
-from src.services import retrieval_service
+from src.services import retrieval_service, textkit
 from src.services.common import get_workspace_or_404
 
 ABSTENTION = (
@@ -23,11 +22,16 @@ ABSTENTION = (
     "No answer was fabricated."
 )
 
-_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+|\n+")
 _MAX_SENTENCES = 3
 _MAX_QUOTE_CHARS = 700
 
-_TOKENS = retrieval_service._tokens  # same tokenizer keeps QA and retrieval consistent
+# Retrieval, ranking, and quote-splitting all go through textkit so this Q&A can never
+# disagree with the BM25 layer about tokens or sentence boundaries (decimal-safe quotes).
+_TOKENS = textkit.tokens
+_MAX_QUESTION_CHARS = 2_000
+# Below this fraction of the question's terms covered, the answer is labeled "partial" so a
+# single-term lexical match never presents as a confident full answer.
+_PARTIAL_COVERAGE_THRESHOLD = 0.5
 
 
 def ask(session: Session, workspace_id: str, question: str, k: int = 6) -> dict:
@@ -35,6 +39,8 @@ def ask(session: Session, workspace_id: str, question: str, k: int = 6) -> dict:
     question = (question or "").strip()
     if not question:
         raise ValueError("Ask a question about the ingested filings.")
+    if len(question) > _MAX_QUESTION_CHARS:
+        raise ValueError(f"Question must be at most {_MAX_QUESTION_CHARS} characters.")
 
     retrieved = retrieval_service.retrieve(session, workspace_id, question, k=k)
     question_terms = set(_TOKENS(question))
@@ -42,8 +48,7 @@ def ask(session: Session, workspace_id: str, question: str, k: int = 6) -> dict:
     # Sentence-level candidates within the BM25-selected chunks.
     candidates: list[tuple[float, retrieval_service.RetrievedChunk, str, set[str]]] = []
     for item in retrieved:
-        for sentence in _SENTENCE_SPLIT.split(item.chunk.chunk_text or ""):
-            sentence = sentence.strip()
+        for sentence in textkit.sentences(item.chunk.chunk_text or ""):
             if len(sentence) < 40:
                 continue
             overlap = question_terms & set(_TOKENS(sentence))
@@ -69,6 +74,7 @@ def ask(session: Session, workspace_id: str, question: str, k: int = 6) -> dict:
             "retrieval": {
                 "chunks_considered": len(retrieved),
                 "matched_terms": [],
+                "coverage": 0.0,
                 "abstention_reason": "no filing sentence shares terms with the question",
             },
         }
@@ -105,14 +111,21 @@ def ask(session: Session, workspace_id: str, question: str, k: int = 6) -> dict:
                 "retrieval_score": item.score,
             }
         )
+    matched = sorted(set().union(*(item[3] for item in selected)))
+    coverage = len(matched) / max(len(question_terms), 1)
+    # "answered" only when the answer covers a majority of the question's terms; a thin
+    # single-term match is surfaced as "partial" so the UI can flag low confidence rather
+    # than present it as a complete answer (citations still resolve either way).
+    status = "answered" if coverage >= _PARTIAL_COVERAGE_THRESHOLD else "partial"
     return {
         **base,
-        "status": "answered",
+        "status": status,
         "answer": " ".join(item[2] for item in selected),
         "citations": citations,
         "retrieval": {
             "chunks_considered": len(retrieved),
-            "matched_terms": sorted(set().union(*(item[3] for item in selected))),
+            "matched_terms": matched,
+            "coverage": round(coverage, 3),
             "abstention_reason": None,
         },
     }

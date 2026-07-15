@@ -13,6 +13,7 @@ import json
 import re
 import time
 from dataclasses import dataclass
+from datetime import date
 from functools import lru_cache
 from pathlib import Path
 
@@ -186,6 +187,52 @@ def get_company_facts(cik10: str) -> dict:
 
 _ANNUAL_DURATION = re.compile(r"^CY\d{4}$")
 _INSTANT_FRAME = re.compile(r"^CY\d{4}Q[1-4]I$")
+
+# A discrete fiscal quarter is 13 weeks (91 days) or 14 weeks (98 days) for 52/53-week issuers;
+# the bounds absorb month-end drift without admitting half-year or annual duration facts.
+QUARTER_MIN_DAYS = 75
+QUARTER_MAX_DAYS = 115
+
+
+def _duration_days(start: str, end: str) -> int | None:
+    try:
+        return (date.fromisoformat(end) - date.fromisoformat(start)).days
+    except ValueError:
+        return None
+
+
+def quarterly_points(facts: dict, concept: str, unit: str = "USD") -> list[dict]:
+    """Return the latest filed value for each discrete quarterly duration period, oldest first.
+
+    A quarterly point is any duration fact whose span is one fiscal quarter (see the day bounds
+    above) — this catches 10-Q facts (fp Q1/Q2/Q3) as well as frame-less comparative quarters and
+    the rare discretely tagged Q4. Company Facts retains comparative values from later filings, so
+    keeping the most recently filed point per (start, end) period preserves amendments and
+    restatements without double-counting, mirroring ``annual_points``.
+    """
+    node = facts.get("facts", {}).get("us-gaap", {}).get(concept)
+    if not node:
+        return []
+    series = node.get("units", {}).get(unit, [])
+    by_period: dict[tuple[str, str], dict] = {}
+    for point in series:
+        start = point.get("start", "")
+        end = point.get("end", "")
+        if not start or not end:
+            continue
+        days = _duration_days(start, end)
+        if days is None or not (QUARTER_MIN_DAYS <= days <= QUARTER_MAX_DAYS):
+            continue
+        key = (start, end)
+        existing = by_period.get(key)
+        ordering = (point.get("filed", ""), point.get("accn", ""))
+        existing_ordering = (
+            (existing or {}).get("filed", ""),
+            (existing or {}).get("accn", ""),
+        )
+        if existing is None or ordering >= existing_ordering:
+            by_period[key] = point
+    return [by_period[key] for key in sorted(by_period, key=lambda k: (k[1], k[0]))]
 
 
 def annual_points(facts: dict, concept: str, instant: bool = False, unit: str = "USD") -> list[dict]:
