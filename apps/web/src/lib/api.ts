@@ -35,6 +35,8 @@ import type {
   CompSimilarity,
   RiskDiff,
   CrossCorpusQA,
+  WorkspaceSearchResult,
+  QuotaUsage,
   CovenantHeadroomResult,
   CaseVarianceResult,
   ExitReadinessResult,
@@ -411,6 +413,10 @@ export const api = {
     requestOrNull<RiskDiff>(`/api/workspaces/${id}/filings/risk-diff`),
   crossCorpusQA: (id: string, question: string) =>
     request<CrossCorpusQA>(`/api/workspaces/${id}/cross-corpus-qa`, { method: "POST", body: { question } }),
+  searchWorkspace: (id: string, q: string) =>
+    request<WorkspaceSearchResult>(`/api/workspaces/${id}/search?q=${encodeURIComponent(q)}`),
+  getQuotaUsage: (org: string) =>
+    request<QuotaUsage>(`/api/organizations/${org}/quota-usage`),
 
   // Underwriting analytics (Wave 4)
   covenantHeadroom: (id: string, body: unknown) =>

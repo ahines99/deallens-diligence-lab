@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import Link from "next/link";
 import { api } from "@/lib/serverApi";
 import { WorkspaceNav } from "@/components/WorkspaceNav";
+import { WorkspaceSearch } from "@/components/WorkspaceSearch";
 import { Badge, type BadgeTone } from "@/components/ui/Badge";
 import type { WorkspaceOverview } from "@/lib/types";
 import { WorkspaceGovernanceControl } from "@/components/governance/WorkspaceGovernanceControl";
@@ -57,6 +58,8 @@ export default async function WorkspaceLayout({
         </div>
 
         <WorkspaceGovernanceControl workspaceId={id} initialWorkspace={ws} />
+
+        <WorkspaceSearch workspaceId={id} base={base} />
 
         <WorkspaceNav base={base} />
       </aside>

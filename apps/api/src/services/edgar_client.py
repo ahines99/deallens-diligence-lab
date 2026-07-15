@@ -15,11 +15,11 @@ import time
 from dataclasses import dataclass
 from datetime import date
 from functools import lru_cache
-from pathlib import Path
 
 import httpx
 
 from src.config import settings
+from src.services.storage_service import BlobNotFound, get_store
 
 SEC_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik10}.json"
@@ -28,10 +28,17 @@ ARCHIVES = "https://www.sec.gov/Archives/edgar/data/{cik}/{acc}/{doc}"
 
 _MAX_DOC_BYTES = 8_000_000
 
-# Optional on-disk response cache (apps/api/data/cache, gitignored). Off by default so
+# Optional response cache, routed through the blob-storage abstraction (G40). Off by default so
 # research always sees live EDGAR; demo deployments set EDGAR_CACHE_TTL_SECONDS so repeat
-# visitors don't re-download the same filings and the SEC fair-access budget is respected.
-_CACHE_DIR = Path(__file__).resolve().parents[2] / "data" / "cache"
+# visitors don't re-download the same filings and the SEC fair-access budget is respected. The
+# blob backend (local disk by default, S3-compatible when configured) is transparent here: the
+# write timestamp is stored *inside* the cached envelope so TTL expiry is backend-agnostic rather
+# than relying on filesystem mtime.
+_CACHE_NAMESPACE = "edgar-cache"
+
+
+def _cache_key(url: str, kind: str) -> str:
+    return f"{_CACHE_NAMESPACE}/{kind}-{hashlib.sha256(url.encode('utf-8')).hexdigest()}"
 
 
 class EdgarError(Exception):
@@ -50,11 +57,16 @@ def _cache_read(url: str, kind: str) -> str | None:
     ttl = settings.edgar_cache_ttl_seconds
     if ttl <= 0:
         return None
-    path = _CACHE_DIR / f"{kind}-{hashlib.sha256(url.encode('utf-8')).hexdigest()}.cache"
     try:
-        if path.exists() and (time.time() - path.stat().st_mtime) < ttl:
-            return path.read_text(encoding="utf-8")
-    except OSError:
+        raw = get_store().get(_cache_key(url, kind))
+        envelope = json.loads(raw.decode("utf-8"))
+        written_at = float(envelope["ts"])
+        if (time.time() - written_at) < ttl:
+            return str(envelope["payload"])
+    except BlobNotFound:
+        return None
+    except (OSError, ValueError, KeyError, TypeError):
+        # A corrupt or unreadable cache entry must degrade to a live refetch, never crash.
         return None
     return None
 
@@ -63,11 +75,10 @@ def _cache_write(url: str, kind: str, payload: str) -> None:
     if settings.edgar_cache_ttl_seconds <= 0:
         return
     try:
-        _CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        path = _CACHE_DIR / f"{kind}-{hashlib.sha256(url.encode('utf-8')).hexdigest()}.cache"
-        path.write_text(payload, encoding="utf-8")
-    except OSError:
-        # Caching is best-effort; a full disk must never break live research.
+        envelope = json.dumps({"ts": time.time(), "payload": payload}).encode("utf-8")
+        get_store().put(_cache_key(url, kind), envelope)
+    except (OSError, ValueError):
+        # Caching is best-effort; a full disk or storage hiccup must never break live research.
         pass
 
 

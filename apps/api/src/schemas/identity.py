@@ -33,6 +33,9 @@ class PrincipalContext(StrictModel):
     organization_id: str
     membership_id: str
     role: MembershipRole
+    # ``None`` for human sessions and trusted-service callers (unrestricted, gated only by role).
+    # A tuple for API-key principals (G38): the key may only exercise these granted scopes.
+    scopes: tuple[str, ...] | None = None
 
     @property
     def actor_roles(self) -> tuple[str, ...]:
@@ -40,6 +43,14 @@ class PrincipalContext(StrictModel):
         if self.role in {"owner", "admin"}:
             roles.extend(["organization_admin", "integration_admin"])
         return tuple(roles)
+
+    @property
+    def is_api_key(self) -> bool:
+        return self.scopes is not None
+
+    def has_scope(self, scope: str) -> bool:
+        """Human/service principals (``scopes is None``) are unrestricted; keys need the grant."""
+        return self.scopes is None or scope in self.scopes
 
 
 class RegistrationCreate(StrictModel):

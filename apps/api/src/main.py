@@ -9,17 +9,27 @@ import time
 from collections import defaultdict, deque
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import select, text
 
 from src.config import settings
+from src.observability import (
+    CONTENT_TYPE_LATEST,
+    METRICS,
+    configure_logging,
+    new_request_id,
+    path_template,
+    reset_request_id,
+    set_request_id,
+)
 from src.db.session import SessionLocal, engine, prepare_schema
 from src.models.deal_workflow import Deal
 from src.models.workspace import Workspace
 from src.routers import (
     activity,
+    api_keys,
     comps,
     deal_intelligence,
     deal_workflow,
@@ -39,8 +49,10 @@ from src.routers import (
     ownership,
     portfolio,
     questions,
+    quotas,
     red_team,
     risks,
+    search,
     sec,
     signals,
     targets,
@@ -50,11 +62,12 @@ from src.routers import (
     workspaces,
 )
 from src.services.common import NotFound
-from src.services import identity_service
+from src.services import api_key_service, identity_service
 from src.schemas.identity import PrincipalContext
 
 logger = logging.getLogger("deallens")
 logging.basicConfig(level=logging.INFO)
+configure_logging(settings.json_logs)
 
 
 @asynccontextmanager
@@ -101,6 +114,8 @@ _PUBLIC_PATHS = {
     "/docs",
     "/openapi.json",
     "/redoc",
+    # Observability scrape target: unauthenticated so Prometheus can poll it.
+    "/metrics",
 }
 _SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 _VIEWER_SELF_SERVICE_PATHS = {"/api/auth/logout", "/api/auth/switch-organization"}
@@ -179,6 +194,93 @@ class _DemoBuildRateLimiter:
 _demo_build_rate_limiter = _DemoBuildRateLimiter()
 
 
+class _OrgQuotaLimiter:
+    """Per-organization sliding-window quota buckets (G39; generalizes _DemoBuildRateLimiter).
+
+    Keyed by ``(organization_id, bucket)`` so each tenant's usage is isolated. ``check`` records a
+    hit and returns ``None`` when under the limit or the Retry-After seconds when over. A ``limit``
+    of ``0`` (or less) means *unlimited*: nothing is recorded and nothing is ever throttled. As with
+    the other in-process limiters, the Compose deployment runs a single API process so this is
+    immediately effective; multi-replica deployments should add a shared edge/Redis limiter.
+    """
+
+    def __init__(self) -> None:
+        self._events: dict[tuple[str, str], deque[float]] = defaultdict(deque)
+        self._lock = threading.Lock()
+
+    def check(
+        self, organization_id: str, bucket: str, *, limit: int, window_seconds: float
+    ) -> int | None:
+        if limit <= 0:
+            return None
+        now = time.monotonic()
+        window = max(window_seconds, 1.0)
+        with self._lock:
+            events = self._events[(organization_id, bucket)]
+            while events and events[0] <= now - window:
+                events.popleft()
+            if len(events) >= limit:
+                return max(1, round(window - (now - events[0])))
+            events.append(now)
+            if len(self._events) > 10_000:
+                for stale_key in [
+                    key
+                    for key, values in self._events.items()
+                    if not values or values[-1] <= now - max(window, 3600.0)
+                ]:
+                    self._events.pop(stale_key, None)
+            return None
+
+    def usage(self, organization_id: str, bucket: str, window_seconds: float) -> int:
+        """Current in-window count without recording a hit (for the read endpoint)."""
+        now = time.monotonic()
+        window = max(window_seconds, 1.0)
+        with self._lock:
+            events = self._events.get((organization_id, bucket))
+            if not events:
+                return 0
+            while events and events[0] <= now - window:
+                events.popleft()
+            return len(events)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._events.clear()
+
+
+_org_quota_limiter = _OrgQuotaLimiter()
+
+# Bucket -> window (seconds). Limits are read from settings at request time so a monkeypatched
+# limit takes effect without rebuilding anything (mirrors how the demo limiter reads settings).
+_ORG_QUOTA_WINDOWS: dict[str, float] = {"requests": 60.0, "builds": 3600.0}
+
+
+def _org_quota_limit(bucket: str) -> int:
+    if bucket == "requests":
+        return settings.org_request_quota_per_minute
+    if bucket == "builds":
+        return settings.org_build_quota_per_hour
+    return 0
+
+
+def org_quota_usage(organization_id: str) -> list[dict]:
+    """Report current per-bucket usage for an organization (backs the quota-usage endpoint)."""
+    report: list[dict] = []
+    for name, window in _ORG_QUOTA_WINDOWS.items():
+        limit = _org_quota_limit(name)
+        used = _org_quota_limiter.usage(organization_id, name, window)
+        report.append(
+            {
+                "name": name,
+                "used": used,
+                "limit": limit,
+                "window_seconds": int(window),
+                "remaining": None if limit <= 0 else max(0, limit - used),
+            }
+        )
+    return report
+
+
 def _service_principal(request: Request, supplied: str) -> PrincipalContext | None:
     """Authenticate the optional trusted-service credential used by automation.
 
@@ -205,6 +307,52 @@ def _service_principal(request: Request, supplied: str) -> PrincipalContext | No
         membership_id="trusted-service",
         role=role,
     )
+
+
+@app.middleware("http")
+async def organization_quota_guard(request: Request, call_next):
+    """Enforce per-organization quotas (G39) once a principal is resolved.
+
+    Registered before ``identity_and_tenant_guard`` so it composes as the INNER layer: the identity
+    guard resolves ``request.state.principal`` (session, ``dlk_`` API key, or trusted service) and
+    handles auth/tenant early-returns first, then delegates here. Unauthenticated and pre-flight
+    traffic (``principal is None``) is never counted. Two buckets: a per-minute "requests" quota on
+    every authenticated call, and a per-hour "builds" quota layered over the SEC-bound build paths
+    (the demo per-IP throttle in the identity guard still applies on top in DEMO_MODE). API-key
+    principals count toward their organization's quota like any other member.
+    """
+    principal = getattr(request.state, "principal", None)
+    if principal is None:
+        return await call_next(request)
+    organization_id = principal.organization_id
+    retry_after = _org_quota_limiter.check(
+        organization_id,
+        "requests",
+        limit=settings.org_request_quota_per_minute,
+        window_seconds=_ORG_QUOTA_WINDOWS["requests"],
+    )
+    if retry_after is not None:
+        return JSONResponse(
+            status_code=429,
+            content={"detail": "Organization request quota exceeded; retry later"},
+            headers={"Retry-After": str(retry_after)},
+        )
+    if request.method == "POST" and _DEMO_THROTTLED_BUILD_PATHS.match(request.url.path):
+        retry_after = _org_quota_limiter.check(
+            organization_id,
+            "builds",
+            limit=settings.org_build_quota_per_hour,
+            window_seconds=_ORG_QUOTA_WINDOWS["builds"],
+        )
+        if retry_after is not None:
+            return JSONResponse(
+                status_code=429,
+                content={
+                    "detail": "Organization build quota exceeded for this hour; retry later"
+                },
+                headers={"Retry-After": str(retry_after)},
+            )
+    return await call_next(request)
 
 
 @app.middleware("http")
@@ -247,6 +395,14 @@ async def identity_and_tenant_guard(request: Request, call_next):
             with SessionLocal() as session:
                 try:
                     request.state.principal = identity_service.authenticate_token(session, supplied)
+                except identity_service.IdentityError as exc:
+                    return JSONResponse(status_code=exc.status_code, content={"detail": exc.message})
+        elif supplied.startswith("dlk_"):
+            # Scoped programmatic key (G38): resolves to a member principal carrying the key's
+            # granted scopes; still subject to the tenant guard and viewer/role rules below.
+            with SessionLocal() as session:
+                try:
+                    request.state.principal = api_key_service.authenticate_api_key(session, supplied)
                 except identity_service.IdentityError as exc:
                     return JSONResponse(status_code=exc.status_code, content={"detail": exc.message})
         else:
@@ -317,9 +473,53 @@ async def versioned_api_alias(request: Request, call_next):
     return response
 
 
+# Starlette applies the LAST-registered middleware as the OUTERMOST layer, so metrics is
+# declared first and request-id second. Result (outermost -> inner):
+#   request_id -> metrics -> versioned_api_alias -> identity_and_tenant_guard -> CORS -> routes
+# request_id is outermost so every response (including early JSONResponses from the auth/
+# tenant guard) carries X-Request-ID and the correlation id is bound before anything logs.
+# Both are separate functions/decorators from the existing guards so additive middleware
+# (e.g. G39 quotas) composes without editing them.
+@app.middleware("http")
+async def metrics_middleware(request: Request, call_next):
+    """Record request count + latency per (method, path-template, status) for /metrics."""
+    if request.url.path == "/metrics":
+        return await call_next(request)
+    start = time.perf_counter()
+    template = path_template(request.url.path)
+    try:
+        response = await call_next(request)
+    except Exception:
+        METRICS.observe(request.method, template, 500, time.perf_counter() - start)
+        raise
+    METRICS.observe(request.method, template, response.status_code, time.perf_counter() - start)
+    return response
+
+
+@app.middleware("http")
+async def request_id_middleware(request: Request, call_next):
+    """Honor an inbound X-Request-ID (else generate one), echo it, and bind it for logs."""
+    inbound = request.headers.get("X-Request-ID", "").strip()
+    request_id = inbound or new_request_id()
+    request.state.request_id = request_id
+    token = set_request_id(request_id)
+    try:
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = request_id
+        return response
+    finally:
+        reset_request_id(token)
+
+
 @app.exception_handler(NotFound)
 async def not_found_handler(request: Request, exc: NotFound) -> JSONResponse:
     return JSONResponse(status_code=404, content={"detail": exc.message})
+
+
+@app.get("/metrics", tags=["observability"], include_in_schema=False)
+def metrics() -> Response:
+    """Prometheus text exposition (version 0.0.4). Public/unauthenticated scrape target."""
+    return Response(content=METRICS.render(), media_type=CONTENT_TYPE_LATEST)
 
 
 @app.get("/api/health", tags=["health"])
@@ -339,8 +539,8 @@ def health() -> dict:
 for module in (
     activity, workspaces, targets, sec, filings, comps, financials, risks, questions,
     memos, red_team, evidence, examples, governance, govcon, portfolio, notifications,
-    forensics, valuation, feeds, signals, ownership,
+    forensics, valuation, feeds, signals, ownership, search,
     underwriting_data, underwriting_model, deal_workflow, deal_intelligence,
-    integrations, identity, model_ops,
+    integrations, identity, api_keys, model_ops, quotas,
 ):
     app.include_router(module.router)

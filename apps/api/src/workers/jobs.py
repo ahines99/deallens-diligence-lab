@@ -12,8 +12,10 @@ import os
 import socket
 import time
 
+from src.config import settings
 from src.db.base import new_uuid
 from src.db.session import SessionLocal, prepare_schema
+from src.observability import configure_logging, reset_request_id, set_request_id
 from src.services.job_service import process_one, recover_stale
 
 logger = logging.getLogger("deallens.jobs")
@@ -26,13 +28,19 @@ def run_batch(limit: int, stale_seconds: int) -> int:
         recover_stale(session, older_than_seconds=stale_seconds)
         processed = 0
         for _ in range(limit):
-            job = process_one(session, WORKER_ID)
-            if job is None:
-                break
-            processed += 1
-            logger.info(
-                "Job %s (%s) attempt %d -> %s", job.id, job.job_type, job.attempts, job.status
-            )
+            # Bind a per-job correlation id so structured worker logs are traceable end-to-end.
+            token = set_request_id(f"job-{new_uuid()[:12]}")
+            try:
+                job = process_one(session, WORKER_ID)
+                if job is None:
+                    break
+                processed += 1
+                logger.info(
+                    "Job %s (%s) attempt %d -> %s",
+                    job.id, job.job_type, job.attempts, job.status,
+                )
+            finally:
+                reset_request_id(token)
         return processed
 
 
@@ -56,6 +64,7 @@ def main() -> None:
         parser.error("--stale-seconds must be at least 30")
 
     logging.basicConfig(level=logging.INFO)
+    configure_logging(settings.json_logs)
     prepare_schema()
     while True:
         try:

@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 
-from src.routers.deps import OptionalPrincipalDep, SessionDep
+from src.routers.deps import OptionalPrincipalDep, SessionDep, require_scope
 from src.schemas.deal_workflow import ActorContext
 from src.schemas.underwriting_model import (
     CaseKey,
@@ -75,6 +75,7 @@ def calculate(
     "/{workspace_id}/underwriting/cases",
     response_model=UnderwritingCaseVersionOut,
     status_code=201,
+    dependencies=[Depends(require_scope("write:underwriting"))],
 )
 def create_case(
     workspace_id: str,
@@ -139,6 +140,7 @@ def create_case_set(
 @router.get(
     "/{workspace_id}/underwriting/cases",
     response_model=list[UnderwritingCaseVersionOut],
+    dependencies=[Depends(require_scope("read:underwriting"))],
 )
 def list_latest_cases(workspace_id: str, session: SessionDep) -> list[UnderwritingCaseVersionOut]:
     records = service.list_case_versions(session, workspace_id, latest_only=True)

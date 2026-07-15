@@ -1,4 +1,5 @@
 """ORM models. Importing this package registers every table on the shared metadata."""
+from src.models.api_key import ApiKey
 from src.models.audit import AuditLog
 from src.models.comp import ComparableCompany
 from src.models.document import DocumentChunk
@@ -62,6 +63,7 @@ from src.models.underwriting_model import UnderwritingCaseDecision, Underwriting
 from src.models.workspace import Workspace
 
 __all__ = [
+    "ApiKey",
     "AuditLog",
     "AuthSession",
     "BackgroundJob",

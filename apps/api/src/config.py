@@ -34,6 +34,9 @@ class Settings(BaseSettings):
     # --- API ---------------------------------------------------------------
     api_host: str = "0.0.0.0"
     api_port: int = 8000
+    # Emit structured single-line JSON logs (with request_id) for prod log pipelines.
+    # Off by default so local/dev keeps human-readable logs.
+    json_logs: bool = False
     cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
     # Auto-seed live-SEC demo workspaces on first startup (needs network). Off by default so
     # startup stays fast/offline-safe; run `python -m src.seed.load_seed` to populate on demand.
@@ -62,6 +65,26 @@ class Settings(BaseSettings):
     demo_retention_hours: int = 72
     # On-disk EDGAR response cache TTL (0 = disabled; live research always refetches).
     edgar_cache_ttl_seconds: int = 0
+
+    # --- Per-organization quotas (G39) --------------------------------------
+    # In-process sliding-window tenant quotas (generalizes the demo per-IP limiter into policy).
+    # Enforced per resolved principal.organization_id, so API-key callers count toward their org.
+    # 0 = unlimited. Defaults are deliberately generous so ordinary interactive use and the full
+    # test suite never trip them; quota-boundary tests monkeypatch the relevant limit down.
+    org_request_quota_per_minute: int = 600
+    org_build_quota_per_hour: int = 60
+
+    # --- Blob storage (G40) --------------------------------------------------
+    # Backend for opaque blobs (data-room docs, EDGAR cache): "local" (default, zero setup) or
+    # "s3" (S3-compatible; requires an injected client — see storage_service.get_store).
+    storage_backend: str = "local"
+    # Root directory for the local-disk backend, relative to the API working dir by default.
+    storage_root: str = "./data/blobs"
+    # S3-compatible settings (only consulted when storage_backend == "s3").
+    s3_bucket: str = ""
+    s3_prefix: str = ""
+    s3_endpoint_url: str = ""
+    s3_region: str = ""
 
     # --- Public data sources (live mode / extensions) ----------------------
     sec_user_agent: str = "DealLens Diligence Lab (portfolio project) contact@example.com"

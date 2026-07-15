@@ -1580,3 +1580,13 @@ export interface CrossCorpusQA {
   method: string;
   generated_at: string;
 }
+
+export interface WorkspaceSearchHit {
+  artifact_type: string; artifact_id: string; title: string; snippet: string; rank: number;
+}
+export interface WorkspaceSearchResult {
+  query: string; hits: WorkspaceSearchHit[]; engine: string; total: number;
+}
+
+export interface QuotaBucket { name: string; used: number; limit: number; window_seconds: number; remaining: number | null; }
+export interface QuotaUsage { organization_id: string; buckets: QuotaBucket[]; }
