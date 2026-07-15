@@ -53,6 +53,7 @@ _EVENT_TEMPLATES: dict[str, tuple[str, str]] = {
     "condition.resolved": ("Closing condition resolved", "A condition-to-close was resolved."),
     "webhook.endpoint.created": ("Webhook created", "A webhook endpoint was registered."),
     "webhook.endpoint.updated": ("Webhook updated", "A webhook endpoint was changed."),
+    "watchlist.filing_detected": ("New filing detected", "A watched company filed a new report."),
 }
 
 

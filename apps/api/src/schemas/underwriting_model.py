@@ -771,3 +771,152 @@ class FootballFieldResult(BaseModel):
     valuation_high: float
     warnings: list[str]
     generated_at: datetime
+
+
+# --- G24 Driver-based operating model ---------------------------------------------------------
+
+
+class DriverDefinition(BaseModel):
+    """One user-defined driver. ``formula`` is the right-hand-side expression only.
+
+    A leaf driver's formula is a numeric constant (e.g. ``"100"``); a derived driver references
+    other driver names and constants with ``+ - * /`` and parentheses (e.g. ``"units * price"``).
+    """
+
+    name: str = Field(min_length=1, max_length=60)
+    formula: str = Field(min_length=1, max_length=500)
+    unit: str | None = Field(default=None, max_length=40)
+    provenance: str | None = Field(default=None, max_length=500)
+
+    @model_validator(mode="after")
+    def name_is_referenceable(self):
+        if not self.name.isidentifier():
+            raise ValueError(
+                f"Driver name '{self.name}' must be a valid identifier so formulas can reference it"
+            )
+        return self
+
+
+class DriverModelRequest(BaseModel):
+    drivers: list[DriverDefinition] = Field(min_length=1, max_length=200)
+
+    @model_validator(mode="after")
+    def unique_driver_names(self):
+        names = [driver.name for driver in self.drivers]
+        if len(names) != len(set(names)):
+            raise ValueError("Driver names must be unique")
+        return self
+
+
+class DriverProvenance(BaseModel):
+    note: str | None
+    inputs: list[str]
+
+
+class ResolvedDriver(BaseModel):
+    name: str
+    value: float
+    formula: str
+    unit: str | None
+    depends_on: list[str]
+    provenance: DriverProvenance
+
+
+class DriverModelResult(BaseModel):
+    resolved: list[ResolvedDriver]
+    evaluation_order: list[str]
+
+
+# --- G25 Working-capital seasonality ----------------------------------------------------------
+
+
+class MonthlyWorkingCapital(BaseModel):
+    month: int = Field(ge=1, le=12)
+    value: float
+
+
+class WorkingCapitalSeasonalityRequest(BaseModel):
+    monthly_working_capital: list[MonthlyWorkingCapital] = Field(min_length=1, max_length=120)
+
+
+class SeasonalMonthPeg(BaseModel):
+    month: int
+    peg: float
+    observation_count: int
+
+
+class WorkingCapitalSeasonalityResult(BaseModel):
+    status: Literal["complete", "partial"]
+    monthly_pegs: list[SeasonalMonthPeg]
+    present_months: list[int]
+    missing_months: list[int]
+    annual_average: float
+    peak_month: int
+    trough_month: int
+    amplitude: float
+
+
+# --- G26 Dividend recap + bolt-on acquisition events -------------------------------------------
+
+
+class RecapBoltOnEvent(BaseModel):
+    """A capital event applied at a projection period.
+
+    ``dividend_recap`` draws incremental debt (``amount``) to fund an equity dividend.
+    ``bolt_on`` acquires ``incremental_ebitda`` at ``multiple_paid``, funded by ``funded_by``.
+    """
+
+    type: Literal["dividend_recap", "bolt_on"]
+    period: str = Field(min_length=1, max_length=40)
+    amount: float | None = Field(default=None)
+    incremental_ebitda: float | None = Field(default=None)
+    multiple_paid: float | None = Field(default=None, gt=0, le=100)
+    funded_by: Literal["debt", "equity"] = "debt"
+
+    @model_validator(mode="after")
+    def validate_event(self):
+        if self.type == "dividend_recap":
+            if self.amount is None or self.amount <= 0:
+                raise ValueError("dividend_recap requires a positive amount")
+        else:
+            if self.incremental_ebitda is None or self.multiple_paid is None:
+                raise ValueError("bolt_on requires incremental_ebitda and multiple_paid")
+            if self.incremental_ebitda <= 0:
+                raise ValueError("bolt_on incremental_ebitda must be positive")
+        return self
+
+
+class RecapBoltOnRequest(BaseModel):
+    assumptions: UnderwritingAssumptions
+    events: list[RecapBoltOnEvent] = Field(min_length=1, max_length=20)
+
+
+class EventSourcesUses(BaseModel):
+    type: str
+    period: str
+    sources: list[SourceUseLine]
+    uses: list[SourceUseLine]
+    balanced: bool
+
+
+class RecapBoltOnReturns(BaseModel):
+    irr: float | None
+    moic: float | None
+    exit_debt: float
+    exit_ebitda: float
+    exit_equity_value: float
+    exit_leverage: float | None
+    sponsor_exit_proceeds: float
+    sponsor_invested_capital: float
+    cash_flows: list[dict]
+
+
+class RecapBoltOnResult(BaseModel):
+    base: RecapBoltOnReturns
+    adjusted: RecapBoltOnReturns
+    events: list[EventSourcesUses]
+    irr_delta: float | None
+    moic_delta: float | None
+    leverage_delta: float | None
+    sources_uses_balanced: bool
+    generated_at: datetime

@@ -81,3 +81,21 @@ class InsiderPatterns(BaseModel):
     source_status: Literal["available", "partial", "unavailable"]
     source_error: str | None = None
     generated_at: datetime
+
+
+# --- Consolidated signals overview (G18) -----------------------------------
+class SignalsSection(BaseModel):
+    """One aggregated feed within the overview, carrying its own explicit source status."""
+
+    kind: Literal["events", "insiders", "themes", "news"]
+    source_status: Literal["available", "partial", "unavailable"]
+    source_error: str | None = None
+    summary: dict
+    items: list[dict]
+
+
+class SignalsOverview(BaseModel):
+    workspace_id: str
+    sections: list[SignalsSection]
+    overall_status: Literal["available", "partial", "unavailable"]
+    generated_at: datetime

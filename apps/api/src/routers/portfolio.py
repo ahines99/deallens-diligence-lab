@@ -6,7 +6,11 @@ from datetime import date
 from fastapi import APIRouter, HTTPException, Query, Response
 
 from src.routers.deps import OptionalPrincipalDep, SessionDep
-from src.schemas.portfolio import PortfolioDashboard, PortfolioHealth
+from src.schemas.portfolio import (
+    FundConstructionReport,
+    PortfolioDashboard,
+    PortfolioHealth,
+)
 from src.services import portfolio_service as service
 
 router = APIRouter(prefix="/api/organizations", tags=["portfolio"])
@@ -95,6 +99,41 @@ def export_portfolio_dashboard(
             "X-Content-Type-Options": "nosniff",
         },
     )
+
+
+@router.get("/{organization_id}/fund-construction", response_model=FundConstructionReport)
+def get_fund_construction(
+    organization_id: str,
+    session: SessionDep,
+    principal: OptionalPrincipalDep,
+    fund_id: str | None = Query(default=None, max_length=32),
+    as_of: date | None = None,
+    single_sector_max: float | None = Query(default=None, ge=0.0, le=1.0),
+    single_deal_max: float | None = Query(default=None, ge=0.0, le=1.0),
+    single_strategy_max: float | None = Query(default=None, ge=0.0, le=1.0),
+    near_breach_ratio: float = Query(default=0.90, ge=0.0, le=1.0),
+    target_fund_size: float | None = Query(default=None, ge=0.0),
+    investment_period_years: int = Query(default=5, ge=1, le=30),
+    pacing_tolerance: float = Query(default=0.10, ge=0.0, le=1.0),
+) -> FundConstructionReport:
+    _authorize(organization_id, principal)
+    try:
+        result = service.get_fund_construction(
+            session,
+            organization_id,
+            fund_id=fund_id,
+            as_of=as_of,
+            single_sector_max=single_sector_max,
+            single_deal_max=single_deal_max,
+            single_strategy_max=single_strategy_max,
+            near_breach_ratio=near_breach_ratio,
+            target_fund_size=target_fund_size,
+            investment_period_years=investment_period_years,
+            pacing_tolerance=pacing_tolerance,
+        )
+    except service.PortfolioError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+    return FundConstructionReport.model_validate(result)
 
 
 @router.get("/{organization_id}/portfolio/health", response_model=PortfolioHealth)

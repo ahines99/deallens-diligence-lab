@@ -59,6 +59,7 @@ from src.routers import (
     underwriting_data,
     underwriting_model,
     valuation,
+    watchlist,
     workspaces,
 )
 from src.services.common import NotFound
@@ -541,6 +542,6 @@ for module in (
     memos, red_team, evidence, examples, governance, govcon, portfolio, notifications,
     forensics, valuation, feeds, signals, ownership, search,
     underwriting_data, underwriting_model, deal_workflow, deal_intelligence,
-    integrations, identity, api_keys, model_ops, quotas,
+    integrations, identity, api_keys, model_ops, quotas, watchlist,
 ):
     app.include_router(module.router)

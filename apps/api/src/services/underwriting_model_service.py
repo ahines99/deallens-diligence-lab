@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import calendar
 import copy
 import hashlib
@@ -25,11 +26,15 @@ from src.schemas.underwriting_model import (
     CaseVarianceResult,
     CovenantHeadroomResult,
     DriverDistribution,
+    DriverModelRequest,
+    DriverModelResult,
     ExitReadinessResult,
     FootballFieldResult,
     MonteCarloRequest,
     MonteCarloResult,
     OperatingPeriodAssumption,
+    RecapBoltOnRequest,
+    RecapBoltOnResult,
     ReturnsAttributionRequest,
     ReturnsAttributionResult,
     ReverseStressRequest,
@@ -44,6 +49,8 @@ from src.schemas.underwriting_model import (
     ValuationTriangulationResult,
     WorkingCapitalPegRequest,
     WorkingCapitalPegResult,
+    WorkingCapitalSeasonalityRequest,
+    WorkingCapitalSeasonalityResult,
 )
 from src.services.common import NotFound, get_workspace_or_404
 
@@ -1488,6 +1495,323 @@ def calculate_football_field(request: ValuationTriangulationRequest) -> Football
             "valuation_low": triangulation.valuation_low,
             "valuation_high": triangulation.valuation_high,
             "warnings": triangulation.warnings,
+            "generated_at": now_utc(),
+        }
+    )
+
+
+# --- G24 Driver-based operating model ---------------------------------------------------------
+#
+# Formulas are evaluated by a *whitelisted AST walk*, never ``eval``/``exec``. Only a fixed set of
+# node types is permitted; anything else (function calls, attribute access, subscripts, comparisons,
+# names that are not declared drivers) is rejected before any arithmetic runs.
+
+_ALLOWED_DRIVER_NODES: tuple[type[ast.AST], ...] = (
+    ast.Expression,
+    ast.BinOp,
+    ast.UnaryOp,
+    ast.Add,
+    ast.Sub,
+    ast.Mult,
+    ast.Div,
+    ast.USub,
+    ast.UAdd,
+    ast.Name,
+    ast.Load,
+    ast.Constant,
+)
+
+
+def _parse_driver_formula(name: str, formula: str) -> tuple[ast.Expression, set[str]]:
+    """Parse one formula into an AST, rejecting any non-whitelisted node; return its name refs."""
+    try:
+        tree = ast.parse(formula, mode="eval")
+    except SyntaxError as exc:
+        raise UnderwritingCalculationError(
+            f"Driver '{name}' has an invalid formula: {exc.msg}"
+        ) from exc
+    references: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, _ALLOWED_DRIVER_NODES):
+            raise UnderwritingCalculationError(
+                f"Driver '{name}' uses an unsupported expression ({type(node).__name__}); only "
+                "+ - * /, parentheses, numeric constants, and driver names are allowed"
+            )
+        if isinstance(node, ast.Constant) and (
+            isinstance(node.value, bool) or not isinstance(node.value, (int, float))
+        ):
+            raise UnderwritingCalculationError(
+                f"Driver '{name}' may only reference numeric constants"
+            )
+        if isinstance(node, ast.Name):
+            references.add(node.id)
+    return tree, references
+
+
+def _evaluate_driver_node(node: ast.AST, values: dict[str, Decimal]) -> Decimal:
+    """Decimal-exact evaluation of a pre-validated driver AST."""
+    if isinstance(node, ast.Expression):
+        return _evaluate_driver_node(node.body, values)
+    if isinstance(node, ast.Constant):
+        return Decimal(str(node.value))
+    if isinstance(node, ast.Name):
+        return values[node.id]
+    if isinstance(node, ast.UnaryOp):
+        operand = _evaluate_driver_node(node.operand, values)
+        return operand if isinstance(node.op, ast.UAdd) else -operand
+    if isinstance(node, ast.BinOp):
+        left = _evaluate_driver_node(node.left, values)
+        right = _evaluate_driver_node(node.right, values)
+        if isinstance(node.op, ast.Add):
+            return left + right
+        if isinstance(node.op, ast.Sub):
+            return left - right
+        if isinstance(node.op, ast.Mult):
+            return left * right
+        if right == 0:
+            raise UnderwritingCalculationError("Division by zero in a driver formula")
+        return left / right
+    raise UnderwritingCalculationError("Unsupported driver expression")  # pragma: no cover
+
+
+def calculate_driver_model(request: DriverModelRequest) -> DriverModelResult:
+    """Validate, cycle-check, topologically evaluate user drivers with provenance on each line."""
+    definitions = {driver.name: driver for driver in request.drivers}
+    parsed: dict[str, ast.Expression] = {}
+    dependencies: dict[str, list[str]] = {}
+    for driver in request.drivers:
+        tree, references = _parse_driver_formula(driver.name, driver.formula)
+        unknown = sorted(ref for ref in references if ref not in definitions)
+        if unknown:
+            raise UnderwritingCalculationError(
+                f"Driver '{driver.name}' references unknown driver(s): {', '.join(unknown)}"
+            )
+        parsed[driver.name] = tree
+        dependencies[driver.name] = sorted(references)
+
+    # Depth-first topological sort that names the exact cycle path when one exists.
+    state: dict[str, int] = {}  # 0/absent = unvisited, 1 = on stack, 2 = done
+    order: list[str] = []
+    stack: list[str] = []
+
+    def visit(name: str) -> None:
+        state[name] = 1
+        stack.append(name)
+        for dep in dependencies[name]:
+            if state.get(dep, 0) == 1:
+                cycle = stack[stack.index(dep):] + [dep]
+                raise UnderwritingCalculationError(
+                    "Driver formulas contain a cycle: " + " -> ".join(cycle)
+                )
+            if state.get(dep, 0) == 0:
+                visit(dep)
+        stack.pop()
+        state[name] = 2
+        order.append(name)
+
+    for driver in request.drivers:
+        if state.get(driver.name, 0) == 0:
+            visit(driver.name)
+
+    values: dict[str, Decimal] = {}
+    transitive: dict[str, set[str]] = {}
+    for name in order:
+        values[name] = _evaluate_driver_node(parsed[name], values)
+        closure: set[str] = set(dependencies[name])
+        for dep in dependencies[name]:
+            closure |= transitive[dep]
+        transitive[name] = closure
+
+    resolved = [
+        {
+            "name": driver.name,
+            "value": _ratio(float(values[driver.name])),
+            "formula": driver.formula,
+            "unit": driver.unit,
+            "depends_on": dependencies[driver.name],
+            "provenance": {
+                "note": driver.provenance,
+                "inputs": sorted(transitive[driver.name]),
+            },
+        }
+        for driver in request.drivers
+    ]
+    return DriverModelResult.model_validate(
+        {"resolved": resolved, "evaluation_order": order}
+    )
+
+
+# --- G25 Working-capital seasonality ----------------------------------------------------------
+
+
+def calculate_working_capital_seasonality(
+    request: WorkingCapitalSeasonalityRequest,
+) -> WorkingCapitalSeasonalityResult:
+    """Peg working capital per calendar month (never a single annual average).
+
+    Months with observations are averaged in place; absent months are reported as missing and are
+    never imputed or interpolated. The seasonal swing (peak/trough/amplitude) is measured over the
+    present months only.
+    """
+    by_month: dict[int, list[float]] = {}
+    for row in request.monthly_working_capital:
+        by_month.setdefault(row.month, []).append(row.value)
+
+    monthly_pegs = [
+        {
+            "month": month,
+            "peg": _money(statistics.fmean(by_month[month])),
+            "observation_count": len(by_month[month]),
+        }
+        for month in sorted(by_month)
+    ]
+    missing_months = [month for month in range(1, 13) if month not in by_month]
+    peak = max(monthly_pegs, key=lambda entry: entry["peg"])
+    trough = min(monthly_pegs, key=lambda entry: entry["peg"])
+    return WorkingCapitalSeasonalityResult.model_validate(
+        {
+            "status": "complete" if not missing_months else "partial",
+            "monthly_pegs": monthly_pegs,
+            "present_months": sorted(by_month),
+            "missing_months": missing_months,
+            "annual_average": _money(statistics.fmean(entry["peg"] for entry in monthly_pegs)),
+            "peak_month": peak["month"],
+            "trough_month": trough["month"],
+            "amplitude": _money(peak["peg"] - trough["peg"]),
+        }
+    )
+
+
+# --- G26 Dividend recap + bolt-on acquisition events -------------------------------------------
+
+
+def calculate_recap_boltons(request: RecapBoltOnRequest) -> RecapBoltOnResult:
+    """Overlay dividend-recap and bolt-on events on the base case and re-derive sponsor returns.
+
+    A dividend recap draws incremental debt to pay an equity dividend (returns capital early, so it
+    lifts IRR and raises exit leverage while leaving nominal MoIC roughly flat). A bolt-on adds
+    EBITDA funded by debt or fresh equity. Exit-state deltas and the interim cash-flow timeline are
+    accumulated in Decimal so the per-event sources/uses reconcile exactly, then the existing
+    ``xirr`` machinery re-prices the sponsor's dated cash flows.
+    """
+    assumptions = request.assumptions
+    sources_uses = calculate_sources_uses(assumptions)
+    projection = calculate_projection(assumptions)
+    base_returns = calculate_returns(assumptions, sources_uses, projection)
+
+    end_by_label = {period["label"]: period["end_date"] for period in projection}
+    final = projection[-1]
+
+    cent = Decimal("0.01")
+    ownership = Decimal(str(sources_uses["sponsor_ownership"]))
+    invested = Decimal(str(sources_uses["sponsor_equity"]))
+    exit_multiple = Decimal(str(assumptions.transaction.exit_multiple))
+    exit_ebitda_base = Decimal(str(final["ebitda"])) / Decimal(str(final["year_fraction"]))
+    exit_debt_base = Decimal(str(base_returns["exit_debt"]))
+    exit_cash_base = Decimal(str(base_returns["exit_cash"]))
+
+    exit_ebitda_delta = Decimal("0")
+    exit_debt_delta = Decimal("0")
+    interim_flows: list[tuple[date, Decimal]] = []
+    events_out: list[dict] = []
+    all_balanced = True
+
+    for event in request.events:
+        if event.period not in end_by_label:
+            raise UnderwritingCalculationError(
+                f"Event period '{event.period}' is not a projection period"
+            )
+        event_date = end_by_label[event.period]
+        if event.type == "dividend_recap":
+            amount = Decimal(str(event.amount))
+            exit_debt_delta += amount
+            interim_flows.append((event_date, (amount * ownership).quantize(cent)))
+            sources = [{"name": "Incremental debt", "amount": _money(float(amount))}]
+            uses = [{"name": "Equity dividend", "amount": _money(float(amount))}]
+        else:
+            inc_ebitda = Decimal(str(event.incremental_ebitda))
+            purchase = (inc_ebitda * Decimal(str(event.multiple_paid))).quantize(cent)
+            exit_ebitda_delta += inc_ebitda
+            if event.funded_by == "debt":
+                exit_debt_delta += purchase
+                sources = [{"name": "Acquisition debt", "amount": _money(float(purchase))}]
+            else:
+                interim_flows.append((event_date, (-purchase * ownership).quantize(cent)))
+                sources = [{"name": "Sponsor equity", "amount": _money(float(purchase))}]
+            uses = [{"name": "Bolt-on purchase price", "amount": _money(float(purchase))}]
+        balanced = sum(
+            (Decimal(str(line["amount"])) for line in sources), Decimal("0")
+        ) == sum((Decimal(str(line["amount"])) for line in uses), Decimal("0"))
+        all_balanced = all_balanced and balanced
+        events_out.append(
+            {
+                "type": event.type,
+                "period": event.period,
+                "sources": sources,
+                "uses": uses,
+                "balanced": balanced,
+            }
+        )
+
+    new_exit_ebitda = exit_ebitda_base + exit_ebitda_delta
+    new_exit_debt = exit_debt_base + exit_debt_delta
+    new_exit_equity = (exit_multiple * new_exit_ebitda - new_exit_debt + exit_cash_base).quantize(
+        cent
+    )
+    sponsor_exit = (new_exit_equity * ownership).quantize(cent)
+
+    cash_flows: list[tuple[date, Decimal]] = [
+        (assumptions.transaction.close_date, -invested),
+        *interim_flows,
+        (final["end_date"], sponsor_exit),
+    ]
+    inflows = sum((amount for _, amount in cash_flows if amount > 0), Decimal("0"))
+    outflows = sum((-amount for _, amount in cash_flows if amount < 0), Decimal("0"))
+    adjusted_moic = _ratio(float(inflows / outflows)) if outflows > 0 else None
+    adjusted_irr = xirr([(flow_date, float(amount)) for flow_date, amount in cash_flows])
+
+    base_leverage = (
+        _ratio(float(exit_debt_base / exit_ebitda_base)) if exit_ebitda_base > 0 else None
+    )
+    adjusted_leverage = (
+        _ratio(float(new_exit_debt / new_exit_ebitda)) if new_exit_ebitda > 0 else None
+    )
+
+    def _delta(after: float | None, before: float | None) -> float | None:
+        return _ratio(after - before) if after is not None and before is not None else None
+
+    return RecapBoltOnResult.model_validate(
+        {
+            "base": {
+                "irr": base_returns["xirr"],
+                "moic": base_returns["moic"],
+                "exit_debt": base_returns["exit_debt"],
+                "exit_ebitda": _money(float(exit_ebitda_base)),
+                "exit_equity_value": base_returns["exit_equity_value"],
+                "exit_leverage": base_leverage,
+                "sponsor_exit_proceeds": base_returns["sponsor_exit_proceeds"],
+                "sponsor_invested_capital": base_returns["sponsor_invested_capital"],
+                "cash_flows": base_returns["cash_flows"],
+            },
+            "adjusted": {
+                "irr": adjusted_irr,
+                "moic": adjusted_moic,
+                "exit_debt": _money(float(new_exit_debt)),
+                "exit_ebitda": _money(float(new_exit_ebitda)),
+                "exit_equity_value": _money(float(new_exit_equity)),
+                "exit_leverage": adjusted_leverage,
+                "sponsor_exit_proceeds": _money(float(sponsor_exit)),
+                "sponsor_invested_capital": _money(float(invested)),
+                "cash_flows": [
+                    {"date": flow_date.isoformat(), "amount": _money(float(amount))}
+                    for flow_date, amount in cash_flows
+                ],
+            },
+            "events": events_out,
+            "irr_delta": _delta(adjusted_irr, base_returns["xirr"]),
+            "moic_delta": _delta(adjusted_moic, base_returns["moic"]),
+            "leverage_delta": _delta(adjusted_leverage, base_leverage),
+            "sources_uses_balanced": all_balanced,
             "generated_at": now_utc(),
         }
     )

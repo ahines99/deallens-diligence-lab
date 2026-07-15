@@ -850,6 +850,313 @@ def export_dashboard_csv(dashboard: dict[str, Any]) -> str:
     return output.getvalue()
 
 
+# --- Fund-level portfolio construction (G29) ------------------------------------------------
+
+# Default concentration limits, expressed as fractions of a fund's sized (deployed) capital.
+# Every limit is overridable per request; nothing here is imputed onto missing data.
+DEFAULT_CONCENTRATION_LIMITS: dict[str, float] = {
+    "single_sector_max": 0.30,
+    "single_deal_max": 0.15,
+    "single_strategy_max": 0.50,
+}
+DEFAULT_NEAR_BREACH_RATIO = 0.90
+DEFAULT_INVESTMENT_PERIOD_YEARS = 5
+DEFAULT_PACING_TOLERANCE = 0.10
+# Sizing is read from the fund's committed sponsor equity in a deal's underwriting case. The base
+# case is canonical; if it is absent we fall back to the lexically first case key so the figure is
+# deterministic. A deal with no case (or no sources & uses) is treated as UNSIZED, never imputed.
+_SIZING_CASE_PREFERENCE = "base"
+
+
+def _committed_capital(case: UnderwritingCaseVersion | None) -> float | None:
+    """Fund equity deployed into a deal, or ``None`` when the case carries no sized sources & uses."""
+    if case is None:
+        return None
+    sources_uses = (case.result or {}).get("sources_uses") or {}
+    return _number(sources_uses.get("sponsor_equity"))
+
+
+def _pick_sizing_case(cases: list[UnderwritingCaseVersion]) -> UnderwritingCaseVersion | None:
+    if not cases:
+        return None
+    by_key = {item.case_key: item for item in _latest_cases(cases)}
+    if _SIZING_CASE_PREFERENCE in by_key:
+        return by_key[_SIZING_CASE_PREFERENCE]
+    return by_key[min(by_key)]
+
+
+def _exposure_buckets(
+    sized: list[dict[str, Any]], dimension_key: str, deployed: float
+) -> list[dict[str, Any]]:
+    totals: dict[str, float] = defaultdict(float)
+    for row in sized:
+        totals[row[dimension_key]] += row["committed"]
+    buckets = [
+        {
+            "key": key,
+            "label": key.replace("_", " ").title(),
+            "sized_amount": round(amount, 2),
+            "exposure_pct": round(amount / deployed, 4) if deployed else 0.0,
+        }
+        for key, amount in totals.items()
+    ]
+    buckets.sort(key=lambda item: (-item["sized_amount"], item["key"]))
+    return buckets
+
+
+def _detect_breaches(
+    buckets: list[dict[str, Any]],
+    dimension: str,
+    limit: float,
+    near_ratio: float,
+    *,
+    min_buckets: int = 1,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Split buckets into over-limit breaches and within-``near_ratio`` near-breaches.
+
+    ``min_buckets`` guards structural dimensions: a fund's strategy is its mandate, so a single
+    100% strategy bucket is not a concentration *risk* and only fires when >1 strategy is present.
+    """
+    breaches: list[dict[str, Any]] = []
+    near: list[dict[str, Any]] = []
+    if len(buckets) < min_buckets:
+        return breaches, near
+    for bucket in buckets:
+        pct = bucket["exposure_pct"]
+        if pct > limit:
+            breaches.append(
+                {
+                    "dimension": dimension,
+                    "key": bucket["key"],
+                    "exposure_pct": pct,
+                    "limit": limit,
+                    "excess": round(pct - limit, 4),
+                }
+            )
+        elif pct >= limit * near_ratio:
+            near.append(
+                {
+                    "dimension": dimension,
+                    "key": bucket["key"],
+                    "exposure_pct": pct,
+                    "limit": limit,
+                    "headroom": round(limit - pct, 4),
+                }
+            )
+    return breaches, near
+
+
+def _pacing(
+    fund: Fund,
+    deployed: float,
+    target: float | None,
+    as_of: date,
+    investment_period_years: int,
+    tolerance: float,
+) -> dict[str, Any]:
+    """Linear-deployment pacing: expected fraction deployed by ``as_of`` given the vintage year."""
+    vintage = fund.vintage_year
+    years_elapsed: float | None = None
+    expected_pct: float | None = None
+    if vintage is not None:
+        elapsed_days = (as_of - date(vintage, 1, 1)).days
+        years_elapsed = round(max(0.0, elapsed_days / 365.25), 3)
+        if investment_period_years > 0:
+            expected_pct = round(min(years_elapsed / investment_period_years, 1.0), 4)
+    actual_pct = round(deployed / target, 4) if target and target > 0 else None
+    if expected_pct is None or actual_pct is None:
+        status = "unknown"
+    elif actual_pct > expected_pct + tolerance:
+        status = "ahead"
+    elif actual_pct < expected_pct - tolerance:
+        status = "behind"
+    else:
+        status = "on_track"
+    return {
+        "vintage_year": vintage,
+        "investment_period_years": investment_period_years,
+        "years_elapsed": years_elapsed,
+        "expected_pct": expected_pct,
+        "actual_pct": actual_pct,
+        "status": status,
+        "tolerance": tolerance,
+    }
+
+
+def get_fund_construction(
+    session: Session,
+    organization_id: str,
+    *,
+    fund_id: str | None = None,
+    as_of: date | None = None,
+    single_sector_max: float | None = None,
+    single_deal_max: float | None = None,
+    single_strategy_max: float | None = None,
+    near_breach_ratio: float = DEFAULT_NEAR_BREACH_RATIO,
+    target_fund_size: float | None = None,
+    investment_period_years: int = DEFAULT_INVESTMENT_PERIOD_YEARS,
+    pacing_tolerance: float = DEFAULT_PACING_TOLERANCE,
+) -> dict[str, Any]:
+    """Aggregate fund exposure vs. concentration limits and a vintage-based pacing model.
+
+    Sizing is never imputed: a deal only contributes to deployed capital and sized exposure when its
+    underwriting case carries committed sponsor equity, and ``sizing_coverage`` reports the share of
+    the fund's deals that were sized.
+    """
+    if session.get(Organization, organization_id) is None:
+        raise PortfolioError("Organization not found", 404)
+    as_of = as_of or now_utc().date()
+    limits = {
+        "single_sector_max": DEFAULT_CONCENTRATION_LIMITS["single_sector_max"]
+        if single_sector_max is None
+        else single_sector_max,
+        "single_deal_max": DEFAULT_CONCENTRATION_LIMITS["single_deal_max"]
+        if single_deal_max is None
+        else single_deal_max,
+        "single_strategy_max": DEFAULT_CONCENTRATION_LIMITS["single_strategy_max"]
+        if single_strategy_max is None
+        else single_strategy_max,
+        "near_breach_ratio": near_breach_ratio,
+    }
+
+    fund_stmt = select(Fund).where(Fund.organization_id == organization_id)
+    if fund_id:
+        fund_stmt = fund_stmt.where(Fund.id == fund_id)
+    funds = list(session.scalars(fund_stmt))
+    fund_ids = [item.id for item in funds]
+
+    deals: list[Deal] = []
+    if fund_ids:
+        deal_stmt = select(Deal).where(
+            Deal.organization_id == organization_id, Deal.fund_id.in_(fund_ids)
+        )
+        deals = list(session.scalars(deal_stmt))
+    workspace_ids = [item.workspace_id for item in deals if item.workspace_id]
+
+    targets = (
+        {
+            item.workspace_id: item
+            for item in session.scalars(
+                select(Target).where(Target.workspace_id.in_(workspace_ids))
+            )
+        }
+        if workspace_ids
+        else {}
+    )
+    cases_by_workspace: dict[str, list[UnderwritingCaseVersion]] = defaultdict(list)
+    if workspace_ids:
+        for case in session.scalars(
+            select(UnderwritingCaseVersion).where(
+                UnderwritingCaseVersion.workspace_id.in_(workspace_ids)
+            )
+        ):
+            cases_by_workspace[case.workspace_id].append(case)
+
+    deals_by_fund: dict[str, list[Deal]] = defaultdict(list)
+    for deal in deals:
+        deals_by_fund[deal.fund_id].append(deal)
+
+    fund_reports: list[dict[str, Any]] = []
+    for fund in sorted(
+        funds, key=lambda item: (item.vintage_year is None, item.vintage_year or 0, item.name)
+    ):
+        fund_deals = deals_by_fund.get(fund.id, [])
+        sized: list[dict[str, Any]] = []
+        deal_buckets: list[dict[str, Any]] = []
+        unsized_codes: list[str] = []
+        for deal in fund_deals:
+            case = _pick_sizing_case(cases_by_workspace.get(deal.workspace_id or "", []))
+            committed = _committed_capital(case)
+            if committed is None or committed <= 0:
+                unsized_codes.append(deal.code)
+                continue
+            target = targets.get(deal.workspace_id or "")
+            sector = target.sector if target and target.sector else "Unclassified"
+            sized.append(
+                {
+                    "code": deal.code,
+                    "committed": committed,
+                    "sector": sector,
+                    "strategy": fund.strategy,
+                    "stage": deal.stage,
+                }
+            )
+        deployed = round(sum(row["committed"] for row in sized), 2)
+        for row in sorted(sized, key=lambda item: (-item["committed"], item["code"])):
+            deal_buckets.append(
+                {
+                    "key": row["code"],
+                    "label": row["code"],
+                    "sized_amount": round(row["committed"], 2),
+                    "exposure_pct": round(row["committed"] / deployed, 4) if deployed else 0.0,
+                }
+            )
+
+        sector_buckets = _exposure_buckets(sized, "sector", deployed)
+        strategy_buckets = _exposure_buckets(sized, "strategy", deployed)
+        stage_buckets = _exposure_buckets(sized, "stage", deployed)
+
+        breaches: list[dict[str, Any]] = []
+        near_breaches: list[dict[str, Any]] = []
+        for buckets, dimension, limit, min_buckets in (
+            (sector_buckets, "sector", limits["single_sector_max"], 1),
+            (deal_buckets, "deal", limits["single_deal_max"], 1),
+            (strategy_buckets, "strategy", limits["single_strategy_max"], 2),
+        ):
+            found, near = _detect_breaches(
+                buckets, dimension, limit, near_breach_ratio, min_buckets=min_buckets
+            )
+            breaches.extend(found)
+            near_breaches.extend(near)
+        breaches.sort(key=lambda item: (-item["excess"], item["dimension"], item["key"]))
+        near_breaches.sort(key=lambda item: (-item["exposure_pct"], item["dimension"], item["key"]))
+
+        total_deals = len(fund_deals)
+        sized_count = len(sized)
+        fund_reports.append(
+            {
+                "fund_id": fund.id,
+                "name": fund.name,
+                "vintage_year": fund.vintage_year,
+                "strategy": fund.strategy,
+                "base_currency": fund.base_currency,
+                "deployed": deployed,
+                "target": target_fund_size,
+                "pacing": _pacing(
+                    fund,
+                    deployed,
+                    target_fund_size,
+                    as_of,
+                    investment_period_years,
+                    pacing_tolerance,
+                ),
+                "exposures": {
+                    "sector": sector_buckets,
+                    "strategy": strategy_buckets,
+                    "stage": stage_buckets,
+                },
+                "concentration_breaches": breaches,
+                "near_breaches": near_breaches,
+                "sizing_coverage": {
+                    "total_deals": total_deals,
+                    "sized_deals": sized_count,
+                    "unsized_deals": total_deals - sized_count,
+                    "coverage_pct": round(sized_count / total_deals * 100, 1) if total_deals else 0.0,
+                    "deployed": deployed,
+                    "unsized_deal_codes": sorted(unsized_codes),
+                },
+            }
+        )
+
+    return {
+        "organization_id": organization_id,
+        "generated_at": now_utc(),
+        "as_of": as_of,
+        "limits": limits,
+        "funds": fund_reports,
+    }
+
+
 def get_health(session: Session, organization_id: str) -> dict[str, Any]:
     dashboard = get_dashboard(session, organization_id)
     source_statuses = Counter(item["source_health"]["status"] for item in dashboard["deals"])
@@ -871,5 +1178,6 @@ __all__ = [
     "PortfolioError",
     "export_dashboard_csv",
     "get_dashboard",
+    "get_fund_construction",
     "get_health",
 ]

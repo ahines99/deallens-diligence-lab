@@ -13,10 +13,14 @@ from src.schemas.underwriting_model import (
     CaseVarianceRequest,
     CaseVarianceResult,
     CovenantHeadroomResult,
+    DriverModelRequest,
+    DriverModelResult,
     ExitReadinessResult,
     FootballFieldResult,
     MonteCarloRequest,
     MonteCarloResult,
+    RecapBoltOnRequest,
+    RecapBoltOnResult,
     ReturnsAttributionRequest,
     ReturnsAttributionResult,
     ReverseStressRequest,
@@ -35,6 +39,8 @@ from src.schemas.underwriting_model import (
     ValuationTriangulationResult,
     WorkingCapitalPegRequest,
     WorkingCapitalPegResult,
+    WorkingCapitalSeasonalityRequest,
+    WorkingCapitalSeasonalityResult,
 )
 from src.services import underwriting_model_service as service
 from src.services.common import get_workspace_or_404
@@ -221,6 +227,48 @@ def working_capital_peg(
     get_workspace_or_404(session, workspace_id)
     try:
         return service.calculate_working_capital_peg(payload)
+    except service.UnderwritingCalculationError as exc:
+        raise _calculation_error(exc) from exc
+
+
+@router.post(
+    "/{workspace_id}/underwriting/driver-model",
+    response_model=DriverModelResult,
+)
+def driver_model(
+    workspace_id: str, payload: DriverModelRequest, session: SessionDep
+) -> DriverModelResult:
+    get_workspace_or_404(session, workspace_id)
+    try:
+        return service.calculate_driver_model(payload)
+    except service.UnderwritingCalculationError as exc:
+        raise _calculation_error(exc) from exc
+
+
+@router.post(
+    "/{workspace_id}/underwriting/working-capital-seasonality",
+    response_model=WorkingCapitalSeasonalityResult,
+)
+def working_capital_seasonality(
+    workspace_id: str, payload: WorkingCapitalSeasonalityRequest, session: SessionDep
+) -> WorkingCapitalSeasonalityResult:
+    get_workspace_or_404(session, workspace_id)
+    try:
+        return service.calculate_working_capital_seasonality(payload)
+    except service.UnderwritingCalculationError as exc:
+        raise _calculation_error(exc) from exc
+
+
+@router.post(
+    "/{workspace_id}/underwriting/recap-boltons",
+    response_model=RecapBoltOnResult,
+)
+def recap_boltons(
+    workspace_id: str, payload: RecapBoltOnRequest, session: SessionDep
+) -> RecapBoltOnResult:
+    get_workspace_or_404(session, workspace_id)
+    try:
+        return service.calculate_recap_boltons(payload)
     except service.UnderwritingCalculationError as exc:
         raise _calculation_error(exc) from exc
 

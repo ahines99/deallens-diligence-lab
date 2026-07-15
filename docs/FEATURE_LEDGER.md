@@ -83,7 +83,7 @@ cannot be satisfied by relabeling repairs as features.
 | F52 | Local actor/role switcher for governance demos | done | frontend interaction test |
 | F53 | Demonstrable second-actor four-eyes workflow | done | submitter/approver UI test |
 | F54 | Discoverable Signals navigation group | done | navigation/build test |
-| F55 | Consolidated signals overview | planned | page/API rendering test (carried into Wave 4 as G18 — see `ROADMAP-WAVE4.md`) |
+| F55 | Consolidated signals overview | done | delivered in Wave 4 as G18: per-section source-status aggregation + endpoint contract (`apps/api/tests/test_signals_overview.py`: `test_overview_aggregates_four_sections_each_with_source_status`, `test_unavailable_feed_shows_unavailable_not_clean_empty`, `test_signals_overview_endpoint_contract`) |
 | F56 | Expandable verbatim evidence excerpts | done | component test |
 | F57 | Model-input dirty-state indicator | done | frontend state test |
 | F58 | Stress-analysis stale-state indicator | done | frontend state test |
@@ -101,9 +101,9 @@ Completion requires at least 50 `F##` rows marked `done`, every B01-B15 gate eit
 removed from the shipped product, all tests/builds/migrations green, and a final requirement-by-requirement
 audit against the current worktree. Planned or partially implemented rows do not count.
 
-Current verified tally: **15/15 defect gates closed and 64/65 capabilities done**. F02 intentionally
+Current verified tally: **15/15 defect gates closed and 65/65 capabilities done**. F02 intentionally
 uses expiring, server-stored, hashed, revocable opaque tokens instead of self-contained signed tokens.
-The remaining idea (F55) stays planned and is not included in the completed count.
+F55 (the last planned idea) shipped in Wave 4 as G18 (consolidated signals overview).
 F28–F30 and F34–F35 are covered by dedicated boundary/acceptance tests in
 `apps/api/tests/test_portfolio.py`, F51 by `apps/api/tests/test_filings_qa.py`, and F59 by
 `apps/web/src/app/workspaces/[workspaceId]/page.test.tsx`.

@@ -30,6 +30,7 @@ const GROUPS: { label: string; items: { label: string; seg: string }[] }[] = [
   {
     label: "Signals",
     items: [
+      { label: "Signals overview", seg: "signals" },
       { label: "Filing events", seg: "events" },
       { label: "Insider activity", seg: "insiders" },
       { label: "News signals", seg: "news" },

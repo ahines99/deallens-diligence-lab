@@ -236,6 +236,78 @@ class PortfolioDashboard(BaseModel):
     import_exceptions: list[ImportExceptionItem]
 
 
+class ExposureBucket(BaseModel):
+    key: str
+    label: str
+    sized_amount: float
+    exposure_pct: float
+
+
+class ConcentrationBreach(BaseModel):
+    dimension: str
+    key: str
+    exposure_pct: float
+    limit: float
+    excess: float
+
+
+class ConcentrationNearBreach(BaseModel):
+    dimension: str
+    key: str
+    exposure_pct: float
+    limit: float
+    headroom: float
+
+
+class PacingModel(BaseModel):
+    vintage_year: int | None
+    investment_period_years: int
+    years_elapsed: float | None
+    expected_pct: float | None
+    actual_pct: float | None
+    status: str
+    tolerance: float
+
+
+class SizingCoverage(BaseModel):
+    total_deals: int
+    sized_deals: int
+    unsized_deals: int
+    coverage_pct: float
+    deployed: float
+    unsized_deal_codes: list[str] = Field(default_factory=list)
+
+
+class FundConstruction(BaseModel):
+    fund_id: str
+    name: str
+    vintage_year: int | None
+    strategy: str
+    base_currency: str
+    deployed: float
+    target: float | None
+    pacing: PacingModel
+    exposures: dict[str, list[ExposureBucket]]
+    concentration_breaches: list[ConcentrationBreach]
+    near_breaches: list[ConcentrationNearBreach]
+    sizing_coverage: SizingCoverage
+
+
+class FundConstructionLimits(BaseModel):
+    single_sector_max: float
+    single_deal_max: float
+    single_strategy_max: float
+    near_breach_ratio: float
+
+
+class FundConstructionReport(BaseModel):
+    organization_id: str
+    generated_at: datetime
+    as_of: date
+    limits: FundConstructionLimits
+    funds: list[FundConstruction]
+
+
 class PortfolioHealth(BaseModel):
     organization_id: str
     generated_at: datetime
@@ -249,4 +321,4 @@ class PortfolioHealth(BaseModel):
     workspaces_without_sources: int
 
 
-__all__ = ["PortfolioDashboard", "PortfolioHealth"]
+__all__ = ["FundConstructionReport", "PortfolioDashboard", "PortfolioHealth"]

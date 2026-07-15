@@ -60,6 +60,7 @@ from src.models.underwriting_data import (
     SourceSnapshot,
 )
 from src.models.underwriting_model import UnderwritingCaseDecision, UnderwritingCaseVersion
+from src.models.watchlist import WatchlistEntry
 from src.models.workspace import Workspace
 
 __all__ = [
@@ -119,6 +120,7 @@ __all__ = [
     "UnderwritingCaseDecision",
     "UnderwritingCaseVersion",
     "User",
+    "WatchlistEntry",
     "Workspace",
     "WorkflowAuditEvent",
     "WebhookDelivery",

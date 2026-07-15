@@ -1590,3 +1590,32 @@ export interface WorkspaceSearchResult {
 
 export interface QuotaBucket { name: string; used: number; limit: number; window_seconds: number; remaining: number | null; }
 export interface QuotaUsage { organization_id: string; buckets: QuotaBucket[]; }
+
+export interface SignalsSection {
+  kind: string;
+  source_status: ExternalSourceStatus;
+  source_error: string | null;
+  summary: string;
+  items: Record<string, unknown>[];
+}
+export interface SignalsOverview {
+  workspace_id: string;
+  sections: SignalsSection[];
+  overall_status: ExternalSourceStatus;
+  generated_at: string;
+}
+
+export interface FundConstructionEntry {
+  fund_id: string; name: string; vintage_year: number | null;
+  deployed: number | null; target: number | null;
+  pacing: { expected_pct: number | null; actual_pct: number | null; status: string };
+  exposures: Record<string, { key: string; label: string; exposure_pct: number }[]>;
+  concentration_breaches: { dimension: string; key: string; exposure_pct: number; limit: number; excess: number }[];
+  sizing_coverage: { total_deals: number; sized_deals: number; coverage_pct: number };
+}
+export interface FundConstruction { organization_id: string; funds: FundConstructionEntry[]; generated_at: string; }
+
+export interface WatchlistEntry {
+  id: string; organization_id: string; ticker: string | null; cik: string | null;
+  company_name: string | null; last_seen_accession: string | null; last_checked_at: string | null; active: boolean;
+}

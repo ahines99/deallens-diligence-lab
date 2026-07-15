@@ -37,6 +37,9 @@ import type {
   CrossCorpusQA,
   WorkspaceSearchResult,
   QuotaUsage,
+  SignalsOverview,
+  FundConstruction,
+  WatchlistEntry,
   CovenantHeadroomResult,
   CaseVarianceResult,
   ExitReadinessResult,
@@ -417,6 +420,16 @@ export const api = {
     request<WorkspaceSearchResult>(`/api/workspaces/${id}/search?q=${encodeURIComponent(q)}`),
   getQuotaUsage: (org: string) =>
     request<QuotaUsage>(`/api/organizations/${org}/quota-usage`),
+  getSignalsOverview: (id: string) =>
+    requestOrNull<SignalsOverview>(`/api/workspaces/${id}/signals-overview`),
+  getFundConstruction: (org: string, fundId?: string) =>
+    request<FundConstruction>(`/api/organizations/${org}/fund-construction${fundId ? `?fund_id=${fundId}` : ""}`),
+  listWatchlist: (org: string) =>
+    request<WatchlistEntry[]>(`/api/organizations/${org}/watchlist`),
+  addWatchlist: (org: string, body: { ticker?: string; cik?: string }) =>
+    request<WatchlistEntry>(`/api/organizations/${org}/watchlist`, { method: "POST", body }),
+  removeWatchlist: (id: string) =>
+    request<void>(`/api/watchlist/${id}`, { method: "DELETE" }),
 
   // Underwriting analytics (Wave 4)
   covenantHeadroom: (id: string, body: unknown) =>
