@@ -22,7 +22,11 @@ from src.models.deal_workflow import Deal
 from src.models.underwriting_model import UnderwritingCaseDecision, UnderwritingCaseVersion
 from src.schemas.deal_workflow import ActorContext
 from src.schemas.underwriting_model import (
+    CaseVarianceResult,
+    CovenantHeadroomResult,
     DriverDistribution,
+    ExitReadinessResult,
+    FootballFieldResult,
     MonteCarloRequest,
     MonteCarloResult,
     OperatingPeriodAssumption,
@@ -1159,6 +1163,332 @@ def calculate_returns_attribution(payload: ReturnsAttributionRequest) -> Returns
                 for key, label, amount in components
             ],
             "reconciles": reconciles,
+        }
+    )
+
+
+def calculate_covenant_headroom(assumptions: UnderwritingAssumptions) -> CovenantHeadroomResult:
+    """Project quarter-by-quarter covenant headroom and flag the first breach per covenant.
+
+    Reuses the deterministic projection's covenant machinery: ``headroom`` is the sign-aware
+    slack from the engine (positive = compliant for both maximum and minimum tests) and a period
+    is ``breached`` exactly when its covenant test fails. The threshold-crossing quarter is the
+    first period whose headroom goes negative.
+    """
+    if not assumptions.covenants:
+        raise UnderwritingCalculationError(
+            "At least one covenant is required for a headroom projection"
+        )
+    projection = calculate_projection(assumptions)
+    covenants_out: list[dict] = []
+    # ``_covenant_results`` emits one row per covenant in ``assumptions.covenants`` order, so the
+    # same positional index identifies a covenant across every projection period.
+    for index, covenant in enumerate(assumptions.covenants):
+        periods_out: list[dict] = []
+        first_breach_period: str | None = None
+        breached_any = False
+        for period in projection:
+            row = period["covenants"][index]
+            breached = row["passed"] is False
+            if breached:
+                breached_any = True
+                if first_breach_period is None:
+                    first_breach_period = period["label"]
+            periods_out.append(
+                {
+                    "period_label": period["label"],
+                    "start_date": period["start_date"],
+                    "end_date": period["end_date"],
+                    "actual": row["actual"],
+                    "threshold": row["threshold"],
+                    "headroom": row["headroom"],
+                    "breached": breached,
+                }
+            )
+        covenants_out.append(
+            {
+                "name": covenant.name,
+                "metric": covenant.metric,
+                "test": covenant.test,
+                "periods": periods_out,
+                "first_breach_period": first_breach_period,
+                "breached": breached_any,
+            }
+        )
+    return CovenantHeadroomResult.model_validate(
+        {
+            "currency": assumptions.currency,
+            "covenants": covenants_out,
+            "generated_at": now_utc(),
+        }
+    )
+
+
+_VARIANCE_LINES: tuple[tuple[str, str], ...] = (
+    ("entry_multiple", "Entry EV/EBITDA multiple"),
+    ("exit_multiple", "Exit EV/EBITDA multiple"),
+    ("exit_revenue", "Exit annualized revenue"),
+    ("exit_ebitda", "Exit EBITDA"),
+    ("entry_enterprise_value", "Entry enterprise value"),
+    ("sponsor_equity", "Sponsor equity invested"),
+    ("exit_equity_value", "Exit equity value"),
+    ("maximum_total_leverage", "Peak total leverage"),
+    ("irr", "Sponsor IRR"),
+    ("moic", "Sponsor MoIC"),
+)
+
+
+def _variance_metrics(assumptions: UnderwritingAssumptions) -> dict[str, float | None]:
+    result = run_underwriting(assumptions)
+    final = result.projection[-1]
+    return {
+        "entry_multiple": assumptions.transaction.entry_multiple,
+        "exit_multiple": assumptions.transaction.exit_multiple,
+        "exit_revenue": final.annualized_revenue,
+        "exit_ebitda": result.summary.exit_ebitda,
+        "entry_enterprise_value": result.sources_uses.entry_enterprise_value,
+        "sponsor_equity": result.sources_uses.sponsor_equity,
+        "exit_equity_value": result.returns.exit_equity_value,
+        "maximum_total_leverage": result.summary.maximum_total_leverage,
+        "irr": result.returns.xirr,
+        "moic": result.returns.moic,
+    }
+
+
+def calculate_case_variance(
+    management: UnderwritingAssumptions,
+    sponsor: UnderwritingAssumptions,
+    management_label: str = "management",
+    sponsor_label: str = "sponsor",
+) -> CaseVarianceResult:
+    """Line-level deltas (management minus sponsor) ranked by absolute percentage materiality.
+
+    ``absolute_delta`` uses Decimal so it reconciles exactly to the two reported values. Lines
+    whose percentage delta cannot be computed (a missing value or a zero sponsor base) rank last.
+    """
+    mgmt_metrics = _variance_metrics(management)
+    spon_metrics = _variance_metrics(sponsor)
+    lines: list[dict] = []
+    for key, label in _VARIANCE_LINES:
+        mgmt_value = mgmt_metrics[key]
+        spon_value = spon_metrics[key]
+        absolute_delta: float | None = None
+        pct_delta: float | None = None
+        if mgmt_value is not None and spon_value is not None:
+            absolute_delta = float(Decimal(str(mgmt_value)) - Decimal(str(spon_value)))
+            if spon_value != 0:
+                pct_delta = _ratio(absolute_delta / spon_value)
+        lines.append(
+            {
+                "key": key,
+                "label": label,
+                "management_value": mgmt_value,
+                "sponsor_value": spon_value,
+                "absolute_delta": absolute_delta,
+                "pct_delta": pct_delta,
+            }
+        )
+
+    def sort_key(line: dict) -> tuple[int, float]:
+        pct = line["pct_delta"]
+        if pct is None:
+            return (1, 0.0)
+        return (0, -abs(pct))
+
+    ranked = sorted(lines, key=sort_key)
+    for rank, line in enumerate(ranked, start=1):
+        line["materiality_rank"] = rank
+    return CaseVarianceResult.model_validate(
+        {
+            "management_label": management_label,
+            "sponsor_label": sponsor_label,
+            "lines": ranked,
+            "generated_at": now_utc(),
+        }
+    )
+
+
+_EXIT_HOLD_PERIODS: tuple[float, ...] = (3.0, 5.0, 7.0)
+
+
+def _score_dimension(
+    dimension: str, metric: str, value: float | None, threshold: float, direction: str
+) -> dict:
+    if value is None:
+        return {
+            "dimension": dimension,
+            "metric": metric,
+            "value": None,
+            "threshold": _ratio(threshold),
+            "direction": direction,
+            "meets_threshold": None,
+            "score": 0.0,
+            "rating": "insufficient_data",
+        }
+    if direction == "higher_is_better":
+        meets = value + _EPSILON >= threshold
+        raw = 50.0 * value / threshold if threshold > 0 else (100.0 if value >= 0 else 0.0)
+    else:
+        meets = value <= threshold + _EPSILON
+        raw = 50.0 * threshold / value if value > 0 else 100.0
+    score = round(max(0.0, min(100.0, raw)), 2)
+    rating = "strong" if score >= 75.0 else "adequate" if score >= 50.0 else "weak"
+    return {
+        "dimension": dimension,
+        "metric": metric,
+        "value": _ratio(value),
+        "threshold": _ratio(threshold),
+        "direction": direction,
+        "meets_threshold": meets,
+        "score": score,
+        "rating": rating,
+    }
+
+
+def _rescope_hold(assumptions: UnderwritingAssumptions, hold_years: float) -> UnderwritingAssumptions:
+    data = assumptions.model_dump(mode="json")
+    data["transaction"]["hold_period_years"] = hold_years
+    # Regenerate standard periods so the projection spans the requested hold under the same
+    # default drivers; explicit per-period overrides do not carry to a different horizon.
+    data["projection"]["periods"] = []
+    try:
+        return UnderwritingAssumptions.model_validate(data)
+    except ValidationError as exc:
+        raise UnderwritingCalculationError(
+            f"Cannot rescope to a {hold_years:g}-year hold: {exc.errors()[0]['msg']}"
+        ) from exc
+
+
+def calculate_exit_readiness(assumptions: UnderwritingAssumptions) -> ExitReadinessResult:
+    """Score exit readiness across leverage/growth/margin/coverage and grid IRR/MoIC by hold.
+
+    Each dimension names an explicit threshold. The hold-period grid re-runs the deterministic
+    engine at 3/5/7-year horizons (reusing ``calculate_projection`` and ``xirr`` via
+    ``run_underwriting``) so a longer hold's returns can be compared on the same drivers.
+    """
+    result = run_underwriting(assumptions)
+    projection = result.projection
+    coverage_values = [
+        period.interest_coverage
+        for period in projection
+        if period.interest_coverage is not None
+    ]
+    min_coverage = min(coverage_values) if coverage_values else None
+    dimensions = [
+        _score_dimension(
+            "leverage", "maximum_total_leverage",
+            result.summary.maximum_total_leverage, 4.0, "lower_is_better",
+        ),
+        _score_dimension(
+            "growth", "revenue_cagr", result.summary.revenue_cagr, 0.05, "higher_is_better",
+        ),
+        _score_dimension(
+            "margin", "exit_ebitda_margin",
+            result.summary.exit_ebitda_margin, 0.20, "higher_is_better",
+        ),
+        _score_dimension(
+            "coverage", "minimum_interest_coverage", min_coverage, 2.0, "higher_is_better",
+        ),
+    ]
+    overall_score = round(
+        statistics.fmean(dimension["score"] for dimension in dimensions), 2
+    )
+    overall_rating = (
+        "strong" if overall_score >= 75.0 else "adequate" if overall_score >= 50.0 else "weak"
+    )
+
+    grid: list[dict] = []
+    for hold_years in _EXIT_HOLD_PERIODS:
+        scenario = _rescope_hold(assumptions, hold_years)
+        scenario_result = run_underwriting(scenario)
+        grid.append(
+            {
+                "hold_period_years": hold_years,
+                "irr": scenario_result.returns.xirr,
+                "moic": scenario_result.returns.moic,
+                "exit_ebitda": scenario_result.summary.exit_ebitda,
+                "exit_equity_value": scenario_result.returns.exit_equity_value,
+            }
+        )
+    return ExitReadinessResult.model_validate(
+        {
+            "dimensions": dimensions,
+            "overall_score": overall_score,
+            "overall_rating": overall_rating,
+            "hold_period_grid": grid,
+            "generated_at": now_utc(),
+        }
+    )
+
+
+_FOOTBALL_FIELD_METHODS: tuple[str, ...] = ("dcf", "public_comps", "precedent_transactions")
+_FOOTBALL_FIELD_LABELS = {
+    "dcf": "Discounted cash flow",
+    "public_comps": "Public comparables",
+    "precedent_transactions": "Precedent transactions",
+}
+_FOOTBALL_FIELD_EXCLUSIONS = {
+    "dcf": "No DCF enterprise value provided",
+    "public_comps": "No comparable peers provided",
+    "precedent_transactions": "No precedent transactions provided",
+}
+
+
+def calculate_football_field(request: ValuationTriangulationRequest) -> FootballFieldResult:
+    """Normalize the triangulation into chart-ready bars with explicit weights and exclusions.
+
+    Every canonical method appears once, in fixed order. A method with no inputs is excluded with
+    an explicit reason and carries null bounds and zero weight — never imputed to a fabricated
+    value. Included methods keep the triangulation's normalized weights, which sum to 1.
+    """
+    triangulation = calculate_valuation_triangulation(request)
+    by_method = {method.method: method for method in triangulation.methods}
+    methods_out: list[dict] = []
+    for method in _FOOTBALL_FIELD_METHODS:
+        entry = by_method.get(method)
+        if entry is not None:
+            methods_out.append(
+                {
+                    "method": method,
+                    "label": _FOOTBALL_FIELD_LABELS[method],
+                    "reference_count": entry.reference_count,
+                    "low": entry.enterprise_value_low,
+                    "mid": entry.enterprise_value_median,
+                    "high": entry.enterprise_value_high,
+                    "weight": _ratio(entry.normalized_weight),
+                    "included": True,
+                    "excluded_reason": None,
+                }
+            )
+        else:
+            methods_out.append(
+                {
+                    "method": method,
+                    "label": _FOOTBALL_FIELD_LABELS[method],
+                    "reference_count": 0,
+                    "low": None,
+                    "mid": None,
+                    "high": None,
+                    "weight": 0.0,
+                    "included": False,
+                    "excluded_reason": _FOOTBALL_FIELD_EXCLUSIONS[method],
+                }
+            )
+    included_weight_total = _ratio(
+        sum(method["weight"] for method in methods_out if method["included"])
+    )
+    return FootballFieldResult.model_validate(
+        {
+            "ebitda": triangulation.ebitda,
+            "net_debt": triangulation.net_debt,
+            "methods": methods_out,
+            "included_weight_total": included_weight_total,
+            "blended_enterprise_value": triangulation.blended_enterprise_value,
+            "blended_equity_value": triangulation.blended_equity_value,
+            "valuation_low": triangulation.valuation_low,
+            "valuation_high": triangulation.valuation_high,
+            "warnings": triangulation.warnings,
+            "generated_at": now_utc(),
         }
     )
 

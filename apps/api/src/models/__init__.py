@@ -40,6 +40,7 @@ from src.models.integration import WebhookDelivery, WebhookEndpoint
 from src.models.identity import AuthSession, OrganizationMembership, User
 from src.models.job import BackgroundJob
 from src.models.memo import Memo
+from src.models.notification import Notification
 from src.models.plan import DiligencePlan
 from src.models.question import DiligenceQuestion
 from src.models.red_team import RedTeamReport
@@ -95,6 +96,7 @@ __all__ = [
     "ICPacketExport",
     "IntelligenceEvaluation",
     "Memo",
+    "Notification",
     "Organization",
     "OrganizationMembership",
     "QoEAdjustment",

@@ -10,6 +10,11 @@ from src.routers.deps import OptionalPrincipalDep, SessionDep
 from src.schemas.deal_workflow import ActorContext
 from src.schemas.underwriting_model import (
     CaseKey,
+    CaseVarianceRequest,
+    CaseVarianceResult,
+    CovenantHeadroomResult,
+    ExitReadinessResult,
+    FootballFieldResult,
     MonteCarloRequest,
     MonteCarloResult,
     ReturnsAttributionRequest,
@@ -18,6 +23,7 @@ from src.schemas.underwriting_model import (
     ReverseStressResult,
     SensitivityRequest,
     SensitivityResult,
+    UnderwritingAssumptions,
     UnderwritingCalculateRequest,
     UnderwritingCaseCreate,
     UnderwritingCaseSetCreate,
@@ -283,5 +289,76 @@ def valuation_triangulation(
     get_workspace_or_404(session, workspace_id)
     try:
         return service.calculate_valuation_triangulation(payload)
+    except service.UnderwritingCalculationError as exc:
+        raise _calculation_error(exc) from exc
+
+
+@router.post(
+    "/{workspace_id}/underwriting/covenant-headroom",
+    response_model=CovenantHeadroomResult,
+)
+def covenant_headroom(
+    workspace_id: str, payload: UnderwritingCalculateRequest, session: SessionDep
+) -> CovenantHeadroomResult:
+    get_workspace_or_404(session, workspace_id)
+    try:
+        return service.calculate_covenant_headroom(payload.assumptions)
+    except service.UnderwritingCalculationError as exc:
+        raise _calculation_error(exc) from exc
+
+
+def _resolve_variance_operand(session, workspace_id: str, operand) -> tuple:
+    if operand.assumptions is not None:
+        return operand.assumptions, "custom"
+    record = service.get_case_version(session, workspace_id, operand.case_key, operand.version)
+    assumptions = UnderwritingAssumptions.model_validate(record.assumptions)
+    suffix = "latest" if operand.version is None else f"v{operand.version}"
+    return assumptions, f"{operand.case_key} ({suffix})"
+
+
+@router.post(
+    "/{workspace_id}/underwriting/case-variance",
+    response_model=CaseVarianceResult,
+)
+def case_variance(
+    workspace_id: str, payload: CaseVarianceRequest, session: SessionDep
+) -> CaseVarianceResult:
+    get_workspace_or_404(session, workspace_id)
+    management, management_label = _resolve_variance_operand(
+        session, workspace_id, payload.management
+    )
+    sponsor, sponsor_label = _resolve_variance_operand(session, workspace_id, payload.sponsor)
+    try:
+        return service.calculate_case_variance(
+            management, sponsor, management_label, sponsor_label
+        )
+    except service.UnderwritingCalculationError as exc:
+        raise _calculation_error(exc) from exc
+
+
+@router.post(
+    "/{workspace_id}/underwriting/exit-readiness",
+    response_model=ExitReadinessResult,
+)
+def exit_readiness(
+    workspace_id: str, payload: UnderwritingCalculateRequest, session: SessionDep
+) -> ExitReadinessResult:
+    get_workspace_or_404(session, workspace_id)
+    try:
+        return service.calculate_exit_readiness(payload.assumptions)
+    except service.UnderwritingCalculationError as exc:
+        raise _calculation_error(exc) from exc
+
+
+@router.post(
+    "/{workspace_id}/underwriting/football-field",
+    response_model=FootballFieldResult,
+)
+def football_field(
+    workspace_id: str, payload: ValuationTriangulationRequest, session: SessionDep
+) -> FootballFieldResult:
+    get_workspace_or_404(session, workspace_id)
+    try:
+        return service.calculate_football_field(payload)
     except service.UnderwritingCalculationError as exc:
         raise _calculation_error(exc) from exc

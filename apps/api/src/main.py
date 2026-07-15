@@ -33,6 +33,7 @@ from src.routers import (
     identity,
     integrations,
     memos,
+    notifications,
     portfolio,
     questions,
     red_team,
@@ -334,7 +335,7 @@ def health() -> dict:
 
 for module in (
     activity, workspaces, targets, sec, filings, comps, financials, risks, questions,
-    memos, red_team, evidence, examples, govcon, portfolio,
+    memos, red_team, evidence, examples, govcon, portfolio, notifications,
     forensics, valuation, feeds, signals,
     underwriting_data, underwriting_model, deal_workflow, deal_intelligence,
     integrations, identity,

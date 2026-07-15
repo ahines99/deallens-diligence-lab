@@ -1383,3 +1383,88 @@ export interface PortfolioQuery {
   asOf?: string;
   icWindowDays?: number;
 }
+
+// --- Wave 4 additions -------------------------------------------------------
+
+export interface InsiderCluster {
+  direction: "buy" | "sell";
+  start: string;
+  end: string;
+  participants: number;
+  transactions: number;
+  total_shares: number;
+  total_value: number | null;
+}
+
+export interface InsiderPatterns {
+  workspace_id: string;
+  clusters: InsiderCluster[];
+  plan_summary: { planned: number; discretionary: number; unknown: number };
+  role_split: Record<string, { buys: number; sells: number }>;
+  source_status: ExternalSourceStatus;
+  source_error: string | null;
+  generated_at: string;
+}
+
+export interface CovenantHeadroomPeriod {
+  period: string;
+  metric_value: number | null;
+  threshold: number | null;
+  headroom: number | null;
+  breached: boolean;
+}
+export interface CovenantHeadroomResult {
+  covenants: { name: string; periods: CovenantHeadroomPeriod[]; first_breach_period: string | null }[];
+}
+
+export interface CaseVarianceLine {
+  key: string;
+  label: string;
+  management: MoneyValue | null;
+  sponsor: MoneyValue | null;
+  absolute_delta: MoneyValue | null;
+  pct_delta: number | null;
+  materiality_rank: number;
+}
+export interface CaseVarianceResult {
+  lines: CaseVarianceLine[];
+}
+
+export interface ExitReadinessDimension {
+  key: string;
+  label: string;
+  threshold: string;
+  direction: string;
+  score: number;
+  rating: string;
+}
+export interface ExitReadinessResult {
+  dimensions: ExitReadinessDimension[];
+  hold_period_grid: { hold_years: number; irr: number | null; moic: number | null }[];
+}
+
+export interface FootballFieldMethod {
+  method: string;
+  low: MoneyValue | null;
+  mid: MoneyValue | null;
+  high: MoneyValue | null;
+  weight: number;
+  included: boolean;
+  excluded_reason: string | null;
+}
+export interface FootballFieldResult {
+  methods: FootballFieldMethod[];
+}
+
+export interface NotificationItem {
+  id: string;
+  organization_id: string;
+  actor_id: string | null;
+  event_type: string;
+  entity_type: string | null;
+  entity_id: string | null;
+  title: string;
+  body: string;
+  read_at: string | null;
+  created_at: string;
+}

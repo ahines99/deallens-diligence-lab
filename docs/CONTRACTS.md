@@ -136,6 +136,7 @@ the async ingestion progress (`ready`|`building`|`failed`).
 | PATCH | `/api/workspaces/{id}/governance` | `{data_classification?,external_llm_allowed?}` (at least one) → `Workspace` (owners/admins only; a `restricted` class cannot enable external LLM) |
 | POST | `/api/workspaces` | `{ticker?,name?,deal_type,investment_question?}` → `Workspace` (a `ticker` resolves synchronously — unknown ticker → 404 — then ingestion + analysis run in the background; poll `build-status`) |
 | GET  | `/api/workspaces/{id}/build-status` | → `{workspace_id,status:"ready"\|"building"\|"failed",step,error,ticker}` |
+| GET  | `/api/workspaces/{id}/build-events` | `text/event-stream` of live build progress: emits a `data: {build-status}` frame on each status/step change until a terminal `ready`/`failed` (or a bounded-duration `timeout` frame). Tenant-guarded; `build-status` polling is the fallback |
 | POST | `/api/workspaces/{id}/build/retry` | re-arms a `failed` build and re-runs it (409 unless failed) |
 | GET  | `/api/workspaces` | → `Workspace[]` (each carries `build_status`/`build_step`/`build_error`) |
 | GET  | `/api/workspaces/{id}` | → `WorkspaceOverview` |
@@ -174,6 +175,7 @@ the async ingestion progress (`ready`|`building`|`failed`).
 | POST | `/api/workspaces/{id}/lbo` | `LboInputs` → `LboResult` (IRR/MOIC + entry×exit sensitivity grid) |
 | GET  | `/api/workspaces/{id}/events` | → `EventTimeline` (8-K item-code material events; 4.02 flagged significant) |
 | GET  | `/api/workspaces/{id}/insiders` | → `InsiderActivity` (Form 4 buys/sells) |
+| GET  | `/api/workspaces/{id}/insider-patterns` | → `InsiderPatterns` (clustered buy/sell windows, 10b5-1 plan summary, officer/director/10%-owner split; same Form 4 feed + source_status) |
 | GET  | `/api/workspaces/{id}/themes` | → `ThemeScan` (SEC full-text red-flag theme scan) |
 | GET  | `/api/workspaces/{id}/news` | → `NewsSignals` (GDELT media — unverified, not evidence) |
 | GET  | `/api/workspaces/{id}/filing-watch` | → `FilingWatch` (new filings since last analysis) |
@@ -276,9 +278,14 @@ Endpoint families:
 | Model | `/api/workspaces/{id}/underwriting/{calculate,cases,case-set,working-capital-peg,valuation-triangulation,sensitivity,reverse-stress}` |
 | Monte Carlo LBO | `/api/workspaces/{id}/underwriting/monte-carlo` — seeded driver-distribution simulation; percentile IRR/MoIC bands, reproducible for identical seed + inputs |
 | Returns attribution | `/api/workspaces/{id}/underwriting/returns-attribution` — EBITDA growth / multiple change / deleveraging / cross-term bridge; components sum exactly to total value creation |
+| Covenant headroom | `POST /api/workspaces/{id}/underwriting/covenant-headroom` (`{assumptions}` → `CovenantHeadroomResult`) — per-covenant, per-period signed headroom (positive = compliant) with `breached` flags and `first_breach_period` at the threshold-crossing quarter |
+| Case variance | `POST /api/workspaces/{id}/underwriting/case-variance` (`{management, sponsor}`, each an inline `assumptions` **or** a persisted `case_key`[`+version`] → `CaseVarianceResult`) — line-level management-minus-sponsor deltas with absolute + pct delta, ranked by descending percentage materiality |
+| Exit readiness | `POST /api/workspaces/{id}/underwriting/exit-readiness` (`{assumptions}` → `ExitReadinessResult`) — leverage/growth/margin/coverage scorecard with explicit thresholds + a 3/5/7-year hold-period IRR/MoIC grid |
+| Football field | `POST /api/workspaces/{id}/underwriting/football-field` (`ValuationTriangulationRequest` → `FootballFieldResult`) — DCF/comps/precedent bars with explicit weights summing to 1 across included methods; a method with no inputs is excluded with a reason, never imputed |
 | Identity & sessions | `POST /api/auth/{register,login,demo,logout,switch-organization}` → `SessionToken`; `GET /api/auth/me` → `CurrentIdentity`; `GET`/`POST /api/organizations/{id}/members`, `PATCH /api/memberships/{id}` (org membership admin) |
 | Portfolio | `GET /api/organizations/{id}/portfolio` → `PortfolioDashboard` (filters: `search,stage,fund_id,as_of,ic_window_days`); `/portfolio/export.csv` (CSV download); `/portfolio/health` → `PortfolioHealth` |
 | Activity | `GET /api/organizations/{id}/activity` → `ActivityTimeline` (unified timeline; filters `deal_id,actor_id,category,before,limit`) |
+| Notifications | `GET /api/organizations/{id}/notifications` (`?unread_only`) → `Notification[]`; `GET /api/organizations/{id}/notifications/unread-count` → `{organization_id,unread}`; `POST /api/notifications/{id}/read` → `Notification` — an idempotent, dedup-by-`source_audit_event_id` projection of the workflow audit outbox into read-model notifications |
 | Deal execution | `/api/organizations`, `/api/funds/{id}/deals`, `/api/deals/{id}/{gates,team,workstreams,milestones,tasks,diligence-requests,ledger}` |
 | IC governance | `/api/deals/{id}/ic-packets`, `/api/ic-packets/{id}/{readiness,submit,comments,decisions,exports}`, `GET /api/ic-exports/{id}/verification` → `ExportVerificationResult` (recomputes the manifest hash to detect tampering) |
 | Documents/evidence | `/api/deals/{id}/intelligence/{documents,qa,extractions,claims,comparisons,evaluations}` |

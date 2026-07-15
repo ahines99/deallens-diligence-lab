@@ -46,7 +46,7 @@ Widens the moat of "real data, no keys" — the research-analyst credibility lay
 | G17 | Fiscal-period consistency diagnostics (carryover F41): mixed-period operands flagged, never silently blended | M | `done` — mismatch detection tests (`apps/api/tests/test_fiscal_diagnostics.py`) |
 | G18 | Consolidated signals overview page (carryover F55): one screen aggregating events/insiders/news/themes with per-source status | S | page/API rendering test |
 | G19 | Watchlists with scheduled refresh: track N companies, detect new filings, emit notification/webhook events through the existing outbox | M | scheduler + dedup + outbox event tests |
-| G20 | Insider-pattern analytics: clustered buying/selling windows, 10b5-1 plan flags, officer-vs-director splits | M | clustering + classification tests |
+| G20 | Insider-pattern analytics: clustered buying/selling windows, 10b5-1 plan flags, officer-vs-director splits | M | `done` — clustering + classification tests (`apps/api/tests/test_insider_patterns.py`: `test_adjacent_same_direction_trades_form_one_cluster`, `test_gap_over_threshold_splits_clusters`, `test_buys_and_sells_never_merge_into_one_window`, `test_plan_summary_counts_planned_discretionary_and_unknown`, `test_missing_plan_flag_is_unknown_never_discretionary`, `test_role_split_sums_buys_and_sells_by_role`, `test_unavailable_feed_is_unavailable_not_clean_zero`, `test_parse_form4_flags_10b5_1_from_footnote_and_reads_roles`, `test_parse_form4_document_level_10b5_1_checkbox`, `test_parse_form4_no_10b5_1_indicator_is_unknown`) |
 
 ## Theme C — Underwriting & quantitative depth (10)
 
@@ -56,14 +56,14 @@ The PE-domain fluency layer — complex, and exactly what a diligence/valuation 
 |---|---|---|---|
 | G21 | Monte Carlo LBO: driver distributions, percentile IRR/MoIC bands, deterministic seeding so runs are reproducible | L | **done** — `tests/test_monte_carlo_attribution.py::test_same_seed_is_byte_identical_and_different_seed_moves_the_median`, `::test_monte_carlo_percentiles_are_ordered_and_iterations_are_accounted_for`, `::test_zero_variance_distributions_collapse_to_the_deterministic_result`, `::test_monte_carlo_validation_rejects_bad_iterations_and_unknown_drivers` |
 | G22 | Returns attribution bridge: entry/exit multiple vs deleveraging vs EBITDA growth decomposition, reconciling exactly to total return | M | **done** — `tests/test_monte_carlo_attribution.py::test_attribution_components_sum_exactly_to_total_value_creation`, `::test_attribution_endpoint_reconciles` |
-| G23 | Covenant headroom projection: quarter-by-quarter headroom under each case with breach-quarter detection | M | breach boundary tests |
+| G23 | Covenant headroom projection: quarter-by-quarter headroom under each case with breach-quarter detection | M | **done** — `tests/test_underwriting_analytics.py::test_covenant_headroom_breach_boundary_is_the_threshold_crossing_quarter`, `::test_covenant_headroom_endpoint_and_requires_a_covenant`, `::test_covenant_headroom_rejects_invalid_assumptions` |
 | G24 | Driver-based operating model: user-defined drivers with formula validation, cycle detection, and provenance on every derived line | L | formula parser + cycle rejection tests |
 | G25 | Working-capital seasonality modeling from monthly imports (peg by month, not annual average) | M | seasonal peg tests on fixture monthlies |
 | G26 | Dividend recap and bolt-on acquisition modeling inside case versions | L | sources/uses + returns integration tests |
-| G27 | Management-vs-sponsor case variance analysis: line-level deltas with materiality ranking | S | variance math tests |
-| G28 | Exit readiness scorecard + hold-period sensitivity (3/5/7-year grids) | M | scorecard component tests |
+| G27 | Management-vs-sponsor case variance analysis: line-level deltas with materiality ranking | S | **done** — `tests/test_underwriting_analytics.py::test_case_variance_lines_reconcile_and_rank_by_materiality`, `::test_case_variance_endpoint_compares_persisted_cases`, `::test_case_variance_operand_requires_exactly_one_source` |
+| G28 | Exit readiness scorecard + hold-period sensitivity (3/5/7-year grids) | M | **done** — `tests/test_underwriting_analytics.py::test_exit_readiness_scorecard_names_thresholds_and_grids_holds`, `::test_exit_readiness_endpoint` |
 | G29 | Fund-level portfolio construction: aggregated exposure vs concentration limits, simple pacing model | L | limit-breach detection tests |
-| G30 | Valuation football field: triangulation methods on one chart with explicit method weights and excluded-method reasons | S | chart data-contract test |
+| G30 | Valuation football field: triangulation methods on one chart with explicit method weights and excluded-method reasons | S | **done** — `tests/test_underwriting_analytics.py::test_football_field_weights_sum_to_one_and_excluded_methods_carry_reasons`, `::test_football_field_endpoint_and_requires_a_method` |
 
 ## Theme D — Platform engineering & scale (10)
 
@@ -72,8 +72,8 @@ The senior-engineer credibility layer: the app already works; this makes it *ope
 | ID | Capability | Effort | Acceptance evidence |
 |---|---|---|---|
 | G31 | Durable job queue: workspace builds move from in-process BackgroundTasks to a DB-backed job table + worker with retries, heartbeats, and stale-claim recovery (generalizes the webhook outbox pattern) | L | **done** — `tests/test_job_queue.py::test_two_workers_claim_exactly_once`, `::test_stale_claim_is_recovered_and_reprocessed`, `::test_stale_claim_on_final_attempt_goes_dead`, `::test_transient_failures_retry_until_success`, `::test_exhausted_attempts_mark_job_dead_with_last_error`, `::test_workspace_build_completes_through_job_queue`, `::test_worker_batch_processes_queued_jobs` |
-| G32 | Server-sent events for live build progress and notifications (polling kept as fallback) | M | SSE stream integration test |
-| G33 | In-app notification center fed by the existing audit outbox | M | event-to-notification mapping tests |
+| G32 | Server-sent events for live build progress and notifications (polling kept as fallback) | M | **done** — `tests/test_sse.py::test_build_events_stream_yields_ready_frame`, `::test_build_events_cross_org_is_404`, `::test_iter_build_events_emits_each_transition_once_until_ready`, `::test_iter_build_events_times_out_without_hanging` |
+| G33 | In-app notification center fed by the existing audit outbox | M | **done** — `tests/test_notifications.py::test_audit_events_map_to_notifications_with_titles`, `::test_sync_is_idempotent_and_dedups_by_source_event`, `::test_mark_read_flips_read_at_and_unread_count`, `::test_notifications_are_tenant_scoped`, `::test_mark_read_cross_org_is_not_found`, `::test_notification_endpoints_via_api` |
 | G34 | Full-text search across all workspace artifacts (SQLite FTS5 / Postgres tsvector behind one interface) | L | parity tests on both engines |
 | G35 | Observability: Prometheus `/metrics`, structured JSON logs, request-ID propagation end-to-end (web proxy → API → workers) | M | metrics endpoint + request-ID round-trip tests |
 | G36 | Postgres CI matrix: the full backend suite runs against a Postgres service container in addition to SQLite | M | green matrix required for merge |

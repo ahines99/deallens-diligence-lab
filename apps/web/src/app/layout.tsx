@@ -3,6 +3,7 @@ import Link from "next/link";
 import { Inter, Newsreader } from "next/font/google";
 import { ActorProvider } from "@/components/identity/ActorContext";
 import { IdentitySwitcher } from "@/components/identity/IdentitySwitcher";
+import { NotificationBell } from "@/components/NotificationBell";
 import { AuthProvider } from "@/components/auth/AuthContext";
 import "@/app/globals.css";
 
@@ -82,6 +83,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 Portfolio
               </Link>
             </nav>
+            <NotificationBell />
             <IdentitySwitcher />
             <div className="hidden items-center gap-2 text-2xs uppercase tracking-eyebrow text-white/40 2xl:flex">
               <span>SEC EDGAR</span>

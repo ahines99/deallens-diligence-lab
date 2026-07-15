@@ -644,3 +644,130 @@ class ReturnsAttributionResult(BaseModel):
     total_value_creation: float
     components: list[AttributionComponent]
     reconciles: bool
+
+
+# --- G23 Covenant headroom projection ---------------------------------------------------------
+
+
+class CovenantHeadroomPeriod(BaseModel):
+    period_label: str
+    start_date: date
+    end_date: date
+    actual: float | None
+    threshold: float
+    headroom: float | None
+    breached: bool
+
+
+class CovenantHeadroomProjection(BaseModel):
+    name: str
+    metric: CovenantMetric
+    test: Literal["maximum", "minimum"]
+    periods: list[CovenantHeadroomPeriod]
+    first_breach_period: str | None
+    breached: bool
+
+
+class CovenantHeadroomResult(BaseModel):
+    currency: str
+    covenants: list[CovenantHeadroomProjection]
+    generated_at: datetime
+
+
+# --- G27 Management-vs-sponsor case variance --------------------------------------------------
+
+
+class CaseVarianceOperand(BaseModel):
+    """One side of a variance comparison: inline assumptions or a persisted case reference."""
+
+    assumptions: UnderwritingAssumptions | None = None
+    case_key: CaseKey | None = None
+    version: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def exactly_one_source(self):
+        if (self.assumptions is None) == (self.case_key is None):
+            raise ValueError("Provide exactly one of assumptions or case_key")
+        if self.assumptions is not None and self.version is not None:
+            raise ValueError("version applies only when comparing a persisted case_key")
+        return self
+
+
+class CaseVarianceRequest(BaseModel):
+    management: CaseVarianceOperand
+    sponsor: CaseVarianceOperand
+
+
+class CaseVarianceLine(BaseModel):
+    key: str
+    label: str
+    management_value: float | None
+    sponsor_value: float | None
+    absolute_delta: float | None
+    pct_delta: float | None
+    materiality_rank: int
+
+
+class CaseVarianceResult(BaseModel):
+    management_label: str
+    sponsor_label: str
+    lines: list[CaseVarianceLine]
+    generated_at: datetime
+
+
+# --- G28 Exit readiness scorecard + hold-period sensitivity -----------------------------------
+
+
+class ExitReadinessDimension(BaseModel):
+    dimension: str
+    metric: str
+    value: float | None
+    threshold: float
+    direction: Literal["higher_is_better", "lower_is_better"]
+    meets_threshold: bool | None
+    score: float
+    rating: str
+
+
+class HoldPeriodPoint(BaseModel):
+    hold_period_years: float
+    irr: float | None
+    moic: float | None
+    exit_ebitda: float
+    exit_equity_value: float
+
+
+class ExitReadinessResult(BaseModel):
+    dimensions: list[ExitReadinessDimension]
+    overall_score: float
+    overall_rating: str
+    hold_period_grid: list[HoldPeriodPoint]
+    generated_at: datetime
+
+
+# --- G30 Valuation football field -------------------------------------------------------------
+
+
+class FootballFieldMethod(BaseModel):
+    method: Literal["dcf", "public_comps", "precedent_transactions"]
+    label: str
+    reference_count: int
+    low: float | None
+    mid: float | None
+    high: float | None
+    weight: float
+    included: bool
+    excluded_reason: str | None
+
+
+class FootballFieldResult(BaseModel):
+    ebitda: float
+    net_debt: float
+    methods: list[FootballFieldMethod]
+    included_weight_total: float
+    blended_enterprise_value: float
+    blended_equity_value: float
+    valuation_low: float
+    valuation_high: float
+    warnings: list[str]
+    generated_at: datetime

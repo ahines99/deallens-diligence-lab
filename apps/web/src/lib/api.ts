@@ -26,6 +26,12 @@ import type {
   LboResult,
   EventTimeline,
   InsiderActivity,
+  InsiderPatterns,
+  CovenantHeadroomResult,
+  CaseVarianceResult,
+  ExitReadinessResult,
+  FootballFieldResult,
+  NotificationItem,
   ThemeScan,
   NewsSignals,
   FilingWatch,
@@ -377,6 +383,26 @@ export const api = {
   // SEC event / insider / theme feeds
   getEvents: (id: string) => requestOrNull<EventTimeline>(`/api/workspaces/${id}/events`),
   getInsiders: (id: string) => requestOrNull<InsiderActivity>(`/api/workspaces/${id}/insiders`),
+  getInsiderPatterns: (id: string) =>
+    requestOrNull<InsiderPatterns>(`/api/workspaces/${id}/insider-patterns`),
+
+  // Underwriting analytics (Wave 4)
+  covenantHeadroom: (id: string, body: unknown) =>
+    request<CovenantHeadroomResult>(`/api/workspaces/${id}/underwriting/covenant-headroom`, { method: "POST", body }),
+  caseVariance: (id: string, body: unknown) =>
+    request<CaseVarianceResult>(`/api/workspaces/${id}/underwriting/case-variance`, { method: "POST", body }),
+  exitReadiness: (id: string, body: unknown) =>
+    request<ExitReadinessResult>(`/api/workspaces/${id}/underwriting/exit-readiness`, { method: "POST", body }),
+  footballField: (id: string, body: unknown) =>
+    request<FootballFieldResult>(`/api/workspaces/${id}/underwriting/football-field`, { method: "POST", body }),
+
+  // Notifications (Wave 4)
+  listNotifications: (org: string, unreadOnly = false) =>
+    request<NotificationItem[]>(`/api/organizations/${org}/notifications${unreadOnly ? "?unread_only=true" : ""}`),
+  notificationsUnreadCount: (org: string) =>
+    request<{ organization_id: string; unread: number }>(`/api/organizations/${org}/notifications/unread-count`),
+  markNotificationRead: (id: string) =>
+    request<NotificationItem>(`/api/notifications/${id}/read`, { method: "POST" }),
   getThemes: (id: string) => requestOrNull<ThemeScan>(`/api/workspaces/${id}/themes`),
   getNews: (id: string) => requestOrNull<NewsSignals>(`/api/workspaces/${id}/news`),
 

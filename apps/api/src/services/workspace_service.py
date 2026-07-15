@@ -1,8 +1,10 @@
 """Workspace lifecycle: create (optionally ingesting a real ticker), read, and overview."""
 from __future__ import annotations
 
+import json
 import logging
-from collections.abc import Callable
+import time
+from collections.abc import Callable, Iterator
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -94,6 +96,58 @@ def get_build_status(session: Session, workspace_id: str) -> dict:
         "error": ws.build_error,
         "ticker": ws.build_ticker,
     }
+
+
+# Server-sent-events tuning for the live build-progress stream. A build is polled server-side and
+# a frame is emitted only when status/step changes, until a terminal state or the max duration.
+SSE_POLL_INTERVAL_SECONDS = 1.0
+SSE_MAX_DURATION_SECONDS = 300.0
+TERMINAL_BUILD_STATUSES = frozenset({"ready", "failed"})
+
+
+def _sse_frame(status: dict) -> str:
+    return f"data: {json.dumps(status)}\n\n"
+
+
+def iter_build_events(
+    workspace_id: str,
+    *,
+    session_factory: Callable[[], Session] | None = None,
+    poll_interval: float | None = None,
+    max_duration: float | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+) -> Iterator[str]:
+    """Yield ``text/event-stream`` frames tracking a workspace build to a terminal state.
+
+    Each iteration opens a short-lived session so the stream observes commits made by the
+    background build worker. A frame is emitted only when the (status, step) pair changes, so the
+    client sees each transition exactly once. The loop is bounded by ``max_duration`` and emits a
+    final ``timeout`` frame if a build never terminates, so the connection can never hang forever
+    and the client falls back to polling ``build-status``.
+    """
+    if session_factory is None:
+        from src.db.session import SessionLocal
+
+        session_factory = SessionLocal
+    interval = SSE_POLL_INTERVAL_SECONDS if poll_interval is None else poll_interval
+    duration = SSE_MAX_DURATION_SECONDS if max_duration is None else max_duration
+    deadline = clock() + duration
+    last_signature: tuple | None = None
+
+    while True:
+        with session_factory() as session:
+            status = get_build_status(session, workspace_id)
+        signature = (status["status"], status["step"])
+        if signature != last_signature:
+            last_signature = signature
+            yield _sse_frame(status)
+        if status["status"] in TERMINAL_BUILD_STATUSES:
+            return
+        if clock() >= deadline:
+            yield _sse_frame({**status, "timeout": True})
+            return
+        sleep(interval)
 
 
 def retry_build(session: Session, workspace_id: str) -> dict:

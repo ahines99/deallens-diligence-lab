@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi.responses import StreamingResponse
 
 from src.routers.deps import OptionalPrincipalDep, PrincipalDep, SessionDep
 from src.schemas.identity import WorkspaceGovernancePatch
@@ -48,6 +49,21 @@ def create_workspace(
 def get_build_status(workspace_id: str, session: SessionDep) -> WorkspaceBuildStatus:
     return WorkspaceBuildStatus.model_validate(
         workspace_service.get_build_status(session, workspace_id)
+    )
+
+
+@router.get("/{workspace_id}/build-events")
+def stream_build_events(workspace_id: str, session: SessionDep) -> StreamingResponse:
+    """Server-sent-events stream of live build progress; polling `build-status` is the fallback.
+
+    Tenant-guarded by the `/api/workspaces/{id}` middleware. The initial status lookup runs in the
+    request scope so a missing workspace 404s cleanly before the stream opens.
+    """
+    workspace_service.get_build_status(session, workspace_id)
+    return StreamingResponse(
+        workspace_service.iter_build_events(workspace_id),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 

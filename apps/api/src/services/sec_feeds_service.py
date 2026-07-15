@@ -186,6 +186,44 @@ def _num(node: ET.Element | None) -> float | None:
         return None
 
 
+_RULE_10B5_RE = re.compile(r"10b5[\s\-]?1", re.IGNORECASE)
+
+
+def _footnote_map(root: ET.Element) -> dict[str, str]:
+    """Map footnote id -> text so per-transaction Rule 10b5-1 references can be resolved."""
+    out: dict[str, str] = {}
+    for fn in root.findall(".//footnotes/footnote"):
+        fid = fn.get("id")
+        if fid:
+            out[fid] = (fn.text or "").strip()
+    return out
+
+
+def _doc_10b5_1_flag(root: ET.Element) -> bool | None:
+    """Document-level Rule 10b5-1 checkbox (added by the 2023 Form 4 amendments).
+
+    Returns True/False when the checkbox element is present, or None when the filing predates
+    the checkbox or omits it — an absent flag is 'unknown', never assumed discretionary.
+    """
+    for el in root.iter():
+        if "10b5" in el.tag.split("}")[-1].lower():
+            val = _text(el).strip().lower()
+            if val in ("1", "true", "yes"):
+                return True
+            if val in ("0", "false", "no"):
+                return False
+    return None
+
+
+def _tx_10b5_1_flag(tx: ET.Element, footnotes: dict[str, str], doc_plan: bool | None) -> bool | None:
+    """Per-transaction Rule 10b5-1 status: a referenced footnote naming the rule wins; otherwise
+    fall back to the document-level checkbox (itself possibly None/unknown)."""
+    for ref in tx.findall(".//footnoteId"):
+        if _RULE_10B5_RE.search(footnotes.get(ref.get("id", ""), "")):
+            return True
+    return doc_plan
+
+
 def _form4_xml_url(cik10: str, accession: str, primary_doc: str) -> str | None:
     """Best-effort raw-XML URL for a Form 4 (strip any XSL-render wrapper directory)."""
     if not accession:
@@ -209,22 +247,30 @@ def _parse_form4(xml_bytes: bytes, display_url: str | None) -> list[dict]:
     owner = root.find(".//reportingOwner")
     name = ""
     role = ""
+    is_officer = is_director = is_ten_percent_owner = False
     if owner is not None:
         name = _text(owner.find(".//rptOwnerName")) or _text(owner.find("reportingOwnerId/rptOwnerName"))
         rel = owner.find("reportingOwnerRelationship")
         if rel is not None:
             title = _text(rel.find("officerTitle"))
+            is_director = _text(rel.find("isDirector")) in ("1", "true")
+            is_ten_percent_owner = _text(rel.find("isTenPercentOwner")) in ("1", "true")
+            # officerTitle is only populated for officers, so treat its presence as the officer flag.
+            is_officer = _text(rel.find("isOfficer")) in ("1", "true") or bool(title)
             if title:
                 role = title
             else:
                 roles = []
-                if _text(rel.find("isDirector")) in ("1", "true"):
+                if is_director:
                     roles.append("Director")
-                if _text(rel.find("isTenPercentOwner")) in ("1", "true"):
+                if is_ten_percent_owner:
                     roles.append("10% Owner")
-                if _text(rel.find("isOfficer")) in ("1", "true"):
+                if is_officer:
                     roles.append("Officer")
                 role = ", ".join(roles)
+
+    footnotes = _footnote_map(root)
+    doc_plan = _doc_10b5_1_flag(root)
 
     rows: list[dict] = []
     # Non-derivative + derivative transactions both carry the A/D coding we care about.
@@ -259,6 +305,10 @@ def _parse_form4(xml_bytes: bytes, display_url: str | None) -> list[dict]:
                 "shares": shares,
                 "price": price,
                 "value": value,
+                "plan_10b5_1": _tx_10b5_1_flag(tx, footnotes, doc_plan),
+                "is_officer": is_officer,
+                "is_director": is_director,
+                "is_ten_percent_owner": is_ten_percent_owner,
                 "url": display_url,
             }
         )
@@ -342,6 +392,121 @@ def insiders(session, workspace_id: str) -> dict:
             if fetch_errors
             else None
         ),
+        "generated_at": now_utc(),
+    }
+
+
+# --- Insider-pattern analytics (clusters / 10b5-1 plans / role split) -------
+CLUSTER_GAP_DAYS = 7  # max gap (days) between adjacent same-direction trades in one window
+
+
+def _tx_date(row: dict):
+    """Parse a transaction's ISO date to a date, or None if absent/unparseable."""
+    try:
+        return datetime.strptime((row.get("date") or "")[:10], "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
+def _make_cluster(rows: list[dict], direction: str) -> dict:
+    dates = sorted(d for d in (_tx_date(r) for r in rows) if d is not None)
+    share_rows = [r["shares"] for r in rows if r.get("shares") is not None]
+    value_rows = [r["value"] for r in rows if r.get("value") is not None]
+    return {
+        "direction": direction,
+        "start": dates[0].isoformat() if dates else "",
+        "end": dates[-1].isoformat() if dates else "",
+        "participants": len({r.get("insider") for r in rows}),
+        "transactions": len(rows),
+        "total_shares": sum(share_rows) if share_rows else None,
+        "total_value": round(sum(value_rows), 2) if value_rows else None,
+    }
+
+
+def _cluster_transactions(transactions: list[dict]) -> list[dict]:
+    """Group dated buy/sell trades into adjacent same-direction windows (single-linkage on date;
+    a gap over CLUSTER_GAP_DAYS starts a new window). Buys and sells never merge."""
+    clusters: list[dict] = []
+    for direction in ("buy", "sell"):
+        rows = sorted(
+            (r for r in transactions if r.get("type") == direction and _tx_date(r) is not None),
+            key=_tx_date,
+        )
+        window: list[dict] = []
+        prev = None
+        for r in rows:
+            d = _tx_date(r)
+            if prev is not None and (d - prev).days > CLUSTER_GAP_DAYS:
+                clusters.append(_make_cluster(window, direction))
+                window = []
+            window.append(r)
+            prev = d
+        if window:
+            clusters.append(_make_cluster(window, direction))
+    clusters.sort(key=lambda c: (c["start"], c["direction"]))
+    return clusters
+
+
+def _plan_summary(transactions: list[dict]) -> dict:
+    """Count Rule 10b5-1 status. A missing/None flag is 'unknown' — never assumed discretionary."""
+    return {
+        "planned": sum(1 for t in transactions if t.get("plan_10b5_1") is True),
+        "discretionary": sum(1 for t in transactions if t.get("plan_10b5_1") is False),
+        "unknown": sum(1 for t in transactions if t.get("plan_10b5_1") is None),
+    }
+
+
+def _role_split(transactions: list[dict]) -> dict:
+    """Aggregate buy/sell counts by reporting-owner role. An owner holding several roles
+    (e.g. officer and director) is counted under each."""
+    split = {
+        "officer": {"buys": 0, "sells": 0},
+        "director": {"buys": 0, "sells": 0},
+        "ten_percent_owner": {"buys": 0, "sells": 0},
+    }
+    role_field = {
+        "officer": "is_officer",
+        "director": "is_director",
+        "ten_percent_owner": "is_ten_percent_owner",
+    }
+    for t in transactions:
+        if t.get("type") == "buy":
+            key = "buys"
+        elif t.get("type") == "sell":
+            key = "sells"
+        else:
+            continue
+        for role, field in role_field.items():
+            if t.get(field):
+                split[role][key] += 1
+    return split
+
+
+def analyze_insider_patterns(transactions: list[dict]) -> dict:
+    """Pure analytics over parsed Form 4 transactions: clustered buy/sell windows, a 10b5-1 plan
+    summary, and an officer/director/10%-owner role split. No I/O — safe to unit-test directly."""
+    return {
+        "clusters": _cluster_transactions(transactions),
+        "plan_summary": _plan_summary(transactions),
+        "role_split": _role_split(transactions),
+    }
+
+
+def insider_patterns(session, workspace_id: str) -> dict:
+    """Insider-pattern analytics built on the same parsed Form 4 feed as insiders().
+
+    Preserves the explicit source_status contract: an unavailable feed yields an 'unavailable'
+    status, never a false-clean empty result.
+    """
+    ins = insiders(session, workspace_id)
+    analysis = analyze_insider_patterns(ins["transactions"])
+    return {
+        "workspace_id": workspace_id,
+        "clusters": analysis["clusters"],
+        "plan_summary": analysis["plan_summary"],
+        "role_split": analysis["role_split"],
+        "source_status": ins["source_status"],
+        "source_error": ins["source_error"],
         "generated_at": now_utc(),
     }
 

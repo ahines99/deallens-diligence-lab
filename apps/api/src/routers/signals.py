@@ -4,9 +4,9 @@ from fastapi import APIRouter
 
 from src.db.base import now_utc
 from src.routers.deps import SessionDep
-from src.schemas.signals import FilingWatch, NewsSignals
+from src.schemas.signals import FilingWatch, InsiderPatterns, NewsSignals
 from src.schemas.workspace import WorkspaceOverview
-from src.services import news_service, watch_service, workspace_service
+from src.services import news_service, sec_feeds_service, watch_service, workspace_service
 from src.services.common import NotFound, get_workspace_or_404
 
 router = APIRouter(prefix="/api/workspaces", tags=["signals"])
@@ -35,6 +35,12 @@ def get_news(workspace_id: str, session: SessionDep) -> NewsSignals:
 def get_filing_watch(workspace_id: str, session: SessionDep) -> FilingWatch:
     get_workspace_or_404(session, workspace_id)
     return FilingWatch.model_validate(watch_service.filing_watch(session, workspace_id))
+
+
+@router.get("/{workspace_id}/insider-patterns", response_model=InsiderPatterns)
+def get_insider_patterns(workspace_id: str, session: SessionDep) -> InsiderPatterns:
+    get_workspace_or_404(session, workspace_id)
+    return InsiderPatterns.model_validate(sec_feeds_service.insider_patterns(session, workspace_id))
 
 
 @router.post("/{workspace_id}/refresh", response_model=WorkspaceOverview)
