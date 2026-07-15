@@ -32,9 +32,18 @@ const REQUEST_HEADERS_TO_STRIP = [
   "transfer-encoding",
   "upgrade",
   "via",
+  // Trusted-principal headers: the backend derives the actor context server-side
+  // (serverApi/workflowHeaders on SSR calls, which reach the API directly — not
+  // through this proxy). A browser must never be able to supply them through the
+  // BFF, otherwise an auth-off deployment would gain an impersonation vector.
+  "x-actor-id",
+  "x-actor-name",
+  "x-actor-roles",
+  "x-forwarded-for",
   "x-forwarded-host",
   "x-forwarded-port",
   "x-forwarded-proto",
+  "x-organization-id",
 ];
 
 function tooLarge(limit: number) {
@@ -46,9 +55,16 @@ function tooLarge(limit: number) {
 
 function hasTrustedOrigin(request: NextRequest) {
   if (SAFE_METHODS.has(request.method)) return true;
-  if (request.headers.get("sec-fetch-site") === "cross-site") return false;
+  const secFetchSite = request.headers.get("sec-fetch-site");
+  if (secFetchSite === "cross-site") return false;
   const origin = request.headers.get("origin");
-  if (!origin) return true;
+  if (!origin) {
+    // A state-changing request with no Origin header is only trusted when the
+    // browser affirms it is same-origin (or a direct navigation via 'none').
+    // An absent/unknown sec-fetch-site on a write is rejected as CSRF
+    // defense-in-depth; GET/HEAD stay permissive via SAFE_METHODS above.
+    return secFetchSite === "same-origin" || secFetchSite === "none";
+  }
   try {
     return new URL(origin).origin === request.nextUrl.origin;
   } catch {

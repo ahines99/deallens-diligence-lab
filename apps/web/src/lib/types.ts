@@ -317,12 +317,13 @@ export interface FilingsQACitation {
 export interface FilingsQAResult {
   workspace_id: string;
   question: string;
-  status: "answered" | "abstained";
+  status: "answered" | "partial" | "abstained";
   answer: string;
   citations: FilingsQACitation[];
   retrieval: {
     chunks_considered: number;
     matched_terms: string[];
+    coverage?: number;
     abstention_reason: string | null;
   };
   method: string;

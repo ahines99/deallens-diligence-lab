@@ -32,7 +32,7 @@ The system runs in two postures without code changes:
 
 ```
                           ┌───────────────────────────────────────────────┐
-                          │                 apps/web  (Next.js 14)          │
+                          │                 apps/web  (Next.js 15)          │
                           │              App Router · TS · Tailwind         │
                           │                                                 │
     Browser ───────────▶  │  Server Components ──▶ lib/api.ts (typed client)│
@@ -103,7 +103,7 @@ deterministic engine; `seed/load_seed.py` seeds real demo workspaces (MSFT, CRWD
 
 ## The two apps
 
-### `apps/web` — Next.js 14 (App Router)
+### `apps/web` — Next.js 15 (App Router)
 
 - **Server Components fetch and render.** Every page under `/workspaces/[workspaceId]/*` is an async
   React Server Component that calls the typed `api` client (`@/lib/api`) and renders the result. There
@@ -252,6 +252,16 @@ every Evidence snippet traces back to the exact section of the exact filing.
 - **pgvector-ready.** The same section chunks can be indexed by an embedding store with no change above
   the retrieval boundary. The MVP ships the deterministic scanner because it is reproducible and makes
   the evidence trail explainable — you can see exactly which section matched which taxonomy signal.
+
+Two retrieval/generation paths now build on the same chunks. **Cited filings Q&A** (`POST /qa`,
+`services/filings_qa_service.py`) runs a deterministic **BM25** rank over the ingested filing sections and
+returns a strictly extractive, quoted answer — or an explicit abstention when no section clears the bar —
+so the answer never drifts from the source text. The **memo faithfulness report** (`GET /memo/faithfulness`)
+re-verifies every memo on demand: it counts citations, flags unresolved `EV-###` refs, and lists uncited
+numeric sentences. Long-running work (workspace builds) has also moved off in-process background tasks onto
+a **durable, DB-backed job queue** (`models/job.py`, `services/job_service.py`, worker in `workers/jobs.py`)
+with at-least-once claiming, retries, heartbeats, and stale-claim recovery — the same transactional-outbox
+pattern as the webhook worker.
 
 ---
 

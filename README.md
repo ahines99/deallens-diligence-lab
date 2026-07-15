@@ -303,11 +303,12 @@ Details: [`docs/architecture.md`](docs/architecture.md) ·
 | USAspending.gov                     | GovCon: federal contract awards → agency concentration + recompete | **Live (no key)** |
 | SEC Financial Statement Data Sets   | Standardized financial statement data                     | Extension |
 | OpenFIGI                            | Security identifier mapping                                | Extension |
-| GDELT                               | Public news / media signal discovery                      | Extension |
+| GDELT                               | News signals (`GET /news`) — unverified media, kept off the evidence table | **Live (no key)** |
 | SAM.gov                             | Federal opportunity / entity context (extends GovCon)     | Extension |
 
 The core flow runs on **SEC EDGAR** (no key; a descriptive `SEC_USER_AGENT` is required). **FRED** and
-**USAspending** are live and **need no key**; OpenFIGI, GDELT, and SAM.gov remain wired extension points.
+**USAspending** are live and **need no key** (as is **GDELT** news, labeled unverified media); OpenFIGI
+and SAM.gov remain wired extension points.
 Market **valuation multiples are omitted** — no free source. See
 [`docs/data-sources.md`](docs/data-sources.md) and [`docs/govcon-and-macro.md`](docs/govcon-and-macro.md).
 

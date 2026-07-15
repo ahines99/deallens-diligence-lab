@@ -16,9 +16,16 @@ import {
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
+// Only invoked on state-changing methods (POST/DELETE). A missing Origin header
+// is only trusted when the browser affirms a same-origin/direct request via
+// sec-fetch-site; an absent/unknown value on a write is rejected as CSRF
+// defense-in-depth on top of the SameSite=strict session cookie.
 function sameOrigin(request: NextRequest) {
   const origin = request.headers.get("origin");
-  if (!origin) return true;
+  if (!origin) {
+    const secFetchSite = request.headers.get("sec-fetch-site");
+    return secFetchSite === "same-origin" || secFetchSite === "none";
+  }
   try {
     return new URL(origin).origin === request.nextUrl.origin;
   } catch {

@@ -90,8 +90,20 @@ export function FilingsQAPanel({ workspaceId }: { workspaceId: string }) {
         </Callout>
       )}
 
-      {result && result.status === "answered" && (
-        <Card eyebrow="Extractive answer" title={result.question}>
+      {result && (result.status === "answered" || result.status === "partial") && (
+        <Card
+          eyebrow={result.status === "partial" ? "Partial answer" : "Extractive answer"}
+          title={result.question}
+        >
+          {result.status === "partial" && (
+            <p className="mb-3 text-xs text-warn">
+              This answer covers only part of the question
+              {typeof result.retrieval.coverage === "number"
+                ? ` (${Math.round(result.retrieval.coverage * 100)}% of its terms)`
+                : ""}
+              . Treat it as a lead, not a complete answer.
+            </p>
+          )}
           <p className="text-sm leading-relaxed text-ink">{result.answer}</p>
           <div className="mt-4 space-y-3">
             {result.citations.map((citation, index) => (

@@ -50,7 +50,7 @@ describe("backend proxy policy", () => {
     vi.stubGlobal("fetch", fetchMock);
     const response = await proxyPost(request("/backend/api/workspaces", {
       method: "POST",
-      headers: { "Content-Length": String(DEFAULT_PROXY_BODY_LIMIT + 1) },
+      headers: { Origin: "http://localhost", "Content-Length": String(DEFAULT_PROXY_BODY_LIMIT + 1) },
       body: "x",
     }), { params: Promise.resolve({ path: ["api", "workspaces"] }) });
     expect(response.status).toBe(413);
@@ -76,14 +76,18 @@ describe("backend proxy policy", () => {
     }));
     vi.stubGlobal("fetch", fetchMock);
 
-    const blocked = await proxyPost(request("/backend/api/../metrics", { method: "POST", body: "x" }), {
+    const blocked = await proxyPost(request("/backend/api/../metrics", {
+      method: "POST",
+      headers: { Origin: "http://localhost" },
+      body: "x",
+    }), {
       params: Promise.resolve({ path: ["api", "..", "metrics"] }),
     });
     expect(blocked.status).toBe(404);
 
     const response = await proxyPost(request("/backend/api/workspaces", {
       method: "POST",
-      headers: { Authorization: "Bearer browser-supplied" },
+      headers: { Origin: "http://localhost", Authorization: "Bearer browser-supplied" },
       body: "{}",
     }), { params: Promise.resolve({ path: ["api", "workspaces"] }) });
     const forwardedHeaders = new Headers((fetchMock.mock.calls[0][1] as RequestInit).headers);
@@ -91,12 +95,62 @@ describe("backend proxy policy", () => {
     expect(response.headers.has("Set-Cookie")).toBe(false);
   });
 
+  it("strips browser-supplied trusted-principal and forwarded headers", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await proxyPost(request("/backend/api/workspaces", {
+      method: "POST",
+      headers: {
+        Origin: "http://localhost",
+        "Content-Type": "application/json",
+        "X-Actor-ID": "spoofed-actor",
+        "X-Actor-Name": "Mallory",
+        "X-Actor-Roles": "admin",
+        "X-Organization-ID": "spoofed-org",
+        "X-Forwarded-For": "10.0.0.1",
+      },
+      body: "{}",
+    }), { params: Promise.resolve({ path: ["api", "workspaces"] }) });
+
+    const forwarded = new Headers((fetchMock.mock.calls[0][1] as RequestInit).headers);
+    expect(forwarded.has("x-actor-id")).toBe(false);
+    expect(forwarded.has("x-actor-name")).toBe(false);
+    expect(forwarded.has("x-actor-roles")).toBe(false);
+    expect(forwarded.has("x-organization-id")).toBe(false);
+    expect(forwarded.has("x-forwarded-for")).toBe(false);
+  });
+
+  it("rejects a state-changing write that omits Origin without an affirming sec-fetch-site", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const response = await proxyPost(request("/backend/api/workspaces", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    }), { params: Promise.resolve({ path: ["api", "workspaces"] }) });
+    expect(response.status).toBe(403);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("allows an Origin-less write when sec-fetch-site affirms same-origin", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const response = await proxyPost(request("/backend/api/workspaces", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Sec-Fetch-Site": "same-origin" },
+      body: "{}",
+    }), { params: Promise.resolve({ path: ["api", "workspaces"] }) });
+    expect(response.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("derives protected authorization from the HttpOnly cookie but omits it on public auth", async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response("{}", { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
     const token = `dls_${"b".repeat(40)}`;
     const cookie = encodeSessionCookie(token, new Date(Date.now() + 60_000).toISOString());
-    const headers = { Cookie: `${AUTH_COOKIE_NAME}=${cookie}`, "Content-Type": "application/json" };
+    const headers = { Origin: "http://localhost", Cookie: `${AUTH_COOKIE_NAME}=${cookie}`, "Content-Type": "application/json" };
 
     await proxyPost(request("/backend/api/workspaces", { method: "POST", headers, body: "{}" }), {
       params: Promise.resolve({ path: ["api", "workspaces"] }),
@@ -128,5 +182,12 @@ describe("session cookie bridge policy", () => {
       body: "{}",
     }));
     expect(oversized.status).toBe(413);
+
+    const originlessWrite = await bridgePost(request("/auth/session", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    }));
+    expect(originlessWrite.status).toBe(403);
   });
 });

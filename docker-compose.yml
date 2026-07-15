@@ -20,7 +20,7 @@ services:
   api:
     build:
       context: ./apps/api
-    environment:
+    environment: &api-environment
       LLM_MODE: ${LLM_MODE:-mock}
       LLM_API_KEY: ${LLM_API_KEY:-}
       LLM_BASE_URL: ${LLM_BASE_URL:-https://api.anthropic.com/v1}
@@ -60,6 +60,25 @@ services:
       SCHEMA_MANAGEMENT: external
       WEBHOOK_ENCRYPTION_KEY: ${WEBHOOK_ENCRYPTION_KEY:-}
       WEBHOOK_ALLOW_INSECURE_HTTP: ${WEBHOOK_ALLOW_INSECURE_HTTP:-false}
+      AUTO_SEED: "false"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  build-worker:
+    build:
+      context: ./apps/api
+    command: ["python", "-m", "src.workers.jobs"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://deallens:deallens@db:5432/deallens
+      SCHEMA_MANAGEMENT: external
+      LLM_MODE: ${LLM_MODE:-mock}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.anthropic.com/v1}
+      LLM_MODEL: ${LLM_MODEL:-claude-opus-4-8}
+      SEC_USER_AGENT: ${SEC_USER_AGENT:-DealLens Diligence Lab (portfolio project) contact@example.com}
+      FRED_API_KEY: ${FRED_API_KEY:-}
       AUTO_SEED: "false"
     depends_on:
       api:

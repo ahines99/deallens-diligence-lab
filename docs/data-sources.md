@@ -11,10 +11,12 @@ it is primary, a live extension, or a remaining wired extension.
 > live — there is no synthetic target. The same company-facts XBRL now also powers a **multi-year revenue
 > and margin trend** (`sec_financials.extract_trends`) with a computed revenue CAGR.
 >
-> **Now-live extensions (no key).** **FRED** (macro overlay via the keyless fredgraph CSV) and
-> **USAspending.gov** (federal contract awards → agency concentration + recompete exposure) are
-> implemented end to end and surface real data — see [`docs/govcon-and-macro.md`](./govcon-and-macro.md).
-> **OpenFIGI**, **GDELT**, and **SAM.gov** remain wired extension points: the interfaces are documented but
+> **Now-live extensions (no key).** **FRED** (macro overlay via the keyless fredgraph CSV),
+> **USAspending.gov** (federal contract awards → agency concentration + recompete exposure), and
+> **GDELT** (keyless news signals surfaced on the workspace `GET /news` tab) are implemented end to end
+> and surface real data — see [`docs/govcon-and-macro.md`](./govcon-and-macro.md). GDELT results are
+> labeled **unverified media** (real articles, but not evidence-grade) and are kept out of the evidence
+> table. **OpenFIGI** and **SAM.gov** remain wired extension points: the interfaces are documented but
 > not required for the core flow.
 
 > **What is intentionally omitted.** Market **valuation multiples** (market cap, enterprise value,
@@ -32,7 +34,7 @@ it is primary, a live extension, or a remaining wired extension.
 | **USAspending.gov** | Federal **contract** award history (award amounts, awarding agency/sub-agency, description, period of performance) | **GovCon profile** (`GET/POST /govcon`): total obligations + award count, **agency concentration** (top agency's share), **recompete exposure** (top awards with a PoP end within ~24 months), and an incumbent view; folds into risk findings via `govcon_flags` | **Keyless** REST API (`api.usaspending.gov/api/v2`); POSTs `spending_by_category` / `spending_by_award_count` / `spending_by_award`; contract award types A–D (excludes IDV ceilings) | **LIVE (no key)** |
 | **SEC Financial Statement Data Sets** | Bulk, standardized quarterly financial-statement datasets (numbers as reported across filers) | Cross-check / backfill line items where the company-facts API is thin; build peer statistics | Bulk ZIP downloads; heavier, batch-oriented; no key | Extension |
 | **OpenFIGI** (Bloomberg, open) | Security identifier mapping (ticker ↔ FIGI ↔ other IDs) | Normalize/disambiguate tickers when assembling a comps set from mixed identifiers | Free API key for higher rate limits; POST mapping jobs | Extension |
-| **GDELT** | Global public news / media event and tone signal, open dataset | Media-signal discovery for a target or sector (surfacing legal/regulatory or reputational threads to diligence) | Query API / bulk files; no key; high volume, needs filtering | Extension |
+| **GDELT** | Global public news / media event and tone signal, open dataset | **News signals** (`GET /news`): `news_service` phrase-matches the target name against the GDELT DOC 2.0 API and returns recent articles, **labeled unverified media** (real, but not evidence-grade) and deliberately kept out of the evidence table | **Keyless** — the `api.gdeltproject.org` DOC 2.0 endpoint (no API key); best-effort (degrades to a source-error note on a bad response) | **LIVE (no key)** |
 | **SAM.gov** | Federal opportunity and entity registration data (GovCon) | Would extend the live GovCon workstream with contract-vehicle and open-opportunity context | Free API key; the GovCon workstream is off for purely commercial targets | Extension |
 
 ---
@@ -121,7 +123,8 @@ PRIMARY (live, drives the whole flow)
 
 LIVE EXTENSIONS (implemented end to end; NO key required)
   ├─ FRED           (macro overlay via fredgraph CSV; sector → relevant series; GET /macro)
-  └─ USAspending    (federal contract awards → agency concentration + recompete; GET/POST /govcon)
+  ├─ USAspending    (federal contract awards → agency concentration + recompete; GET/POST /govcon)
+  └─ GDELT          (keyless news signals via api.gdeltproject.org; GET /news; unverified media, off-evidence)
 
 OMITTED (no free source; never fabricated)
   └─ Market valuation multiples  (market cap, enterprise value, EV/Revenue)
@@ -129,6 +132,5 @@ OMITTED (no free source; never fabricated)
 Remaining extension points (interfaces wired; not required for the core flow)
   ├─ SEC Financial Statement Data Sets   (bulk financial backfill / peer stats)
   ├─ OpenFIGI                            (identifier normalization for comps)
-  ├─ GDELT                               (news / media signal discovery)
   └─ SAM.gov                             (federal opportunity / entity context, extends GovCon)
 ```

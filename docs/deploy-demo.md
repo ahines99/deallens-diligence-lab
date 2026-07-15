@@ -24,7 +24,7 @@ not an engineering project. Everything below is optional and off by default.
    ```
 
 2. `docker compose up --build -d` — brings up Postgres, the API (migrations apply on boot),
-   the webhook worker, and the web app bound to localhost.
+   the webhook worker, the build worker (durable job queue), and the web app bound to localhost.
 
 3. Add the cleanup worker to the schedule. Either extend `docker-compose.yml` with a service:
 
