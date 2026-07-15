@@ -1,6 +1,7 @@
 """ORM models. Importing this package registers every table on the shared metadata."""
 from src.models.api_key import ApiKey
 from src.models.audit import AuditLog
+from src.models.comment import Comment
 from src.models.comp import ComparableCompany
 from src.models.document import DocumentChunk
 from src.models.deal_workflow import (
@@ -48,6 +49,7 @@ from src.models.plan import DiligencePlan
 from src.models.question import DiligenceQuestion
 from src.models.red_team import RedTeamReport
 from src.models.risk import RiskFinding
+from src.models.share_link import ShareLink
 from src.models.target import Target
 from src.models.underwriting_data import (
     AccountMapping,
@@ -71,6 +73,7 @@ __all__ = [
     "ComparableCompany",
     "CitedQARun",
     "ClaimReviewEvent",
+    "Comment",
     "ConditionToClose",
     "Deal",
     "DealLedgerEntry",
@@ -110,6 +113,7 @@ __all__ = [
     "RedTeamReport",
     "RiskFinding",
     "SecFilingComparison",
+    "ShareLink",
     "Target",
     "AccountMapping",
     "AnalysisRun",

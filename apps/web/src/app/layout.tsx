@@ -4,6 +4,7 @@ import { Inter, Newsreader } from "next/font/google";
 import { ActorProvider } from "@/components/identity/ActorContext";
 import { IdentitySwitcher } from "@/components/identity/IdentitySwitcher";
 import { NotificationBell } from "@/components/NotificationBell";
+import { OnboardingTour } from "@/components/OnboardingTour";
 import { AuthProvider } from "@/components/auth/AuthContext";
 import "@/app/globals.css";
 
@@ -96,6 +97,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         </header>
 
         <main className="mx-auto max-w-[1400px] px-5 py-8 lg:px-8">{children}</main>
+        <OnboardingTour />
 
         <footer className="mt-12 border-t border-line bg-white">
           <div className="mx-auto flex max-w-[1400px] flex-col gap-1 px-5 py-6 text-2xs text-muted lg:px-8">

@@ -49,6 +49,9 @@ _EVENT_TEMPLATES: dict[str, tuple[str, str]] = {
     "ic_packet.export_manifest_created": ("IC packet exported", "An IC packet export was generated."),
     "ic_comment.created": ("IC comment added", "A comment was left on an IC packet."),
     "ic_comment.resolved": ("IC comment resolved", "An IC comment was resolved."),
+    "comment.created": ("Comment added", "A comment was posted on a governed artifact."),
+    "comment.mentioned": ("You were mentioned", "Someone mentioned you in a comment."),
+    "comment.resolved": ("Comment resolved", "A comment thread was resolved."),
     "ic_decision.recorded": ("IC decision recorded", "The investment committee recorded a decision."),
     "condition.resolved": ("Closing condition resolved", "A condition-to-close was resolved."),
     "webhook.endpoint.created": ("Webhook created", "A webhook endpoint was registered."),
@@ -96,9 +99,18 @@ def sync_from_audit(session: Session, organization_id: str) -> list[Notification
     created: list[Notification] = []
     for event in events:
         title, body = render(event)
+        # A ``comment.mentioned`` event carries the mentioned member's id in ``detail`` so the
+        # projection becomes a directed, per-recipient notification (G41); every other event maps
+        # to an organization-wide notification (recipient left ``None``).
+        recipient_user_id = (
+            (event.detail or {}).get("mentioned_user_id")
+            if event.action == "comment.mentioned"
+            else None
+        )
         notification = Notification(
             organization_id=event.organization_id,
             actor_id=event.actor_id,
+            recipient_user_id=recipient_user_id,
             event_type=event.action,
             entity_type=event.entity_type,
             entity_id=event.entity_id,

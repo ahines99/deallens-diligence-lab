@@ -1619,3 +1619,43 @@ export interface WatchlistEntry {
   id: string; organization_id: string; ticker: string | null; cik: string | null;
   company_name: string | null; last_seen_accession: string | null; last_checked_at: string | null; active: boolean;
 }
+
+export interface Comment {
+  id: string; organization_id: string; author_user_id: string | null;
+  entity_type: string; entity_id: string; body: string;
+  parent_comment_id: string | null; mentions: string[];
+  resolved_at: string | null; created_at: string;
+}
+
+export interface ReviewInboxItem {
+  plane: "qoe" | "claim" | "diligence" | "ic_comment";
+  id: string; title: string; deal_or_workspace: string | null; created_at: string;
+}
+export interface ReviewInbox {
+  items: ReviewInboxItem[];
+  counts_by_plane: Record<string, number>;
+}
+
+export interface AuditEvent {
+  id: string; actor_id: string | null; action: string;
+  entity_type: string | null; entity_id: string | null; created_at: string;
+  detail?: Record<string, unknown>;
+}
+
+export interface MemoRedlineEntry { text: string; numbers_added?: string[]; numbers_removed?: string[]; numeric_change?: boolean; }
+export interface MemoRedline {
+  workspace_id: string;
+  run_a: string; run_b: string;
+  granularity: string;
+  is_empty: boolean;
+  added: MemoRedlineEntry[];
+  removed: MemoRedlineEntry[];
+  changed: { before: MemoRedlineEntry; after: MemoRedlineEntry; numeric_change: boolean }[];
+}
+
+export interface ShareLink {
+  id: string; organization_id: string; workspace_id: string;
+  scope: string; expires_at: string | null; revoked_at: string | null;
+  label: string | null; last_accessed_at: string | null; created_at: string;
+}
+export interface ShareLinkCreated extends ShareLink { token: string; }

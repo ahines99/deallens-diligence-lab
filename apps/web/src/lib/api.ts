@@ -40,6 +40,12 @@ import type {
   SignalsOverview,
   FundConstruction,
   WatchlistEntry,
+  Comment,
+  ReviewInbox,
+  AuditEvent,
+  MemoRedline,
+  ShareLink,
+  ShareLinkCreated,
   CovenantHeadroomResult,
   CaseVarianceResult,
   ExitReadinessResult,
@@ -430,6 +436,26 @@ export const api = {
     request<WatchlistEntry>(`/api/organizations/${org}/watchlist`, { method: "POST", body }),
   removeWatchlist: (id: string) =>
     request<void>(`/api/watchlist/${id}`, { method: "DELETE" }),
+
+  // Collaboration (Wave 4 Batch 8)
+  listComments: (entityType: string, entityId: string) =>
+    request<Comment[]>(`/api/comments?entity_type=${entityType}&entity_id=${entityId}`),
+  createComment: (body: { entity_type: string; entity_id: string; body: string; parent_comment_id?: string }) =>
+    request<Comment>(`/api/comments`, { method: "POST", body }),
+  resolveComment: (id: string) =>
+    request<Comment>(`/api/comments/${id}/resolve`, { method: "POST" }),
+  myReviews: (org: string) =>
+    request<ReviewInbox>(`/api/organizations/${org}/my-reviews`),
+  listAuditEvents: (org: string, query = "") =>
+    request<AuditEvent[]>(`/api/organizations/${org}/audit-events${query}`),
+  getMemoRedline: (id: string, runA: string, runB: string) =>
+    request<MemoRedline>(`/api/workspaces/${id}/memo-redline?run_a=${runA}&run_b=${runB}`),
+  createShareLink: (id: string, body: { label?: string; expires_at?: string }) =>
+    request<ShareLinkCreated>(`/api/workspaces/${id}/share-links`, { method: "POST", body }),
+  listShareLinks: (id: string) =>
+    request<ShareLink[]>(`/api/workspaces/${id}/share-links`),
+  revokeShareLink: (id: string) =>
+    request<ShareLink>(`/api/share-links/${id}/revoke`, { method: "POST" }),
 
   // Underwriting analytics (Wave 4)
   covenantHeadroom: (id: string, body: unknown) =>

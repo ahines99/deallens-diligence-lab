@@ -30,6 +30,8 @@ from src.models.workspace import Workspace
 from src.routers import (
     activity,
     api_keys,
+    collaboration,
+    comments,
     comps,
     deal_intelligence,
     deal_workflow,
@@ -43,6 +45,7 @@ from src.routers import (
     govcon,
     identity,
     integrations,
+    memo_redline,
     memos,
     model_ops,
     notifications,
@@ -54,12 +57,14 @@ from src.routers import (
     risks,
     search,
     sec,
+    share_links,
     signals,
     targets,
     underwriting_data,
     underwriting_model,
     valuation,
     watchlist,
+    workspace_bundle,
     workspaces,
 )
 from src.services.common import NotFound
@@ -411,7 +416,13 @@ async def identity_and_tenant_guard(request: Request, call_next):
             if request.state.principal is None:
                 return JSONResponse(status_code=401, content={"detail": "Invalid authentication"})
 
-    is_public = path in _PUBLIC_PATHS or request.method == "OPTIONS"
+    # A read-only share link (G44) authorizes itself via its opaque token in the path, so the
+    # public snapshot endpoint must bypass the session-required guard.
+    is_public = (
+        path in _PUBLIC_PATHS
+        or path.startswith("/api/shared/")
+        or request.method == "OPTIONS"
+    )
     if settings.auth_required and not is_public and request.state.principal is None:
         return JSONResponse(status_code=401, content={"detail": "Authenticated actor required"})
 
@@ -542,6 +553,7 @@ for module in (
     memos, red_team, evidence, examples, governance, govcon, portfolio, notifications,
     forensics, valuation, feeds, signals, ownership, search,
     underwriting_data, underwriting_model, deal_workflow, deal_intelligence,
-    integrations, identity, api_keys, model_ops, quotas, watchlist,
+    integrations, identity, api_keys, model_ops, quotas, watchlist, workspace_bundle,
+    collaboration, memo_redline, comments, share_links,
 ):
     app.include_router(module.router)

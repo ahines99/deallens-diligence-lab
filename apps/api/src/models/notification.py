@@ -33,6 +33,9 @@ class Notification(UUIDMixin, TimestampMixin, Base):
         String(32), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True
     )
     actor_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    # Targeted recipient (G41 @mentions). ``None`` = an organization-wide notification (the default
+    # projection of an audit event); set to the mentioned member's user id for a directed mention.
+    recipient_user_id: Mapped[str | None] = mapped_column(String(200), nullable=True, index=True)
     event_type: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
     entity_type: Mapped[str] = mapped_column(String(80), nullable=False)
     entity_id: Mapped[str] = mapped_column(String(32), nullable=False)

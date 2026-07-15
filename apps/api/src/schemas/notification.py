@@ -12,6 +12,7 @@ class NotificationOut(ORMModel):
     id: str
     organization_id: str
     actor_id: str | None = None
+    recipient_user_id: str | None = None
     event_type: str
     entity_type: str
     entity_id: str
