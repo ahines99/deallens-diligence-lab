@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -64,5 +65,71 @@ class FilingsQAOut(BaseModel):
     answer: str
     citations: list[FilingsQACitation]
     retrieval: FilingsQARetrieval
+    method: str
+    generated_at: str
+
+
+# --- G07: cross-year 10-K risk-factor drift -----------------------------------------------
+
+class RiskDiffFilingRef(BaseModel):
+    filing_id: str
+    form_type: str
+    filing_date: str
+    document_url: str | None
+
+
+class RiskDiffCitation(BaseModel):
+    filing_id: str
+    form_type: str | None
+    filing_date: str | None
+    section: str
+    document_url: str | None
+    chunk_index: int
+    quote: str
+
+
+class RiskDiffChange(BaseModel):
+    old: RiskDiffCitation
+    new: RiskDiffCitation
+    similarity: float
+
+
+class RiskDiffOut(BaseModel):
+    workspace_id: str
+    source_status: str  # ok | unavailable
+    note: str
+    older_filing: RiskDiffFilingRef | None
+    newer_filing: RiskDiffFilingRef | None
+    added: list[RiskDiffCitation]
+    removed: list[RiskDiffCitation]
+    changed: list[RiskDiffChange]
+    method: str
+    generated_at: str
+
+
+# --- G08: unified cross-corpus Q&A --------------------------------------------------------
+
+class CrossCorpusQARequest(BaseModel):
+    question: str = Field(min_length=1, max_length=2_000)
+
+
+class CrossCorpusCitation(BaseModel):
+    corpus: Literal["public_filing", "confidential_dataroom"]
+    confidential: bool
+    label: str
+    quote: str
+    source_name: str
+    provenance: dict[str, Any]
+
+
+class CrossCorpusQAOut(BaseModel):
+    workspace_id: str
+    deal_id: str | None
+    question: str
+    status: str  # answered | partial | abstained
+    answer: str
+    citations: list[CrossCorpusCitation]
+    corpora: dict[str, Any]
+    retrieval: dict[str, Any]
     method: str
     generated_at: str

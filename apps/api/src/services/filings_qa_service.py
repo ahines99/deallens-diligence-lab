@@ -40,8 +40,9 @@ def ask(
     question: str,
     k: int = 6,
     use_hybrid: bool | None = None,
+    grounded: bool = False,
 ) -> dict:
-    get_workspace_or_404(session, workspace_id)
+    ws = get_workspace_or_404(session, workspace_id)
     question = (question or "").strip()
     if not question:
         raise ValueError("Ask a question about the ingested filings.")
@@ -75,6 +76,16 @@ def ask(
             candidates.append((score, item, sentence[:_MAX_QUOTE_CHARS], overlap))
 
     generated_at = datetime.now(timezone.utc).isoformat()
+    # Grounded synthesis (G04) only runs with workspace consent; abstention is preserved either way.
+    external_allowed = grounded and ws.external_llm_allowed and ws.data_classification != "restricted"
+
+    def _finish(result: dict) -> dict:
+        if not grounded:
+            return result
+        from src.services import grounded_qa
+
+        return grounded_qa.maybe_synthesize(result, external_allowed=external_allowed)
+
     base = {
         "workspace_id": workspace_id,
         "question": question,
@@ -82,18 +93,20 @@ def ask(
         "generated_at": generated_at,
     }
     if not candidates:
-        return {
-            **base,
-            "status": "abstained",
-            "answer": ABSTENTION,
-            "citations": [],
-            "retrieval": {
-                "chunks_considered": len(retrieved),
-                "matched_terms": [],
-                "coverage": 0.0,
-                "abstention_reason": "no filing sentence shares terms with the question",
-            },
-        }
+        return _finish(
+            {
+                **base,
+                "status": "abstained",
+                "answer": ABSTENTION,
+                "citations": [],
+                "retrieval": {
+                    "chunks_considered": len(retrieved),
+                    "matched_terms": [],
+                    "coverage": 0.0,
+                    "abstention_reason": "no filing sentence shares terms with the question",
+                },
+            }
+        )
 
     # Greedy coverage: each added sentence must cover a question term the others did not.
     remaining = set(question_terms)
@@ -133,15 +146,17 @@ def ask(
     # single-term match is surfaced as "partial" so the UI can flag low confidence rather
     # than present it as a complete answer (citations still resolve either way).
     status = "answered" if coverage >= _PARTIAL_COVERAGE_THRESHOLD else "partial"
-    return {
-        **base,
-        "status": status,
-        "answer": " ".join(item[2] for item in selected),
-        "citations": citations,
-        "retrieval": {
-            "chunks_considered": len(retrieved),
-            "matched_terms": matched,
-            "coverage": round(coverage, 3),
-            "abstention_reason": None,
-        },
-    }
+    return _finish(
+        {
+            **base,
+            "status": status,
+            "answer": " ".join(item[2] for item in selected),
+            "citations": citations,
+            "retrieval": {
+                "chunks_considered": len(retrieved),
+                "matched_terms": matched,
+                "coverage": round(coverage, 3),
+                "abstention_reason": None,
+            },
+        }
+    )

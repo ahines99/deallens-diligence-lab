@@ -142,6 +142,8 @@ the async ingestion progress (`ready`|`building`|`failed`).
 | GET  | `/api/workspaces/{id}` | → `WorkspaceOverview` |
 | POST | `/api/workspaces/{id}/qa` | `{question}` → `FilingsQA` (deterministic hybrid retrieval — BM25 fused with local keyless embeddings via reciprocal-rank fusion, falling back to BM25 when a workspace has no embeddings — over ingested filing sections; strictly extractive cited answer or explicit abstention; response `method` is `extractive_hybrid_rrf` or `extractive_bm25`) |
 | GET  | `/api/workspaces/{id}/memo/faithfulness` | → runtime report per memo document: citation counts, unresolved `EV-###` refs, uncited numeric sentences |
+| GET  | `/api/model-ops/prompt-manifest` | → `{prompts:[{prompt_id,prompt_version,prompt_hash,model}]}` (G10 versioned, SHA-256-hashed prompt registry for reproducible LLM ops; the memo-polish `prompt_hash` is also bound into each LLM-touched sealed `AnalysisRun`'s `output_summary.prompt_manifest`) |
+| GET  | `/api/workspaces/{id}/judge-evals` | → `{total,faithful,faithful_rate,groups:[{model_version,prompt_version,count,faithful,faithful_rate,mean_score}]}` (G05 persisted LLM-as-judge faithfulness quality view, grouped by model/prompt) |
 | POST | `/api/auth/demo` | → `SessionToken` for a guest identity in the shared Demo Sandbox org (403 unless `DEMO_MODE=true`; rate-limited) |
 | POST | `/api/examples/private-deal` | → `{organization_id,fund_id,deal_id,workspace_id,deal_code,import_status,open_exceptions}` (loads the bundled fictional private deal through the real import/governance pipeline; QoE adjustments stay `proposed`) |
 | GET  | `/api/examples/templates` | → `[{name,description}]` |
@@ -297,6 +299,8 @@ Endpoint families:
 | IC governance | `/api/deals/{id}/ic-packets`, `/api/ic-packets/{id}/{readiness,submit,comments,decisions,exports}`, `GET /api/ic-exports/{id}/verification` → `ExportVerificationResult` (recomputes the manifest hash to detect tampering) |
 | Documents/evidence | `/api/deals/{id}/intelligence/{documents,qa,extractions,claims,comparisons,evaluations}` |
 | SEC changes | `/api/workspaces/{id}/intelligence/sec-comparisons` |
+| Risk-factor drift | `GET /api/workspaces/{id}/filings/risk-diff` → `RiskDiffOut` — cross-year Item 1A diff of the two most recent 10-Ks classified `added`/`removed`/`changed` by embedding-cosine alignment (match ≥0.50, unchanged ≥0.98), each with a citation into both filings; `source_status="unavailable"` (never fabricated) when <2 10-Ks or no risk section |
+| Cross-corpus Q&A | `POST /api/workspaces/{id}/cross-corpus-qa` (`{question}` → `CrossCorpusQAOut`) — one extractive, abstaining answer over public filing chunks + (if the workspace links a deal) confidential data-room chunks; every citation labeled `corpus`=`public_filing`\|`confidential_dataroom` with a `confidential` flag; degrades to filings-only, labeled public, when no data room exists |
 | Integrations | `/api/organizations/{id}/webhooks`, `/api/organizations/{id}/webhook-deliveries`, `/api/webhook-deliveries/{id}/send` |
 
 Money uses the case currency and rates are decimals. Model case, source, document, claim, analysis-run,

@@ -1542,3 +1542,41 @@ export interface CompSimilarity {
   note: string | null;
   generated_at: string;
 }
+
+export interface RiskDiffCitation {
+  filing_id: string; form_type: string | null; filing_date: string | null;
+  section: string; document_url: string | null; chunk_index: number; quote: string;
+}
+export interface RiskDiff {
+  workspace_id: string;
+  source_status: string;
+  note: string;
+  older_filing: { filing_id: string; form_type: string; filing_date: string; document_url: string | null } | null;
+  newer_filing: { filing_id: string; form_type: string; filing_date: string; document_url: string | null } | null;
+  added: RiskDiffCitation[];
+  removed: RiskDiffCitation[];
+  changed: { old: RiskDiffCitation; new: RiskDiffCitation; similarity: number }[];
+  method: string;
+  generated_at: string;
+}
+
+export interface CrossCorpusCitation {
+  corpus: "public_filing" | "confidential_dataroom";
+  confidential: boolean;
+  label: string;
+  quote: string;
+  source_name: string;
+  provenance: Record<string, unknown>;
+}
+export interface CrossCorpusQA {
+  workspace_id: string;
+  deal_id: string | null;
+  question: string;
+  status: "answered" | "partial" | "abstained";
+  answer: string;
+  citations: CrossCorpusCitation[];
+  corpora: Record<string, unknown>;
+  retrieval: Record<string, unknown>;
+  method: string;
+  generated_at: string;
+}

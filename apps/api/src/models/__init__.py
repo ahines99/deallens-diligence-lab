@@ -33,6 +33,7 @@ from src.models.deal_intelligence import (
     SecFilingComparison,
     StructuredClaim,
 )
+from src.models.eval_run import JudgeEvalRun
 from src.models.evidence import Evidence
 from src.models.filing import Filing
 from src.models.governance import GovernanceProfile
@@ -97,6 +98,7 @@ __all__ = [
     "ICPacket",
     "ICPacketExport",
     "IntelligenceEvaluation",
+    "JudgeEvalRun",
     "Memo",
     "Notification",
     "Organization",

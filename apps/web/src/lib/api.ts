@@ -33,6 +33,8 @@ import type {
   DebtMaturitySchedule,
   GovernanceProfile,
   CompSimilarity,
+  RiskDiff,
+  CrossCorpusQA,
   CovenantHeadroomResult,
   CaseVarianceResult,
   ExitReadinessResult,
@@ -405,6 +407,10 @@ export const api = {
     request<GovernanceProfile>(`/api/workspaces/${id}/governance-profile`, { method: "POST" }),
   getCompSimilarity: (id: string) =>
     requestOrNull<CompSimilarity>(`/api/workspaces/${id}/comps/similarity`),
+  getRiskDiff: (id: string) =>
+    requestOrNull<RiskDiff>(`/api/workspaces/${id}/filings/risk-diff`),
+  crossCorpusQA: (id: string, question: string) =>
+    request<CrossCorpusQA>(`/api/workspaces/${id}/cross-corpus-qa`, { method: "POST", body: { question } }),
 
   // Underwriting analytics (Wave 4)
   covenantHeadroom: (id: string, body: unknown) =>

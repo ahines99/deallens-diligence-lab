@@ -3,8 +3,20 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 
 from src.routers.deps import SessionDep
-from src.schemas.filing import FilingOut, FilingsQAOut, FilingsQARequest
-from src.services import filings_qa_service, sec_ingestion_service
+from src.schemas.filing import (
+    CrossCorpusQAOut,
+    CrossCorpusQARequest,
+    FilingOut,
+    FilingsQAOut,
+    FilingsQARequest,
+    RiskDiffOut,
+)
+from src.services import (
+    cross_corpus_qa_service,
+    filing_diff_service,
+    filings_qa_service,
+    sec_ingestion_service,
+)
 from src.services.common import get_workspace_or_404
 
 router = APIRouter(prefix="/api/workspaces", tags=["filings"])
@@ -25,3 +37,22 @@ def ask_filings(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return FilingsQAOut.model_validate(result)
+
+
+@router.get("/{workspace_id}/filings/risk-diff", response_model=RiskDiffOut)
+def risk_factor_diff(workspace_id: str, session: SessionDep) -> RiskDiffOut:
+    """Cross-year 10-K risk-factor drift (added / removed / materially changed) with citations."""
+    result = filing_diff_service.diff_risk_factors(session, workspace_id)
+    return RiskDiffOut.model_validate(result)
+
+
+@router.post("/{workspace_id}/cross-corpus-qa", response_model=CrossCorpusQAOut)
+def cross_corpus_qa(
+    workspace_id: str, payload: CrossCorpusQARequest, session: SessionDep
+) -> CrossCorpusQAOut:
+    """Answer one question over public filings + confidential data room, labeling each citation."""
+    try:
+        result = cross_corpus_qa_service.answer(session, workspace_id, payload.question)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return CrossCorpusQAOut.model_validate(result)

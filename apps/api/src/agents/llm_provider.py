@@ -37,6 +37,9 @@ class PolishOutcome:
     reason: str
     model: str | None = None
     prompt_version: str | None = None
+    # G10: the content hash of the exact prompt template used, so a sealed run is reproducible
+    # and tamper-evident. Set only when a live rewrite is actually applied.
+    prompt_hash: str | None = None
 
 
 class LiveProvider:
@@ -100,7 +103,13 @@ def polish_markdown(markdown: str, *, external_allowed: bool = False) -> PolishO
         candidate = provider.complete(SYSTEM_PROMPT, markdown)
         audit = CitationAuditor.audit_rewrite(markdown, candidate)
         if audit.faithful:
-            return PolishOutcome(candidate, True, "applied", provider.model, PROMPT_VERSION)
+            # Lazy import avoids a module-load cycle (prompt_registry imports this module).
+            from src.services import prompt_registry
+
+            prompt_hash = prompt_registry.get("memo_polish").prompt_hash
+            return PolishOutcome(
+                candidate, True, "applied", provider.model, PROMPT_VERSION, prompt_hash
+            )
         return PolishOutcome(markdown, False, "audit_rejected", provider.model, PROMPT_VERSION)
     except Exception:
         return PolishOutcome(markdown, False, "error")

@@ -34,6 +34,7 @@ from src.routers import (
     identity,
     integrations,
     memos,
+    model_ops,
     notifications,
     ownership,
     portfolio,
@@ -340,6 +341,6 @@ for module in (
     memos, red_team, evidence, examples, governance, govcon, portfolio, notifications,
     forensics, valuation, feeds, signals, ownership,
     underwriting_data, underwriting_model, deal_workflow, deal_intelligence,
-    integrations, identity,
+    integrations, identity, model_ops,
 ):
     app.include_router(module.router)

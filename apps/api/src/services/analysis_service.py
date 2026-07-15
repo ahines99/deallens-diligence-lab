@@ -340,6 +340,18 @@ def _run_full_analysis(
             "ic_memo": memo_polish.reason,
             "bear_case": bear_polish.reason,
         },
+        # G10: bind the exact hashed prompt manifest into the sealed run so an LLM-touched
+        # artifact is reproducible and tamper-evident. None when the run stayed deterministic.
+        "prompt_manifest": (
+            {
+                "prompt_id": "memo_polish",
+                "prompt_version": memo_polish.prompt_version or bear_polish.prompt_version,
+                "prompt_hash": memo_polish.prompt_hash or bear_polish.prompt_hash,
+                "model": memo_polish.model or bear_polish.model,
+            }
+            if llm_applied
+            else None
+        ),
     }
     latest_run = session.scalar(
         select(AnalysisRun)
