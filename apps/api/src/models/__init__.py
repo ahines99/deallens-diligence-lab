@@ -45,6 +45,7 @@ from src.models.identity import AuthSession, OrganizationMembership, User
 from src.models.job import BackgroundJob
 from src.models.memo import Memo
 from src.models.notification import Notification
+from src.models.permission import MembershipPermission
 from src.models.plan import DiligencePlan
 from src.models.question import DiligenceQuestion
 from src.models.red_team import RedTeamReport
@@ -106,6 +107,7 @@ __all__ = [
     "IntelligenceEvaluation",
     "JudgeEvalRun",
     "Memo",
+    "MembershipPermission",
     "Notification",
     "Organization",
     "OrganizationMembership",

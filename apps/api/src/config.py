@@ -56,6 +56,27 @@ class Settings(BaseSettings):
     webhook_encryption_key: str = ""
     webhook_allow_insecure_http: bool = False
 
+    # --- Optional OIDC SSO (G48) --------------------------------------------
+    # Password auth stays the default; SSO is entirely opt-in. When OIDC_ENABLED=false the
+    # /api/auth/oidc/* endpoints 404. oidc_role_map is a JSON object mapping IdP role claim values
+    # to DealLens membership roles (owner/admin/member/viewer); unmapped/missing roles fall back to
+    # 'viewer' (least privilege). SSO users are provisioned into OIDC_ORGANIZATION_SLUG.
+    oidc_enabled: bool = False
+    oidc_issuer: str = ""
+    oidc_client_id: str = ""
+    oidc_client_secret: str = ""
+    oidc_redirect_uri: str = ""
+    oidc_scopes: str = "openid email profile"
+    oidc_role_claim: str = "roles"
+    oidc_role_map: str = ""
+    oidc_organization_slug: str = ""
+
+    # --- Fine-grained permissions (G49) -------------------------------------
+    # Deny-by-default capability matrix layered over the four coarse roles. On by default so the
+    # role defaults reproduce the coarse behavior; set false to fall back to coarse role checks
+    # only (route-level require_capability dependencies become no-ops).
+    permission_matrix_enabled: bool = True
+
     # --- Public demo posture -------------------------------------------------
     # DEMO_MODE=true enables one-click guest sessions and per-IP throttling of the
     # SEC-bound build endpoints so a hosted demo respects EDGAR fair access.

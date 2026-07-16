@@ -117,6 +117,10 @@ _PUBLIC_PATHS = {
     "/api/auth/login",
     "/api/auth/register",
     "/api/auth/demo",
+    # OIDC SSO (G48): the login redirect and IdP callback are pre-session (the callback IS the
+    # authentication). They 404 on their own when OIDC_ENABLED=false.
+    "/api/auth/oidc/login",
+    "/api/auth/oidc/callback",
     "/docs",
     "/openapi.json",
     "/redoc",

@@ -6,7 +6,12 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 
-from src.routers.deps import OptionalPrincipalDep, SessionDep, require_scope
+from src.routers.deps import (
+    OptionalPrincipalDep,
+    SessionDep,
+    require_capability,
+    require_scope,
+)
 from src.schemas.deal_workflow import ActorContext
 from src.schemas.underwriting_model import (
     CaseKey,
@@ -196,6 +201,7 @@ def get_latest_case(
     "/{workspace_id}/underwriting/cases/{case_key}/versions/{version}/decisions",
     response_model=UnderwritingDecisionOut,
     status_code=201,
+    dependencies=[Depends(require_capability("underwriting:approve"))],
 )
 def create_decision(
     workspace_id: str,

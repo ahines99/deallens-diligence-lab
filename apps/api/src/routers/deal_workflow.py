@@ -7,7 +7,7 @@ from typing import Annotated, Callable, TypeVar
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
-from src.routers.deps import SessionDep
+from src.routers.deps import SessionDep, require_capability
 from src.schemas.deal_workflow import (
     ActorContext,
     ConditionOut,
@@ -504,7 +504,11 @@ def resolve_ic_comment(
     )
 
 
-@router.post("/ic-packets/{packet_id}/decisions", response_model=ICDecisionResult)
+@router.post(
+    "/ic-packets/{packet_id}/decisions",
+    response_model=ICDecisionResult,
+    dependencies=[Depends(require_capability("ic:decide"))],
+)
 def record_ic_decision(
     packet_id: str, payload: ICDecisionCreate, session: SessionDep, actor: ActorDep
 ) -> ICDecisionResult:

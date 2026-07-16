@@ -13,11 +13,19 @@ from src.schemas.identity import (
     MembershipCreate,
     MembershipOut,
     MembershipPatch,
+    MembershipPermissionsOut,
+    OIDCLoginOut,
     OrganizationSwitch,
+    PermissionGrantPatch,
     RegistrationCreate,
     SessionTokenOut,
 )
-from src.services import demo_service, identity_service as service
+from src.services import (
+    demo_service,
+    identity_service as service,
+    oidc_service,
+    permission_service,
+)
 
 router = APIRouter(prefix="/api", tags=["identity"])
 T = TypeVar("T")
@@ -69,6 +77,29 @@ def login(payload: LoginCreate, request: Request, session: SessionDep) -> Sessio
         service.login,
         session,
         payload,
+        user_agent=user_agent,
+        ip_address=ip_address,
+    )
+
+
+@router.get("/auth/oidc/login", response_model=OIDCLoginOut)
+def oidc_login() -> OIDCLoginOut:
+    """Return the IdP authorize URL + state (G48). 404 when OIDC_ENABLED=false."""
+    authorize_url, state = _call(oidc_service.build_authorize_url)
+    return OIDCLoginOut(authorize_url=authorize_url, state=state)
+
+
+@router.get("/auth/oidc/callback", response_model=SessionTokenOut)
+def oidc_callback(
+    code: str, request: Request, session: SessionDep, state: str | None = None
+) -> SessionTokenOut:
+    """Complete the OIDC code exchange and issue a DealLens session (G48)."""
+    user_agent, ip_address = _client(request)
+    return _call(
+        oidc_service.handle_callback,
+        session,
+        code,
+        state,
         user_agent=user_agent,
         ip_address=ip_address,
     )
@@ -138,3 +169,36 @@ def update_membership(
 ) -> MembershipOut:
     item = _call(service.update_membership, session, membership_id, payload, principal)
     return MembershipOut.model_validate(item)
+
+
+@router.get(
+    "/memberships/{membership_id}/permissions", response_model=MembershipPermissionsOut
+)
+def get_membership_permissions(
+    membership_id: str, session: SessionDep, principal: PrincipalDep
+) -> MembershipPermissionsOut:
+    """Role defaults, explicit grants/revokes, and the effective capability set (G49)."""
+    return MembershipPermissionsOut.model_validate(
+        _call(permission_service.list_membership_permissions, session, membership_id, principal)
+    )
+
+
+@router.put(
+    "/memberships/{membership_id}/permissions", response_model=MembershipPermissionsOut
+)
+def set_membership_permission(
+    membership_id: str,
+    payload: PermissionGrantPatch,
+    session: SessionDep,
+    principal: PrincipalDep,
+) -> MembershipPermissionsOut:
+    """Grant or revoke one capability for a membership (owners/admins only; G49)."""
+    return MembershipPermissionsOut.model_validate(
+        _call(
+            permission_service.set_membership_permission,
+            session,
+            membership_id,
+            payload,
+            principal,
+        )
+    )

@@ -7,6 +7,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from src.permissions import role_default_capabilities
 from src.schemas.common import ORMModel
 
 MembershipRole = Literal["owner", "admin", "member", "viewer"]
@@ -36,6 +37,10 @@ class PrincipalContext(StrictModel):
     # ``None`` for human sessions and trusted-service callers (unrestricted, gated only by role).
     # A tuple for API-key principals (G38): the key may only exercise these granted scopes.
     scopes: tuple[str, ...] | None = None
+    # Effective fine-grained capabilities (G49), resolved at authentication from the membership's
+    # role defaults ± per-membership grants/revokes. ``None`` means "not resolved" — callers fall
+    # back to the role defaults so principals minted before capability resolution still work.
+    capabilities: tuple[str, ...] | None = None
 
     @property
     def actor_roles(self) -> tuple[str, ...]:
@@ -51,6 +56,16 @@ class PrincipalContext(StrictModel):
     def has_scope(self, scope: str) -> bool:
         """Human/service principals (``scopes is None``) are unrestricted; keys need the grant."""
         return self.scopes is None or scope in self.scopes
+
+    def effective_capabilities(self) -> frozenset[str]:
+        """The resolved capability set, defaulting to the role's defaults when unresolved."""
+        if self.capabilities is not None:
+            return frozenset(self.capabilities)
+        return role_default_capabilities(self.role)
+
+    def has_capability(self, capability: str) -> bool:
+        """Deny-by-default: a capability outside the effective set is denied (G49)."""
+        return capability in self.effective_capabilities()
 
 
 class RegistrationCreate(StrictModel):
@@ -140,6 +155,35 @@ class MembershipPatch(StrictModel):
 
 class LogoutOut(StrictModel):
     revoked: bool
+
+
+class OIDCLoginOut(StrictModel):
+    """Authorize-URL + opaque ``state`` the client redirects the browser to (G48)."""
+
+    authorize_url: str
+    state: str
+
+
+class PermissionGrantPatch(StrictModel):
+    """Grant (``granted=true``) or revoke (``granted=false``) one capability for a membership."""
+
+    capability: str = Field(min_length=1, max_length=60)
+    granted: bool = True
+
+
+class PermissionOverrideOut(StrictModel):
+    capability: str
+    granted: bool
+
+
+class MembershipPermissionsOut(StrictModel):
+    """A membership's role defaults, explicit overrides, and resolved effective capability set."""
+
+    membership_id: str
+    role: MembershipRole
+    role_defaults: list[str]
+    overrides: list[PermissionOverrideOut]
+    effective: list[str]
 
 
 class WorkspaceGovernancePatch(StrictModel):

@@ -46,6 +46,7 @@ import type {
   MemoRedline,
   ShareLink,
   ShareLinkCreated,
+  MembershipPermissions,
   CovenantHeadroomResult,
   CaseVarianceResult,
   ExitReadinessResult,
@@ -456,6 +457,13 @@ export const api = {
     request<ShareLink[]>(`/api/workspaces/${id}/share-links`),
   revokeShareLink: (id: string) =>
     request<ShareLink>(`/api/share-links/${id}/revoke`, { method: "POST" }),
+
+  // Identity extensions (Wave 4 Batch 9)
+  oidcLogin: () => request<{ authorize_url: string; state: string }>(`/api/auth/oidc/login`, { auth: "omit" }),
+  getMembershipPermissions: (membershipId: string) =>
+    request<MembershipPermissions>(`/api/memberships/${membershipId}/permissions`),
+  setMembershipPermission: (membershipId: string, body: { capability: string; granted: boolean }) =>
+    request<MembershipPermissions>(`/api/memberships/${membershipId}/permissions`, { method: "PUT", body }),
 
   // Underwriting analytics (Wave 4)
   covenantHeadroom: (id: string, body: unknown) =>

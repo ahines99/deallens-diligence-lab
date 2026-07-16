@@ -1,0 +1,31 @@
+{
+  "$schema_note": "G37 latency budgets for the hot endpoints. p95_ms is the wall-clock 95th-percentile ceiling asserted by tests/test_perf_smoke.py (in-process TestClient) and referenced by perf/k6_load_test.js thresholds. Budgets are deliberately generous relative to observed local p95 (single-digit ms on the deterministic/mock paths) so the CI smoke is a catastrophic-regression guard, not a tight benchmark that flakes on a slow shared runner. Measure locally with perf/README.md before tightening.",
+  "iterations": 20,
+  "endpoints": {
+    "GET /api/workspaces": {
+      "method": "GET",
+      "p95_ms": 150,
+      "note": "Workspace list; deterministic DB read. Observed local p95 ~2-3ms."
+    },
+    "GET /api/workspaces/{id}": {
+      "method": "GET",
+      "p95_ms": 250,
+      "note": "Workspace overview aggregate. Observed local p95 ~4-5ms."
+    },
+    "POST /api/workspaces/{id}/qa": {
+      "method": "POST",
+      "p95_ms": 500,
+      "note": "Cited extractive Q&A (BM25 retrieval, mock LLM, no network). Observed local p95 ~3-4ms."
+    },
+    "GET /api/workspaces/{id}/search": {
+      "method": "GET",
+      "p95_ms": 500,
+      "note": "Full-text artifact search (SQLite tokenized-LIKE). Observed local p95 ~6-7ms."
+    },
+    "POST /api/workspaces/{id}/underwriting/calculate": {
+      "method": "POST",
+      "p95_ms": 500,
+      "note": "LBO underwriting compute (CPU-bound, no persistence). Observed local p95 ~4-5ms."
+    }
+  }
+}

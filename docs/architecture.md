@@ -26,6 +26,13 @@ The system runs in two postures without code changes:
 > access to SEC EDGAR (`www.sec.gov` / `data.sec.gov`) and a descriptive `SEC_USER_AGENT`. Unit tests run
 > offline; live integration tests are skipped when EDGAR is unreachable.
 
+> **CI database matrix (G36).** The `quality` workflow runs the full backend suite twice — once on SQLite
+> (`api` job) and once on a real `postgres:16` service container (`api-postgres` job) — and both are
+> required for merge. The Postgres job also runs `alembic upgrade head` + `alembic check` against real
+> Postgres, so every migration is validated on the production dialect (catching dialect-specific issues
+> SQLite hides). Tests target Postgres via `DEALLENS_TEST_DATABASE_URL`, which `tests/conftest.py` honors
+> when set and otherwise defaults to a throwaway SQLite file.
+
 ---
 
 ## Component diagram

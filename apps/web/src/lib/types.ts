@@ -1659,3 +1659,12 @@ export interface ShareLink {
   label: string | null; last_accessed_at: string | null; created_at: string;
 }
 export interface ShareLinkCreated extends ShareLink { token: string; }
+
+export interface MembershipPermissions {
+  membership_id: string;
+  role: string;
+  role_defaults: string[];
+  grants: string[];
+  revokes: string[];
+  effective_capabilities: string[];
+}

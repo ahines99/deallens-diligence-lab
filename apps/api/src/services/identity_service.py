@@ -16,6 +16,8 @@ from src.config import settings
 from src.db.base import now_utc
 from src.models.deal_workflow import Organization
 from src.models.identity import AuthSession, OrganizationMembership, User
+from src.models.permission import MembershipPermission
+from src.permissions import role_default_capabilities
 from src.schemas.identity import (
     LoginCreate,
     MembershipCreate,
@@ -126,8 +128,33 @@ def membership_payloads(session: Session, user_id: str) -> list[dict[str, Any]]:
     return [_membership_dict(session, item) for item in list_user_memberships(session, user_id)]
 
 
+def effective_capabilities(
+    session: Session, membership: OrganizationMembership
+) -> frozenset[str]:
+    """Role defaults ± explicit per-membership grants/revokes, deny-by-default (G49).
+
+    Resolved once at authentication and carried on the principal so route-level
+    ``require_capability`` checks never touch the database.
+    """
+    resolved = set(role_default_capabilities(membership.role))
+    overrides = session.scalars(
+        select(MembershipPermission).where(
+            MembershipPermission.membership_id == membership.id
+        )
+    )
+    for override in overrides:
+        if override.granted:
+            resolved.add(override.capability)
+        else:
+            resolved.discard(override.capability)
+    return frozenset(resolved)
+
+
 def _principal(
-    user: User, membership: OrganizationMembership, auth_session: AuthSession
+    session: Session,
+    user: User,
+    membership: OrganizationMembership,
+    auth_session: AuthSession,
 ) -> PrincipalContext:
     return PrincipalContext(
         user_id=user.id,
@@ -137,6 +164,7 @@ def _principal(
         organization_id=membership.organization_id,
         membership_id=membership.id,
         role=membership.role,
+        capabilities=tuple(sorted(effective_capabilities(session, membership))),
     )
 
 
@@ -176,7 +204,7 @@ def _token_response(
         {
             "access_token": raw_token,
             "expires_at": auth_session.expires_at,
-            "principal": _principal(user, membership, auth_session),
+            "principal": _principal(session, user, membership, auth_session),
             "memberships": membership_payloads(session, user.id),
         }
     )
@@ -311,7 +339,7 @@ def authenticate_token(session: Session, raw_token: str) -> PrincipalContext:
     if _aware(auth_session.last_seen_at) < now - timedelta(minutes=5):
         auth_session.last_seen_at = now
         session.commit()
-    return _principal(user, membership, auth_session)
+    return _principal(session, user, membership, auth_session)
 
 
 def current_identity(session: Session, principal: PrincipalContext) -> dict[str, Any]:

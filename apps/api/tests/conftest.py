@@ -13,7 +13,14 @@ os.environ["AUTO_SEED"] = "false"
 os.environ["SCHEMA_MANAGEMENT"] = "create_all"
 os.environ["AUTH_REQUIRED"] = "false"
 os.environ["AUTH_ALLOW_REGISTRATION"] = "true"
-os.environ["DATABASE_URL"] = f"sqlite:///{_tmp}/test.sqlite3"
+# Default to a throwaway SQLite file so the suite runs offline with zero setup.
+# CI's Postgres matrix (G36) points DEALLENS_TEST_DATABASE_URL at a Postgres service
+# container so the identical suite also runs on real Postgres; honor it when present.
+# A dedicated var (not a bare DATABASE_URL) keeps a stray local DATABASE_URL from ever
+# redirecting the test run at a real database.
+os.environ["DATABASE_URL"] = os.environ.get(
+    "DEALLENS_TEST_DATABASE_URL", f"sqlite:///{_tmp}/test.sqlite3"
+)
 os.environ.setdefault(
     "SEC_USER_AGENT", "DealLens Diligence Lab (portfolio test) contact@example.com"
 )
