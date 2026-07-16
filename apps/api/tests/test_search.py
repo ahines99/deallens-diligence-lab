@@ -200,7 +200,8 @@ def test_search_endpoint_contract(client):
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["query"] == "churn"
-    assert body["engine"] == "sqlite_like"
+    # Whichever backend the app database uses (SQLite locally, Postgres in the CI matrix).
+    assert body["engine"] in ("sqlite_like", "postgresql_tsvector")
     assert body["total"] >= 2
     assert {hit["artifact_type"] for hit in body["hits"]} >= {"evidence", "memo"}
     for hit in body["hits"]:
