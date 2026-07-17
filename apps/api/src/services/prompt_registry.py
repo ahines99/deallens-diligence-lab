@@ -45,12 +45,68 @@ class PromptSpec:
         return hashlib.sha256(self.template.encode("utf-8")).hexdigest()
 
 
+# G52 — LLM-first risk extraction. The model proposes findings with exact supporting quotes; a
+# deterministic verifier accepts a finding ONLY if its quote appears verbatim in the source chunk,
+# so nothing the model writes enters the governed record unverified.
+RISK_EXTRACTION_VERSION = "risk-extract-v1"
+RISK_EXTRACTION_PROMPT = (
+    "You are a private-equity diligence analyst reading excerpts of a company's SEC filing. "
+    "Identify concrete risk findings. Respond with ONLY a JSON object of the form "
+    '{"findings": [{"category": "<one of the allowed category slugs>", '
+    '"title": "<short headline>", "finding": "<one-paragraph analyst summary>", '
+    '"severity_score": <integer 1-10>, "quote": "<EXACT verbatim sentence(s) copied from the '
+    'excerpt that support the finding>", "chunk_index": <integer index of the excerpt the quote '
+    "came from>}]}. The quote MUST be copied character-for-character from one excerpt — do not "
+    "paraphrase, correct, abbreviate, or merge text. Only report risks the excerpts explicitly "
+    "support; if the excerpts support none, return {\"findings\": []}. Never speculate and never "
+    "present output as investment advice."
+)
+
+# G53 — schema-constrained claim extraction from data-room documents. Same verbatim-quote
+# discipline: the claimed value must appear inside the quoted span or the claim is rejected.
+CLAIM_EXTRACTION_VERSION = "claim-extract-v1"
+CLAIM_EXTRACTION_PROMPT = (
+    "You are extracting structured, checkable claims from excerpts of a private deal document. "
+    "Respond with ONLY a JSON object of the form "
+    '{"claims": [{"category": "<one of the allowed category slugs>", '
+    '"field_name": "<snake_case field>", "value_text": "<the claimed value as written>", '
+    '"value_number": <number or null>, "unit": "<unit or null>", "period": "<period or null>", '
+    '"quote": "<EXACT verbatim sentence(s) copied from the excerpt containing the value>", '
+    '"chunk_index": <integer index of the excerpt>}]}. '
+    "The quote MUST be copied character-for-character from one excerpt and MUST contain the "
+    "claimed value. Extract only what the text states explicitly; return {\"claims\": []} when "
+    "nothing qualifies. Never estimate or infer values."
+)
+
+# G54 — cross-corpus grounded synthesis: like G04's prompt, plus provenance discipline — the
+# rewrite must keep public-filing and confidential-data-room content attributable.
+CROSS_CORPUS_SYNTHESIS_VERSION = "cross-corpus-synth-v1"
+CROSS_CORPUS_SYNTHESIS_PROMPT = (
+    "You are an investment diligence writer. You are given verbatim extracts, each labeled either "
+    "[PUBLIC] (from SEC filings) or [CONFIDENTIAL] (from a private deal data room). Rewrite them "
+    "into a single fluent, well-organized answer. You may reorder and connect sentences for "
+    "readability, but you MUST NOT introduce any fact, figure, percentage, date, or citation that "
+    "is not already present in the extracts, and you MUST NOT drop or alter any number. Never "
+    "attribute confidential information to a public source or vice versa. Do not add commentary, "
+    "speculation, or investment advice."
+)
+
+
 # The registered prompts. The memo-polish entry reuses the invariant SYSTEM_PROMPT/PROMPT_VERSION
 # defined in ``llm_provider`` so there is a single source of truth for the editor prompt.
 _REGISTRY: dict[str, PromptSpec] = {
     "memo_polish": PromptSpec("memo_polish", MEMO_POLISH_VERSION, MEMO_POLISH_PROMPT),
     "grounded_synthesis": PromptSpec(
         "grounded_synthesis", GROUNDED_SYNTHESIS_VERSION, GROUNDED_SYNTHESIS_PROMPT
+    ),
+    "risk_extraction": PromptSpec(
+        "risk_extraction", RISK_EXTRACTION_VERSION, RISK_EXTRACTION_PROMPT
+    ),
+    "claim_extraction": PromptSpec(
+        "claim_extraction", CLAIM_EXTRACTION_VERSION, CLAIM_EXTRACTION_PROMPT
+    ),
+    "cross_corpus_synthesis": PromptSpec(
+        "cross_corpus_synthesis", CROSS_CORPUS_SYNTHESIS_VERSION, CROSS_CORPUS_SYNTHESIS_PROMPT
     ),
 }
 

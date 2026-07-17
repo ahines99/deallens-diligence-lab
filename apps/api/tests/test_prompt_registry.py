@@ -28,7 +28,13 @@ def test_grounded_synthesis_prompt_is_registered_and_hashed():
     assert man["prompt_hash"] == hashlib.sha256(
         prompt_registry.GROUNDED_SYNTHESIS_PROMPT.encode("utf-8")
     ).hexdigest()
-    assert set(prompt_registry.prompt_ids()) == {"memo_polish", "grounded_synthesis"}
+    assert set(prompt_registry.prompt_ids()) == {
+        "memo_polish",
+        "grounded_synthesis",
+        "risk_extraction",
+        "claim_extraction",
+        "cross_corpus_synthesis",
+    }
 
 
 def test_changing_the_template_text_changes_the_hash():
@@ -116,5 +122,11 @@ def test_deterministic_run_has_no_prompt_manifest(client):
 def test_prompt_manifest_endpoint_lists_registered_prompts(client):
     body = client.get("/api/model-ops/prompt-manifest").json()
     ids = {p["prompt_id"] for p in body["prompts"]}
-    assert ids == {"memo_polish", "grounded_synthesis"}
+    assert ids == {
+        "memo_polish",
+        "grounded_synthesis",
+        "risk_extraction",
+        "claim_extraction",
+        "cross_corpus_synthesis",
+    }
     assert all(len(p["prompt_hash"]) == 64 for p in body["prompts"])

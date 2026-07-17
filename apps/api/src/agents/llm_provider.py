@@ -1,14 +1,27 @@
 """Optional live LLM provider (Anthropic Messages API by default).
 
-Only used when LLM_MODE=live and LLM_API_KEY is set. It re-voices deterministic, already-grounded
-narrative — it never invents numbers or citations. Any failure falls back to the deterministic text.
-This is a wired extension point; the default demo path is fully deterministic.
+Only used when LLM_MODE=live and LLM_API_KEY is set. Two call shapes:
+
+* ``polish_markdown`` — re-voices deterministic, already-grounded narrative; never invents
+  numbers or citations; any failure falls back to the deterministic text.
+* ``structured_llm`` (G51) — a schema-constrained JSON call for the Wave 5 LLM-first paths
+  (risk extraction, claim extraction). It shares the exact consent/mock/no-key gating, binds a
+  registry-hashed prompt manifest, and FAILS CLOSED: malformed JSON, schema mismatch, or any
+  provider error returns ``data=None`` with a machine-readable reason so callers fall back to
+  their deterministic path. Verification of the *content* (verbatim quotes, locators) is the
+  caller's job — this layer only guarantees shape and provenance.
+
+The default demo path is fully deterministic.
 """
 from __future__ import annotations
 
+import json
+import re
 from dataclasses import dataclass
+from typing import TypeVar
 
 import httpx
+from pydantic import BaseModel, ValidationError
 
 from src.agents.citation_auditor import CitationAuditor
 from src.config import settings
@@ -84,6 +97,71 @@ class LiveProvider:
             resp = client.post(f"{self.base_url}/chat/completions", headers=headers, json=payload)
             resp.raise_for_status()
             return resp.json()["choices"][0]["message"]["content"]
+
+
+SchemaT = TypeVar("SchemaT", bound=BaseModel)
+
+# LLMs often wrap JSON in code fences or preamble; extract the outermost object non-greedily.
+_JSON_OBJECT = re.compile(r"\{.*\}", re.DOTALL)
+
+
+@dataclass(frozen=True)
+class StructuredOutcome:
+    """Result of a schema-constrained LLM call (G51), with honest provenance.
+
+    ``data`` is a validated schema instance only when a live call returned parseable,
+    schema-conforming JSON; every other path (no consent, mock, no key, malformed JSON, schema
+    mismatch, provider error) carries ``data=None`` and a machine-readable ``reason`` so callers
+    fall back to their deterministic engine and can record why.
+    """
+
+    data: BaseModel | None
+    applied: bool
+    reason: str
+    manifest: dict[str, str] | None = None
+
+
+def structured_llm(
+    prompt_id: str,
+    user_prompt: str,
+    schema: type[SchemaT],
+    *,
+    external_allowed: bool = False,
+    provider_factory=None,
+) -> StructuredOutcome:
+    """Run a registry-versioned prompt expecting a ``schema``-shaped JSON object, failing closed.
+
+    ``prompt_id`` must be registered in ``prompt_registry`` (raises ``UnknownPrompt`` otherwise —
+    a programmer error, not a runtime condition). ``provider_factory`` exists for tests.
+    """
+    # Lazy import avoids a module-load cycle (prompt_registry imports this module).
+    from src.services import prompt_registry
+
+    spec = prompt_registry.get(prompt_id)
+    if not external_allowed:
+        return StructuredOutcome(None, False, "no_consent")
+    if settings.is_mock:
+        return StructuredOutcome(None, False, "mock")
+    if not settings.llm_api_key:
+        return StructuredOutcome(None, False, "no_api_key")
+    try:
+        provider = (provider_factory or LiveProvider)()
+        raw = provider.complete(spec.template, user_prompt)
+        manifest = prompt_registry.manifest(prompt_id, model=provider.model)
+    except Exception:
+        return StructuredOutcome(None, False, "error")
+    match = _JSON_OBJECT.search(raw or "")
+    if match is None:
+        return StructuredOutcome(None, False, "parse_error", manifest)
+    try:
+        payload = json.loads(match.group(0))
+    except json.JSONDecodeError:
+        return StructuredOutcome(None, False, "parse_error", manifest)
+    try:
+        data = schema.model_validate(payload)
+    except ValidationError:
+        return StructuredOutcome(None, False, "schema_mismatch", manifest)
+    return StructuredOutcome(data, True, "applied", manifest)
 
 
 def polish_markdown(markdown: str, *, external_allowed: bool = False) -> PolishOutcome:
