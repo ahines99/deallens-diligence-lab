@@ -118,12 +118,15 @@ def sync_from_audit(session: Session, organization_id: str) -> list[Notification
             body=body,
             source_audit_event_id=event.id,
         )
-        session.add(notification)
         try:
-            session.flush()
+            # A savepoint contains a losing concurrent mapping to THIS row only. A full
+            # session.rollback() here discarded every earlier flushed-but-uncommitted row in
+            # the batch while still reporting them in `created` — phantom counts.
+            with session.begin_nested():
+                session.add(notification)
+                session.flush()
         except IntegrityError:
             # A concurrent consumer already mapped this event; the unique constraint held.
-            session.rollback()
             continue
         created.append(notification)
     session.commit()

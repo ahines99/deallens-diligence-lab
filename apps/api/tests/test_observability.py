@@ -93,6 +93,31 @@ def test_path_template_collapses_identifiers():
     assert path_template("/api/health") == "/api/health"
 
 
+def test_unmatched_paths_collapse_into_one_metric_series(client):
+    """Audit M11: scanner/typo paths must not mint unbounded label values on public /metrics."""
+    for probe in ("/wp-admin/setup.php", "/api/nonexistent/thing", "/api/workspaces/x/nope"):
+        assert client.get(probe).status_code == 404
+    body = client.get("/metrics").text
+    assert "wp-admin" not in body
+    assert "nonexistent" not in body
+    assert _counter_value(body, method="GET", path="/unmatched", status="404") >= 3
+    # Registered routes still resolve to their route template, including user-chosen params
+    # a shape heuristic would leak (short non-id-like case keys).
+    client.get("/api/workspaces/someworkspace/underwriting/cases/base/versions")
+    body = client.get("/metrics").text
+    assert "/api/workspaces/{id}/underwriting/cases/{id}/versions" in body
+    assert "cases/base" not in body
+
+
+def test_guard_early_returns_carry_cors_headers(client, monkeypatch):
+    """Audit M10: CORS must wrap the auth/tenant guards, or the web app cannot read a 401."""
+    monkeypatch.setattr(settings, "auth_required", True)
+    origin = settings.cors_origin_list[0]
+    denied = client.get("/api/workspaces", headers={"Origin": origin})
+    assert denied.status_code == 401
+    assert denied.headers.get("access-control-allow-origin") == origin
+
+
 def test_json_log_formatter_emits_parseable_json_with_request_id():
     formatter = JsonLogFormatter()
     token = set_request_id("req-123")

@@ -81,14 +81,18 @@ export function AccountMappingForm({ workspaceId }: { workspaceId: string }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false); const [error, setError] = useState<string | null>(null);
   async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault(); const data = new FormData(event.currentTarget); setBusy(true); setError(null);
+    event.preventDefault();
+    // React nulls event.currentTarget once the handler yields, so grab the form before awaiting —
+    // resetting via the event after the await threw and reported a successful save as a failure.
+    const form = event.currentTarget;
+    const data = new FormData(form); setBusy(true); setError(null);
     try {
       await api.createAccountMapping(workspaceId, {
         raw_account: String(data.get("raw_account") || ""), canonical_account: String(data.get("canonical_account") || ""),
         statement: String(data.get("statement")) as "income_statement" | "balance_sheet" | "cash_flow" | "kpi",
         sign_multiplier: Number(data.get("sign_multiplier") || 1), approved_by: actor.actorId ?? "unattributed", created_by: actor.actorId ?? "unattributed",
       }, actor);
-      event.currentTarget.reset(); router.refresh();
+      form.reset(); router.refresh();
     } catch (e) { setError(message(e)); } finally { setBusy(false); }
   }
   return (

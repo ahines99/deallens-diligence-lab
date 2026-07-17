@@ -258,20 +258,26 @@ def test_activist_stakes_classifies_submissions_into_timeline(monkeypatch):
     from src.services import edgar_client, ownership_service
 
     _target(monkeypatch)
+    # Mix the legacy "SC 13D/G" labels with the post-2024 "SCHEDULE 13D/G" spellings EDGAR
+    # now emits — missing the new ones read as a false-clean "no activist stakes" (audit M4).
     monkeypatch.setattr(
         edgar_client, "get_submissions",
         lambda *_a, **_k: {"filings": {"recent": {
-            "form": ["SC 13D", "8-K", "SC 13G/A", "10-Q"],
-            "filingDate": ["2026-06-01", "2026-05-01", "2026-04-01", "2026-03-01"],
-            "accessionNumber": ["acc-d", "acc-x", "acc-g", "acc-q"],
-            "primaryDocument": ["d.htm", "x.htm", "g.htm", "q.htm"],
+            "form": ["SCHEDULE 13D", "SC 13D", "8-K", "SC 13G/A", "SCHEDULE 13G/A", "10-Q"],
+            "filingDate": [
+                "2026-07-01", "2026-06-01", "2026-05-01", "2026-04-01", "2026-03-15", "2026-03-01",
+            ],
+            "accessionNumber": ["acc-sched-d", "acc-d", "acc-x", "acc-g", "acc-sched-g", "acc-q"],
+            "primaryDocument": ["sd.htm", "d.htm", "x.htm", "g.htm", "sg.htm", "q.htm"],
         }}},
     )
     # Keep the test offline: no real cover-page fetches.
     monkeypatch.setattr(edgar_client, "fetch_document_text", lambda url: "")
     out = ownership_service.activist_stakes(object(), "ws1")
     assert out["source_status"] == "available"
-    assert [e["type"] for e in out["events"]] == ["13D", "13G"]
+    assert [e["type"] for e in out["events"]] == ["13D", "13D", "13G", "13G"]
     assert out["events"][0]["is_activist"] is True
-    assert out["events"][1]["is_activist"] is False
-    assert out["events"][1]["is_amendment"] is True
+    assert out["events"][0]["is_amendment"] is False
+    assert out["events"][2]["is_activist"] is False
+    assert out["events"][2]["is_amendment"] is True
+    assert out["events"][3]["is_amendment"] is True

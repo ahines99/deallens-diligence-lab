@@ -72,10 +72,12 @@ def _normalize_segment(segment: str) -> str:
 
 
 def path_template(path: str) -> str:
-    """Map a concrete request path to a low-cardinality template.
+    """Map a concrete request path to a low-cardinality template (shape heuristic).
 
     ``/api/workspaces/9f.../filings`` becomes ``/api/workspaces/{id}/filings`` and the
     ``/api/v1`` version alias is folded onto ``/api`` so both surfaces share one series.
+    Prefer :class:`PathTemplateMatcher` for metric labels — a shape heuristic cannot bound
+    arbitrary unmatched paths.
     """
     if path == "/api/v1":
         path = "/api"
@@ -85,6 +87,41 @@ def path_template(path: str) -> str:
         return path
     segments = path.split("/")
     return "/".join(_normalize_segment(seg) for seg in segments) or "/"
+
+
+class PathTemplateMatcher:
+    """Resolve request paths against the REGISTERED route table so labels stay bounded.
+
+    Shape heuristics can't bound arbitrary values (bot scans of /wp-admin.php, user-chosen
+    case keys): every unmatched path minted a fresh label series and the registry grew
+    without limit on a public endpoint. Matching against the actual routes yields exactly
+    one series per (method, template) plus a single ``/unmatched`` bucket for the rest.
+    """
+
+    UNMATCHED = "/unmatched"
+
+    def __init__(self, templates: list[str]) -> None:
+        # Indexed by segment count; most-specific first (fewest {id} wildcards).
+        self._by_length: dict[int, list[list[str]]] = {}
+        for template in dict.fromkeys(templates):
+            segments = template.split("/")
+            self._by_length.setdefault(len(segments), []).append(segments)
+        for candidates in self._by_length.values():
+            candidates.sort(key=lambda segs: (sum(seg == "{id}" for seg in segs), segs))
+
+    def resolve(self, path: str) -> str:
+        if path == "/api/v1":
+            path = "/api"
+        elif path.startswith("/api/v1/"):
+            path = "/api" + path[len("/api/v1"):]
+        segments = path.split("/")
+        for candidate in self._by_length.get(len(segments), ()):
+            if all(
+                pattern == "{id}" or pattern == segment
+                for pattern, segment in zip(candidate, segments)
+            ):
+                return "/".join(candidate)
+        return self.UNMATCHED
 
 
 # --- Metrics registry -------------------------------------------------------

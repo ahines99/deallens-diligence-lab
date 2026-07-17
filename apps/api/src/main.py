@@ -18,9 +18,9 @@ from src.config import settings
 from src.observability import (
     CONTENT_TYPE_LATEST,
     METRICS,
+    PathTemplateMatcher,
     configure_logging,
     new_request_id,
-    path_template,
     reset_request_id,
     set_request_id,
 )
@@ -102,14 +102,8 @@ app = FastAPI(
     ),
     lifespan=lifespan,
 )
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.cors_origin_list,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# NOTE: CORSMiddleware is registered at the BOTTOM of this module so it wraps every other
+# middleware — early returns from the auth/tenant/quota guards must still carry CORS headers.
 
 _WORKSPACE_PATH = re.compile(r"^/api/workspaces/([a-zA-Z0-9_-]+)")
 _PUBLIC_PATHS = {
@@ -409,7 +403,7 @@ async def identity_and_tenant_guard(request: Request, call_next):
                     return JSONResponse(status_code=exc.status_code, content={"detail": exc.message})
         elif supplied.startswith("dlk_"):
             # Scoped programmatic key (G38): resolves to a member principal carrying the key's
-            # granted scopes; still subject to the tenant guard and viewer/role rules below.
+            # granted scopes; the deny-by-default scope gate and tenant guard below apply.
             with SessionLocal() as session:
                 try:
                     request.state.principal = api_key_service.authenticate_api_key(session, supplied)
@@ -441,6 +435,23 @@ async def identity_and_tenant_guard(request: Request, call_next):
             status_code=403,
             content={"detail": "Viewer memberships are read-only"},
         )
+
+    # API-key principals are bounded by the scope catalog on EVERY route (deny-by-default),
+    # not just the handful carrying an explicit require_scope dependency. Scope resolution
+    # depends only on (method, path) — never on resource existence — so the 403 is not an
+    # existence oracle, and the tenant guard's cross-org 404 below still applies on top.
+    if principal is not None and principal.is_api_key and not is_public:
+        required = api_key_service.api_key_scope_for(request.method, path)
+        if required is None:
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "API keys cannot access this endpoint; use a user session"},
+            )
+        if not principal.has_scope(required):
+            return JSONResponse(
+                status_code=403,
+                content={"detail": f"API key is missing the required scope: {required}"},
+            )
 
     match = _WORKSPACE_PATH.match(path)
     if match:
@@ -490,19 +501,22 @@ async def versioned_api_alias(request: Request, call_next):
 
 
 # Starlette applies the LAST-registered middleware as the OUTERMOST layer, so metrics is
-# declared first and request-id second. Result (outermost -> inner):
-#   request_id -> metrics -> versioned_api_alias -> identity_and_tenant_guard -> CORS -> routes
-# request_id is outermost so every response (including early JSONResponses from the auth/
-# tenant guard) carries X-Request-ID and the correlation id is bound before anything logs.
-# Both are separate functions/decorators from the existing guards so additive middleware
-# (e.g. G39 quotas) composes without editing them.
+# declared first, request-id second, and CORS last (at module bottom). Result (outermost ->
+# inner):
+#   CORS -> request_id -> metrics -> versioned_api_alias -> identity_and_tenant_guard
+#        -> organization_quota_guard -> routes
+# CORS is outermost so every response — including early JSONResponses from the auth/tenant/
+# quota guards (401/403/404/429) — carries CORS headers and stays readable by the web app.
+# request_id wraps everything else so the correlation id is bound before anything logs.
 @app.middleware("http")
 async def metrics_middleware(request: Request, call_next):
-    """Record request count + latency per (method, path-template, status) for /metrics."""
+    """Record request count + latency per (method, registered-route-template, status)."""
     if request.url.path == "/metrics":
         return await call_next(request)
     start = time.perf_counter()
-    template = path_template(request.url.path)
+    # Resolve against the registered route table; anything else (bot scans, typos) collapses
+    # into one "/unmatched" series so a public scanner cannot mint unbounded label values.
+    template = ROUTE_TEMPLATES.resolve(request.url.path)
     try:
         response = await call_next(request)
     except Exception:
@@ -552,12 +566,35 @@ def health() -> dict:
     }
 
 
-for module in (
+_ROUTER_MODULES = (
     activity, workspaces, targets, sec, filings, comps, financials, risks, questions,
     memos, red_team, evidence, examples, governance, govcon, portfolio, notifications,
     forensics, valuation, feeds, signals, ownership, search,
     underwriting_data, underwriting_model, deal_workflow, deal_intelligence,
     integrations, identity, api_keys, model_ops, quotas, watchlist, workspace_bundle,
     collaboration, memo_redline, comments, share_links,
-):
+)
+for module in _ROUTER_MODULES:
     app.include_router(module.router)
+
+# The metrics label vocabulary: every registered route (params collapsed to {id}) plus the
+# app-level endpoints. Requests that match nothing become the single "/unmatched" series.
+_PARAM_SEGMENT = re.compile(r"\{[^}]+\}")
+ROUTE_TEMPLATES = PathTemplateMatcher(
+    [
+        _PARAM_SEGMENT.sub("{id}", route.path)
+        for module in _ROUTER_MODULES
+        for route in module.router.routes
+    ]
+    + ["/metrics", "/api/health", "/docs", "/docs/oauth2-redirect", "/redoc", "/openapi.json"]
+)
+
+# Registered LAST so it is the OUTERMOST layer: guard early-returns (401/403/404/429) must
+# carry CORS headers, or the web app cannot even read the status of a rejected request.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_origin_list,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)

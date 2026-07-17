@@ -57,6 +57,28 @@ def test_parse_summary_compensation_table_missing_value_stays_none():
     assert cfo["stock_awards"] == 3_000_000.0
 
 
+def test_parse_summary_compensation_table_skips_rowspan_year_rows():
+    """Audit M3: rowspan SCT layouts must not yield junk NEOs named "2023"/"2022"."""
+    html = """
+    <table>
+      <tr>
+        <th>Name and Principal Position</th><th>Year</th><th>Salary ($)</th>
+        <th>Bonus ($)</th><th>Stock Awards ($)</th><th>Total ($)</th>
+      </tr>
+      <tr>
+        <td rowspan="3">Jane Doe<br/>Chief Executive Officer</td><td>2024</td>
+        <td>$1,200,000</td><td>$500,000</td><td>$8,000,000</td><td>$9,700,000</td>
+      </tr>
+      <tr><td>2023</td><td>$1,100,000</td><td>$450,000</td><td>$7,000,000</td><td>$8,550,000</td></tr>
+      <tr><td>2022</td><td>$1,000,000</td><td>$400,000</td><td>$6,000,000</td><td>$7,400,000</td></tr>
+    </table>
+    """
+    rows = proxy_service.parse_summary_compensation_table(html)
+    assert [row["name"] for row in rows] == ["Jane Doe"]
+    assert rows[0]["salary"] == 1_200_000.0  # the most recent fiscal year row
+    assert rows[0]["total"] == 9_700_000.0
+
+
 def test_parse_summary_compensation_table_no_table_returns_empty():
     assert proxy_service.parse_summary_compensation_table("") == []
     assert proxy_service.parse_summary_compensation_table("<p>No comp table here.</p>") == []
@@ -170,6 +192,34 @@ def test_fetch_available_parses_comp_and_flags(monkeypatch):
     assert len(result["exec_comp"]) == 2
     staggered = next(f for f in result["red_flags"] if f["flag"] == "staggered_board")
     assert staggered["present"] is True
+
+
+def test_fetch_prefers_definitive_proxy_over_newer_defa14a_supplement(monkeypatch):
+    """Audit M3: a newer DEFA14A press-release supplement must not shadow the DEF 14A body."""
+    from src.services import edgar_client
+
+    def meta(form: str, filing_date: str, accession: str) -> edgar_client.FilingMeta:
+        return edgar_client.FilingMeta(
+            form=form,
+            filing_date=filing_date,
+            accession=accession,
+            primary_document="doc.htm",
+            primary_doc_url=f"https://sec.gov/{accession}.htm",
+            report_date=filing_date,
+        )
+
+    filings = [  # newest-first, as EDGAR submissions arrive
+        meta("DEFA14A", "2025-05-10", "acc-defa"),
+        meta("DEF 14A", "2025-04-01", "acc-def"),
+        meta("DEF 14A", "2024-04-02", "acc-def-prior"),
+    ]
+    monkeypatch.setattr(edgar_client, "recent_filings", lambda *a, **k: filings)
+    monkeypatch.setattr(edgar_client, "fetch_document_html", lambda url: _SCT_HTML)
+
+    result = proxy_service.fetch_proxy_governance("0000000000")
+    assert result["def14a_accession"] == "acc-def"
+    assert result["filing_date"] == "2025-04-01"
+    assert result["source_status"] == "available"
 
 
 def test_fetch_partial_when_comp_table_unparseable(monkeypatch):

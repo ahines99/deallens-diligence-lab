@@ -222,7 +222,13 @@ def _financial_quality(
     exceptions: list[FinancialImportException],
     adjustments: list[QoEAdjustment],
 ) -> dict[str, Any]:
-    mapped = sum(item.mapping_state == "mapped" and bool(item.canonical_account) for item in facts)
+    # Coverage counts every mapped_* state ("mapped", "mapped_explicit"), matching the import
+    # summary and the QoE bridge's `mapping_state LIKE 'mapped%'` filter — an exact "mapped"
+    # comparison silently excluded explicitly-mapped facts and disagreed with the bridge.
+    mapped = sum(
+        item.mapping_state.startswith("mapped") and bool(item.canonical_account)
+        for item in facts
+    )
     mapping_coverage = round(mapped / len(facts) * 100, 1) if facts else None
     passed = sum(item.status == "passed" for item in reconciliations)
     reconciliation_score = (
@@ -230,18 +236,35 @@ def _financial_quality(
     )
     open_exceptions = sum(item.state == "open" for item in exceptions)
 
+    # Base-fact selection mirrors get_qoe_bridge: mapped currency facts only, newest period,
+    # then newest fact as a deterministic tie-break. A bare max() over the unordered query
+    # result made reported_ebitda nondeterministic when two snapshots shared a period end.
     ebitda_facts = [
         item
         for item in facts
         if (item.canonical_account or "").strip().casefold() == "ebitda"
+        and item.mapping_state.startswith("mapped")
+        and item.unit == "currency"
+        and item.currency is not None
     ]
-    latest_ebitda = max(ebitda_facts, key=lambda item: item.period_end, default=None)
+    latest_ebitda = max(
+        ebitda_facts,
+        key=lambda item: (item.period_end, item.created_at, item.id),
+        default=None,
+    )
     reported_ebitda = _number(latest_ebitda.value) if latest_ebitda else None
     period = latest_ebitda.period_end if latest_ebitda else None
+    currency = latest_ebitda.currency if latest_ebitda else None
+    # Sponsor-adjusted EBITDA is the bridge's sponsor layer: approved management + sponsor
+    # adjustments in the bridge currency. Covenant-layer items are a different measure and
+    # previously inflated this number relative to GET .../underwriting/qoe-bridge.
     accepted_adjustments = [
         item
         for item in adjustments
-        if item.status == "approved" and (period is None or item.period_end == period)
+        if item.status == "approved"
+        and (period is None or item.period_end == period)
+        and (currency is None or item.currency == currency)
+        and item.bridge_layer in ("management", "sponsor")
     ]
     qoe_amount = sum((_number(item.amount) or 0.0) for item in accepted_adjustments)
     sponsor_ebitda = reported_ebitda + qoe_amount if reported_ebitda is not None else None

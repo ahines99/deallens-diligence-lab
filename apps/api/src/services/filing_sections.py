@@ -9,8 +9,10 @@ from __future__ import annotations
 import bisect
 import re
 
-# Item boundary patterns. Lookaheads avoid matching 1A/1B/10.. when we want "Item 1", etc.
-_P_ITEM1 = r"item\s*1(?![0-9ab])"
+# Item boundary patterns. Lookaheads avoid matching 1A/1B/1C/10.. when we want "Item 1", etc.
+# Excluding every trailing letter (not an explicit a/b list) keeps this correct as the SEC
+# adds subsections — Item 1C (Cybersecurity) is mandatory for fiscal years ending >= 2023-12-15.
+_P_ITEM1 = r"item\s*1(?![0-9a-z])"
 _P_ITEM1A = r"item\s*1a\b"
 _P_ITEM1B = r"item\s*1b\b"
 _P_ITEM2 = r"item\s*2(?![0-9])"

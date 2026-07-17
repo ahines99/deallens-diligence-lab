@@ -89,6 +89,49 @@ def test_sync_is_idempotent_and_dedups_by_source_event(db: Session):
     assert len(notification_service.list_notifications(db, organization.id)) == 3
 
 
+def test_mid_batch_conflict_keeps_earlier_rows_and_reports_truthfully(db: Session):
+    """Audit M7: a unique-constraint hit on one event must not discard earlier batch rows.
+
+    The old full-session rollback threw away every previously flushed notification in the
+    batch while still returning them in `created` — phantom counts and lost rows.
+    """
+    from sqlalchemy import select
+
+    from src.models.deal_workflow import WorkflowAuditEvent
+    from src.models.notification import Notification
+
+    _actor, organization, _fund, _deal = _setup(db)
+    events = db.scalars(
+        select(WorkflowAuditEvent)
+        .where(WorkflowAuditEvent.organization_id == organization.id)
+        .order_by(WorkflowAuditEvent.created_at, WorkflowAuditEvent.id)
+    ).all()
+    assert len(events) == 3
+
+    # Another consumer already holds the unique mapping for the MIDDLE event (the constraint
+    # is on source_audit_event_id alone; the org-scoped dedup subquery cannot see this row),
+    # so the sync only discovers the conflict at flush time — mid-batch.
+    _actor_b, org_b, _fund_b, _deal_b = _setup(db, suffix="conflict")
+    db.add(
+        Notification(
+            organization_id=org_b.id,
+            event_type=events[1].action,
+            entity_type=events[1].entity_type,
+            entity_id=events[1].entity_id,
+            title="pre-mapped elsewhere",
+            body="",
+            source_audit_event_id=events[1].id,
+        )
+    )
+    db.commit()
+
+    created = notification_service.sync_from_audit(db, organization.id)
+    assert {n.source_audit_event_id for n in created} == {events[0].id, events[2].id}
+    # What the sync reports matches what actually persisted.
+    persisted = notification_service.list_notifications(db, organization.id)
+    assert {n.source_audit_event_id for n in persisted} == {events[0].id, events[2].id}
+
+
 def test_mark_read_flips_read_at_and_unread_count(db: Session):
     _actor, organization, _fund, _deal = _setup(db)
     notification_service.sync_from_audit(db, organization.id)

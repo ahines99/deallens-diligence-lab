@@ -528,6 +528,23 @@ def test_underwriting_approval_requires_two_actors_and_bulk_delete_is_blocked(db
     db.rollback()
 
 
+def test_llm_rewrite_fails_closed_on_spelled_out_numeric_drift():
+    """Audit M2: invented quantities in WORD form are drift, same as digit drift."""
+    source = "Customer concentration is disclosed as a risk factor [EV-001]."
+    invented = (
+        "One in seven revenue dollars comes from the top five customers, a disclosed "
+        "risk factor [EV-001]."
+    )
+    audit = CitationAuditor.audit_rewrite(source, invented)
+    assert audit.faithful is False
+    assert "1" in audit.numeric_tokens_added
+    assert "7" in audit.numeric_tokens_added
+    assert "5" in audit.numeric_tokens_added
+    # Consistent word usage across source and candidate stays faithful.
+    worded = "Revenue concentration [EV-001] spans five customers."
+    assert CitationAuditor.audit_rewrite(worded, worded).faithful is True
+
+
 def test_llm_rewrite_fails_closed_on_numeric_or_citation_drift(
     monkeypatch: pytest.MonkeyPatch,
 ):

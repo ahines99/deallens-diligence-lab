@@ -128,6 +128,12 @@ def parse_summary_compensation_table(html: str) -> list[dict]:
             name, title = _split_name_title(cells[name_col])
             if not name:
                 continue
+            # Rowspan SCT layouts carry the NEO name only on the first fiscal-year row;
+            # continuation rows lead with the year and would otherwise parse as NEOs named
+            # "2023" with misaligned money columns. Keeping only named rows keeps the most
+            # recent year per NEO and never emits junk rows (wrong data beats no data never).
+            if re.fullmatch(r"(?:fy\s*|fiscal\s+)?(?:19|20)\d{2}", name, re.IGNORECASE):
+                continue
 
             def _val(field: str, cells_texts: list[str] = texts) -> float | None:
                 idx = col.get(field)
@@ -269,14 +275,19 @@ def fetch_proxy_governance(cik10: str) -> dict:
     Any EDGAR outage or missing proxy yields ``unavailable`` — never a false-clean empty parse.
     """
     try:
-        filings = edgar_client.recent_filings(cik10, DEF14A_FORMS, limit=1)
+        filings = edgar_client.recent_filings(cik10, DEF14A_FORMS, limit=12)
     except EdgarError as exc:
         logger.warning("proxy: submissions fetch failed for %s: %s", cik10, exc)
         return _unavailable("SEC EDGAR submissions are temporarily unavailable.")
     if not filings:
         return _unavailable("No DEF 14A proxy statement is on file for this company.")
 
-    proxy = filings[0]
+    # Prefer the proxy BODY over soliciting supplements: a DEFA14A (additional material,
+    # often a one-page press release) is frequently the newest 14A-family filing and would
+    # otherwise shadow the definitive DEF 14A / revised DEFR14A. Within the definitive
+    # forms, newest wins (recent_filings preserves EDGAR's newest-first order).
+    definitive = [ref for ref in filings if ref.form != "DEFA14A"]
+    proxy = definitive[0] if definitive else filings[0]
     try:
         html = edgar_client.fetch_document_html(proxy.primary_doc_url)
     except EdgarError as exc:

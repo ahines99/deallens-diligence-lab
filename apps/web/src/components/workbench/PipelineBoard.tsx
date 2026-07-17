@@ -44,6 +44,18 @@ export function PipelineBoard() {
 function DealCard({ deal, onChange }: { deal: Deal; onChange: () => Promise<void> }) {
   const { actor } = useActor();
   const [busy, setBusy] = useState(false);
-  async function transition(to: DealStage) { if (to === deal.stage) return; setBusy(true); try { await api.transitionDeal(deal.id, to, "Pipeline stage updated", { ...actor, organizationId: deal.organization_id }); await onChange(); } finally { setBusy(false); } }
-  return <article className="rounded border border-line bg-panel p-3 shadow-xs"><div className="flex items-start justify-between gap-2"><span className="font-mono text-2xs font-semibold text-accent">{deal.code}</span><Badge tone={stageTone(deal.stage)}>{deal.status}</Badge></div><h3 className="mt-1.5 font-sans text-sm font-semibold leading-snug text-ink">{deal.target_company}</h3><p className="mt-1 line-clamp-2 text-2xs leading-relaxed text-muted">{deal.summary || "No deal summary yet."}</p><div className="mt-3 flex items-end justify-between gap-2"><div className="text-2xs text-faint">{deal.ic_date ? `IC ${deal.ic_date}` : "IC date not set"}</div>{deal.workspace_id && <Link href={`/workspaces/${deal.workspace_id}`} className="text-2xs font-semibold text-accent">Open →</Link>}</div><label className="mt-2 block"><span className="sr-only">Change stage</span><select disabled={busy} value={deal.stage} onChange={(e) => void transition(e.target.value as DealStage)} className="w-full rounded border border-line bg-panel2 px-2 py-1.5 text-2xs text-muted focus:border-accent focus:outline-none">{STAGES.map((x) => <option key={x} value={x}>{stageName(x)}</option>)}</select></label></article>;
+  const [error, setError] = useState<string | null>(null);
+  async function transition(to: DealStage) {
+    if (to === deal.stage) return;
+    setBusy(true); setError(null);
+    try {
+      await api.transitionDeal(deal.id, to, "Pipeline stage updated", { ...actor, organizationId: deal.organization_id });
+      await onChange();
+    } catch (e) {
+      // Stage-gate conflicts legitimately 409 here; the card must say why the move snapped back
+      // instead of silently reverting with an unhandled rejection.
+      setError(e instanceof ApiError ? e.message : "The stage could not be changed.");
+    } finally { setBusy(false); }
+  }
+  return <article className="rounded border border-line bg-panel p-3 shadow-xs"><div className="flex items-start justify-between gap-2"><span className="font-mono text-2xs font-semibold text-accent">{deal.code}</span><Badge tone={stageTone(deal.stage)}>{deal.status}</Badge></div><h3 className="mt-1.5 font-sans text-sm font-semibold leading-snug text-ink">{deal.target_company}</h3><p className="mt-1 line-clamp-2 text-2xs leading-relaxed text-muted">{deal.summary || "No deal summary yet."}</p><div className="mt-3 flex items-end justify-between gap-2"><div className="text-2xs text-faint">{deal.ic_date ? `IC ${deal.ic_date}` : "IC date not set"}</div>{deal.workspace_id && <Link href={`/workspaces/${deal.workspace_id}`} className="text-2xs font-semibold text-accent">Open →</Link>}</div><label className="mt-2 block"><span className="sr-only">Change stage</span><select disabled={busy} value={deal.stage} onChange={(e) => void transition(e.target.value as DealStage)} className="w-full rounded border border-line bg-panel2 px-2 py-1.5 text-2xs text-muted focus:border-accent focus:outline-none">{STAGES.map((x) => <option key={x} value={x}>{stageName(x)}</option>)}</select></label><InlineError message={error} /></article>;
 }

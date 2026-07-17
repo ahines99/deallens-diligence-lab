@@ -11,6 +11,7 @@ All figures are real. This is the defense/GovCon extension (Release 0.5).
 from __future__ import annotations
 
 import logging
+import re
 from datetime import date, datetime, timedelta, timezone
 
 import httpx
@@ -101,13 +102,27 @@ def _number(value) -> float | None:
         return None
 
 
+# Longest-first so "HOLDING CORP" is taken whole rather than as a bare "CORP".
+_CORPORATE_SUFFIX = re.compile(
+    r"[\s,.]+(?:HOLDING CORP|HOLDINGS INC|INCORPORATED|CORPORATION|HOLDINGS|HOLDING"
+    r"|COMPANY|CORP|INC|LLC|LTD|PLC|LP|CO)\.?$"
+)
+
+
 def clean_recipient(name: str) -> str:
-    """Trim corporate suffixes that hurt the fuzzy recipient search."""
-    n = name.upper()
-    for suffix in (" HOLDING CORP", " HOLDINGS INC", " HOLDINGS", " HOLDING", " CORPORATION",
-                   " CORP", ", INC.", " INC.", " INC", " CO.", " COMPANY", " PLC", " LP", " LLC"):
-        n = n.replace(suffix, "")
-    return n.strip().title()
+    """Trim TRAILING corporate suffixes that hurt the fuzzy recipient search.
+
+    Anchored at the end of the name with a required separator: naive substring replacement
+    corrupted names that merely contain a suffix ("MASTERCARD INCORPORATED" became
+    "Mastercardorporated", yielding a false "no federal contracts" profile).
+    """
+    n = name.upper().strip()
+    while True:
+        stripped = _CORPORATE_SUFFIX.sub("", n).strip()
+        if stripped == n or not stripped:
+            break
+        n = stripped
+    return n.title()
 
 
 def _parse_date(s: str | None) -> date | None:

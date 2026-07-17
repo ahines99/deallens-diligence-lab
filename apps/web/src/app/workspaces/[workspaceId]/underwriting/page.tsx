@@ -1,14 +1,15 @@
-import { api } from "@/lib/serverApi";
+import { api, loadOrUnavailable } from "@/lib/serverApi";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Callout } from "@/components/ui/Callout";
 import { UnderwritingWorkbench } from "@/components/workbench/UnderwritingWorkbench";
 
 export default async function UnderwritingPage({ params }: { params: Promise<{ workspaceId: string }> }) {
   const { workspaceId } = await params;
-  const cases = await api.getUnderwritingCases(workspaceId).catch(() => []);
+  const { data: cases, unavailable } = await loadOrUnavailable(api.getUnderwritingCases(workspaceId), []);
   return (
     <div className="space-y-6">
       <PageHeader eyebrow="Investment underwriting" title="Operating model, LBO & debt workbench" subtitle="Run an integrated five-year model across base, upside, and downside cases. Each saved case is immutable, reproducible, and independently reviewable." />
+      {unavailable && <Callout tone="warning" title="Saved cases unavailable">Saved underwriting cases could not be loaded from the API. This is a data outage, not an empty case list — retry once the service is reachable.</Callout>}
       <Callout tone="info" title="Model convention">Amounts use the case currency and rates use decimals in the calculation engine. The interface translates percentages for entry. Forecasts are monthly for 24 months and annual for years three through five.</Callout>
       <UnderwritingWorkbench workspaceId={workspaceId} cases={cases} />
     </div>

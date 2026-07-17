@@ -49,7 +49,12 @@ _MAX_STAKE_FETCH = 10  # cap live cover-page fetches for filer/percent extractio
 # 13F-HR (and its amendment/notice/combination variants) are the institutional-manager holdings forms.
 _THIRTEEN_F_FORMS = {"13F-HR", "13F-HR/A", "13F-CR", "13F-CR/A", "13F-NT", "13F-NT/A"}
 # Beneficial-ownership forms filed about a subject company. 13D = activist/control intent; 13G = passive.
-_STAKE_FORMS = {"SC 13D", "SC 13D/A", "SC 13G", "SC 13G/A"}
+# EDGAR relabeled these "SCHEDULE 13D"/"SCHEDULE 13G" in late 2024; both spellings appear in
+# submissions feeds, and missing the new ones reads as a false-clean "no activist stakes".
+_STAKE_FORMS = {
+    "SC 13D", "SC 13D/A", "SC 13G", "SC 13G/A",
+    "SCHEDULE 13D", "SCHEDULE 13D/A", "SCHEDULE 13G", "SCHEDULE 13G/A",
+}
 _STAKE_EVENT_LIMIT = 40
 
 

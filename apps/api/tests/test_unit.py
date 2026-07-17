@@ -130,6 +130,28 @@ def test_section_extraction():
     assert "Business (Item 1)" in secs
 
 
+def test_section_extraction_ignores_item_1c_cybersecurity():
+    """Item 1C (mandatory for FY >= 2023-12-15) must not be mistaken for Item 1 (audit H2)."""
+    text = (
+        "TABLE OF CONTENTS Item 1. Business 4 Item 1A. Risk Factors 20 "
+        "Item 1B. Unresolved Staff Comments 30 Item 1C. Cybersecurity 31 Item 7. MD&A 50 "
+        "Item 1. Business We are a software company that provides compliance tools to manufacturers. "
+        + ("filler business prose. " * 40)
+        + "Item 1A. Risk Factors We depend on large customers. " + ("risk prose. " * 40)
+        + "Item 1B. Unresolved Staff Comments None. "
+        + "Item 1C. Cybersecurity We maintain a cybersecurity risk management program overseen by "
+        "the audit committee. " + ("cybersecurity governance prose. " * 60)
+        + "Item 7. Management's Discussion and Analysis Revenue increased. "
+        + ("mdna prose. " * 40) + "Item 8. Financial Statements"
+    )
+    secs = extract_sections(text)
+    assert "Business (Item 1)" in secs
+    business = secs["Business (Item 1)"]
+    assert business.lower().startswith("item 1")
+    assert "compliance tools to manufacturers" in business
+    assert "cybersecurity risk management program" not in business
+
+
 def test_evidence_ref_allocation():
     # Create an empty (no-ticker, offline) workspace, then allocate refs.
     wid = client_create_empty()
@@ -176,6 +198,12 @@ def test_extract_trends():
 def test_usaspending_helpers():
     assert usaspending_service.clean_recipient("Leidos Holdings, Inc.") == "Leidos"
     assert usaspending_service.clean_recipient("BOOZ ALLEN HAMILTON HOLDING CORP") == "Booz Allen Hamilton"
+    # Audit M1: suffixes are stripped only at the END — names that merely contain one
+    # must survive intact ("Mastercardorporated" produced a false no-contracts profile).
+    assert usaspending_service.clean_recipient("MASTERCARD INCORPORATED") == "Mastercard"
+    assert usaspending_service.clean_recipient("Texaco") == "Texaco"
+    assert usaspending_service.clean_recipient("Coca-Cola Company") == "Coca-Cola"
+    assert usaspending_service.clean_recipient("Lockheed Martin Corporation") == "Lockheed Martin"
     assert usaspending_service._parse_date("2027-03-15") == datetime.date(2027, 3, 15)
     assert usaspending_service._parse_date(None) is None
 

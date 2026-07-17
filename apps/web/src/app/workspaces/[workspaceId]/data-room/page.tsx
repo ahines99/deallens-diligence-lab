@@ -1,6 +1,7 @@
-import { api } from "@/lib/serverApi";
+import { api, loadOrUnavailable } from "@/lib/serverApi";
 import { formatDate, titleCase } from "@/lib/formatting";
 import { Badge, type BadgeTone } from "@/components/ui/Badge";
+import { Callout } from "@/components/ui/Callout";
 import { Card } from "@/components/ui/Card";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { DataTable } from "@/components/ui/Table";
@@ -12,10 +13,13 @@ const amount = (value: number | string | null) => value === null ? "—" : Numbe
 
 export default async function DataRoomPage({ params }: { params: Promise<{ workspaceId: string }> }) {
   const { workspaceId: id } = await params;
-  const [overview, sources, mappings, exceptions, reconciliations, facts] = await Promise.all([
-    api.getWorkspace(id), api.getSources(id).catch(() => []), api.getAccountMappings(id).catch(() => []),
-    api.getImportExceptions(id).catch(() => []), api.getReconciliations(id).catch(() => []), api.getFinancialFacts(id, 100).catch(() => []),
+  const [overview, sourcesLoad, mappingsLoad, exceptionsLoad, reconciliationsLoad, factsLoad] = await Promise.all([
+    api.getWorkspace(id), loadOrUnavailable(api.getSources(id), []), loadOrUnavailable(api.getAccountMappings(id), []),
+    loadOrUnavailable(api.getImportExceptions(id), []), loadOrUnavailable(api.getReconciliations(id), []), loadOrUnavailable(api.getFinancialFacts(id, 100), []),
   ]);
+  const sources = sourcesLoad.data, mappings = mappingsLoad.data, exceptions = exceptionsLoad.data,
+    reconciliations = reconciliationsLoad.data, facts = factsLoad.data;
+  const unavailable = [sourcesLoad, mappingsLoad, exceptionsLoad, reconciliationsLoad, factsLoad].some((x) => x.unavailable);
   const openExceptions = exceptions.filter((x) => x.state === "open");
   const readySources = sources.filter((x) => x.status === "ready");
   const mappedFacts = facts.filter((x) => x.canonical_account);
@@ -24,6 +28,8 @@ export default async function DataRoomPage({ params }: { params: Promise<{ works
   return (
     <div className="space-y-6">
       <PageHeader eyebrow="Underwriting data" title="Data room & financial normalization" subtitle="Create a private target, seal each source version, map management accounts, and resolve reconciliation exceptions before numbers flow into the model." />
+
+      {unavailable && <Callout tone="warning" title="Data-room records unavailable">Some data-room records could not be loaded from the API. The zeroes and empty panels below reflect a data outage, not a clean data room — retry once the service is reachable.</Callout>}
 
       {!overview.target && <Card eyebrow="Private target" title="Create the underwriting target" subtitle="A ticker is not required. User-entered information remains explicitly labeled as such."><PrivateTargetForm workspaceId={id} /></Card>}
 

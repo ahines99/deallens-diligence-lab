@@ -210,6 +210,44 @@ def test_unfunded_maturity_is_reported_as_debt_service_default():
     assert result.projection[0].liquidity_shortfall > 0
 
 
+def test_liquidity_deficit_carries_forward_as_negative_cash():
+    """An unfunded shortfall must not be written off period to period (audit H1)."""
+    data = sample_assumptions().model_dump(mode="json")
+    # Burn cash hard: thin margins, heavy capex, no revolver headroom.
+    data["projection"]["default_drivers"].update(
+        {"ebitda_margin": 0.02, "capex_percent_revenue": 0.30}
+    )
+    data["debt_tranches"][0]["commitment"] = 10.0
+    result = service.run_underwriting(UnderwritingAssumptions.model_validate(data))
+    ending_cash = [period.ending_cash for period in result.projection]
+    assert min(ending_cash) < 0, "deficit should surface as negative cash, not be floored at 0"
+    # The deficit must carry into the next period's opening balance, not reset.
+    first_negative = next(i for i, cash in enumerate(ending_cash) if cash < 0)
+    if first_negative + 1 < len(result.projection):
+        assert result.projection[first_negative + 1].beginning_cash == pytest.approx(
+            ending_cash[first_negative], abs=0.01
+        )
+    # Downside liquidity is now allowed to go negative, so the portfolio watchlist
+    # threshold (minimum_liquidity < 0) is reachable for engine-produced cases.
+    assert result.summary.minimum_liquidity < 0
+    # Net debt must reflect the deficit rather than a flattering zero-cash floor.
+    worst = min(range(len(ending_cash)), key=lambda i: ending_cash[i])
+    period = result.projection[worst]
+    assert period.net_debt == pytest.approx(period.total_debt - period.ending_cash, abs=0.02)
+
+
+def test_mid_year_convention_applies_to_terminal_value():
+    """Terminal value gets the same mid-year timing as the explicit flows (audit M6)."""
+    mid = service.run_underwriting(sample_assumptions())
+    data = sample_assumptions().model_dump(mode="json")
+    data["valuation"]["mid_year_convention"] = False
+    year_end = service.run_underwriting(UnderwritingAssumptions.model_validate(data))
+    assert mid.dcf.terminal_value == pytest.approx(year_end.dcf.terminal_value, abs=0.01)
+    assert mid.dcf.pv_terminal_value == pytest.approx(
+        year_end.dcf.pv_terminal_value * 1.10**0.5, abs=0.01
+    )
+
+
 def test_dcf_returns_and_xirr_are_economic_not_placeholder_values():
     result = service.run_underwriting(sample_assumptions())
     assert result.dcf.enterprise_value > 0

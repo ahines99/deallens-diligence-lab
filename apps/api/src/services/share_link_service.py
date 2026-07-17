@@ -43,6 +43,12 @@ def _aware(value: datetime) -> datetime:
     return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
 
 
+def _utc(value: datetime) -> datetime:
+    """Normalize to UTC before persisting. SQLite stores wall-time and drops the offset, so
+    an un-normalized "+05:00" expiry would silently shift by hours relative to Postgres."""
+    return _aware(value).astimezone(timezone.utc)
+
+
 def _digest(raw_token: str) -> str:
     return hashlib.sha256(raw_token.encode("ascii")).hexdigest()
 
@@ -69,7 +75,7 @@ def create_share_link(
         created_by_user_id=None if principal.is_api_key else principal.user_id,
         scope=data.scope,
         label=data.label,
-        expires_at=data.expires_at,
+        expires_at=_utc(data.expires_at) if data.expires_at is not None else None,
     )
     session.add(record)
     session.commit()

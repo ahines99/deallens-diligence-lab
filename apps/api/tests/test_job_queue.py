@@ -233,6 +233,47 @@ def test_workspace_build_completes_through_job_queue(client, offline_build):
     assert job.last_error is None
 
 
+def test_heartbeat_never_commits_shared_build_session_work(db_session, offline_build, monkeypatch):
+    """Audit H4: a liveness ping mid-build must not make half-done analysis work durable.
+
+    The handler's heartbeat previously committed the SHARED build session, so e.g. the
+    projection deletes at the start of run_full_analysis became permanent before the LLM
+    stages ran — a later stage failure then left a workspace with no risks/memo/plan.
+    The beat now runs on its own session: uncommitted work stays invisible to other
+    sessions and rolls back cleanly when a later stage fails.
+    """
+    from src.db.session import SessionLocal
+    from src.models.workspace import Workspace
+
+    ws = workspace_service.create_workspace(
+        db_session,
+        workspace_service.WorkspaceCreate(ticker="FAKE", deal_type="public_equity"),
+        defer_build=True,
+    )
+    job = job_service.enqueue(db_session, "workspace_build", {"workspace_id": ws.id})
+    observed: dict = {}
+
+    def build_fails_after_beat(session, workspace_id, heartbeat=None):
+        # Stand-in for the projection-replacement stage: uncommitted work on the shared
+        # session, a liveness ping, then a failing later stage.
+        session.get(Workspace, workspace_id).build_error = "uncommitted-probe"
+        heartbeat()
+        with SessionLocal() as other:
+            observed["mutation_after_beat"] = other.get(Workspace, workspace_id).build_error
+            observed["beat_landed"] = other.get(BackgroundJob, job.id).heartbeat_at is not None
+        raise RuntimeError("stage failed after heartbeat")
+
+    monkeypatch.setattr(workspace_service, "run_build", build_fails_after_beat)
+    job_service.drain_job(db_session, job.id)
+
+    assert observed["mutation_after_beat"] is None, "heartbeat committed the shared session"
+    assert observed["beat_landed"]
+    db_session.expire_all()
+    # The failed attempt rolled back completely and the job is queued for retry.
+    assert db_session.get(Workspace, ws.id).build_error is None
+    assert db_session.get(BackgroundJob, job.id).status == "failed"
+
+
 def test_worker_batch_processes_queued_jobs(db_session, monkeypatch):
     """The worker entry point recovers stale claims, then drains due jobs."""
     from src.workers import jobs as jobs_worker

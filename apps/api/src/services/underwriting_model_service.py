@@ -432,7 +432,9 @@ def _apply_debt_service(
         total_sweep += swept
 
     shortfall = max(0.0, minimum_cash - cash)
-    return max(0.0, cash), total_draw, total_paid, total_sweep, shortfall
+    # Ending cash may be negative: an unfunded deficit must carry into the next period
+    # (and depress net debt, exit equity, and minimum liquidity) rather than be written off.
+    return cash, total_draw, total_paid, total_sweep, shortfall
 
 
 def _covenant_results(
@@ -670,7 +672,12 @@ def calculate_dcf(assumptions: UnderwritingAssumptions, projection: list[dict]) 
     final_period = projection[-1]
     terminal_fcff = final_period["fcff"] / final_period["year_fraction"]
     terminal_value = terminal_fcff * (1.0 + terminal_growth) / (discount_rate - terminal_growth)
-    pv_terminal = terminal_value / (1.0 + discount_rate) ** elapsed
+    # Under the mid-year convention the perpetuity's annual flows also arrive mid-year,
+    # so the terminal value discounts over half a year less than the explicit horizon.
+    terminal_exponent = (
+        elapsed - 0.5 if assumptions.valuation.mid_year_convention else elapsed
+    )
+    pv_terminal = terminal_value / (1.0 + discount_rate) ** terminal_exponent
     enterprise_value = pv_explicit + pv_terminal
     net_debt = assumptions.historical.existing_debt - assumptions.historical.starting_cash
     equity_value = enterprise_value - net_debt

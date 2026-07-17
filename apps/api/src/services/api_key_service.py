@@ -9,6 +9,7 @@ what the key may do.
 from __future__ import annotations
 
 import hashlib
+import re
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -42,9 +43,55 @@ API_SCOPES: tuple[str, ...] = (
     "write:underwriting",
 )
 
+# Central route -> scope policy. The identity middleware consults this for EVERY request an
+# API-key principal makes: the resolved scope must have been granted, and a route no scope
+# covers is denied outright (deny-by-default). Keys are thereby bounded to the catalog above
+# instead of inheriting the member role's full write surface. Method decides read vs write:
+# POST-shaped calculators under /underwriting need write:underwriting like any other mutation.
+_SCOPE_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+_P_UNDERWRITING = re.compile(r"^/api/workspaces/[^/]+/underwriting(?:/|$)")
+_P_FILINGS_READ = re.compile(
+    r"^(?:/api/sec/search$"
+    r"|/api/workspaces/[^/]+/(?:filings(?:/|$)|filing-watch$|events$|themes$))"
+)
+_P_FINANCIALS_READ = re.compile(
+    r"^/api/workspaces/[^/]+/"
+    r"(?:financials(?:/|$)|forensics$|valuation$|comps(?:/|$)|debt-maturities$"
+    r"|benchmark$|trends$|macro$)"
+)
+# Share-link listings expose live capability tokens, so no read scope covers them.
+_P_READ_EXCLUDED = re.compile(r"^/api/workspaces/[^/]+/share-links$")
+_P_WORKSPACES_READ = re.compile(r"^/api/workspaces(?:/|$)")
+
+
+def api_key_scope_for(method: str, path: str) -> str | None:
+    """The scope an API-key principal needs for ``method path``, or ``None`` if uncovered.
+
+    ``None`` means the route is outside the key surface entirely — the middleware rejects the
+    call regardless of which scopes the key was granted. Human sessions and trusted-service
+    principals never consult this policy.
+    """
+    if _P_UNDERWRITING.match(path):
+        return "read:underwriting" if method in _SCOPE_SAFE_METHODS else "write:underwriting"
+    if method not in _SCOPE_SAFE_METHODS or _P_READ_EXCLUDED.match(path):
+        return None
+    if _P_FILINGS_READ.match(path):
+        return "read:filings"
+    if _P_FINANCIALS_READ.match(path):
+        return "read:financials"
+    if _P_WORKSPACES_READ.match(path):
+        return "read:workspaces"
+    return None
+
 
 def _aware(value: datetime) -> datetime:
     return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+
+def _utc(value: datetime) -> datetime:
+    """Normalize to UTC before persisting. SQLite stores wall-time and drops the offset, so
+    an un-normalized "+05:00" expiry would silently shift by hours relative to Postgres."""
+    return _aware(value).astimezone(timezone.utc)
 
 
 def _digest(raw_key: str) -> str:
@@ -73,7 +120,7 @@ def create_api_key(
         key_prefix=raw_key[:_VISIBLE_PREFIX_LEN],
         key_digest=_digest(raw_key),
         scopes=list(data.scopes),
-        expires_at=data.expires_at,
+        expires_at=_utc(data.expires_at) if data.expires_at is not None else None,
     )
     session.add(record)
     session.commit()

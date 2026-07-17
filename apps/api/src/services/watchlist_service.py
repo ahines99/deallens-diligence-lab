@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from src.db.base import now_utc
@@ -200,6 +200,31 @@ def _emit_new_filing_event(
     return event
 
 
+def _claim_cursor(
+    session: Session, entry: WatchlistEntry, expected: str | None, newest: str
+) -> bool:
+    """Atomically advance ``last_seen_accession`` from ``expected`` to ``newest``.
+
+    Returns False when a concurrent refresher already moved the cursor — the caller must not
+    emit for this entry. Mirrors the job queue's atomic-claim rowcount pattern.
+    """
+    result = session.execute(
+        update(WatchlistEntry)
+        .where(
+            WatchlistEntry.id == entry.id,
+            WatchlistEntry.last_seen_accession.is_(None)
+            if expected is None
+            else WatchlistEntry.last_seen_accession == expected,
+        )
+        .values(last_seen_accession=newest)
+        .execution_options(synchronize_session=False)
+    )
+    # The raw UPDATE bypassed the identity map; expire the attribute so a later refresh on
+    # this session reloads the claimed cursor instead of a stale value.
+    session.expire(entry, ["last_seen_accession"])
+    return result.rowcount == 1
+
+
 def refresh_watchlist(session: Session, organization_id: str) -> dict:
     """Check every active entry for this org, emitting one outbox event per new filing.
 
@@ -227,16 +252,23 @@ def refresh_watchlist(session: Session, organization_id: str) -> dict:
         newest = recent[0]["accession"]
         if entry.last_seen_accession is None:
             # First observation: establish the baseline without flooding the existing backlog.
-            entry.last_seen_accession = newest
+            # Compare-and-set so a concurrent first refresh cannot clobber the baseline.
+            _claim_cursor(session, entry, None, newest)
             continue
         detected = _detect_new(recent, entry.last_seen_accession)
+        if not detected:
+            continue
+        # Advance the cursor with a compare-and-set BEFORE emitting: a plain read-modify-write
+        # let two concurrent refreshes (worker + user-triggered) detect the same filings and
+        # emit duplicate webhook/notification events. The loser of the claim emits nothing,
+        # and a failure while emitting rolls the claim back with the same transaction.
+        if not _claim_cursor(session, entry, entry.last_seen_accession, newest):
+            continue
         # Emit oldest-first so the audit/notification stream reads chronologically.
         for filing in reversed(detected):
             _emit_new_filing_event(session, entry, filing)
             new_filings += 1
             emitted += 1
-        if detected:
-            entry.last_seen_accession = newest
     session.commit()
     return {
         "organization_id": organization_id,

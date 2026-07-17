@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import uuid
-from datetime import timedelta
+from datetime import timedelta, timezone
 
 import pytest
 
@@ -190,6 +190,45 @@ def test_scope_enforcement_matrix(client):
     ).status_code == 201
 
 
+def test_api_keys_are_bounded_to_the_scope_catalog_on_every_route(client):
+    """A key must not inherit the member role's write surface on unannotated routes (audit H3)."""
+    owner = _register(client, "apikey-bounded")
+    org = owner["principal"]["organization_id"]
+    workspace_id = _create_workspace(client, owner["access_token"])
+    key = _mint(client, owner["access_token"], org, ["read:filings"])["plaintext_key"]
+
+    # The granted family works.
+    assert client.get(
+        f"/api/workspaces/{workspace_id}/filings", headers=_bearer(key)
+    ).status_code == 200
+    # Reads outside the granted family require their own scope.
+    denied_read = client.get(f"/api/workspaces/{workspace_id}", headers=_bearer(key))
+    assert denied_read.status_code == 403
+    assert "read:workspaces" in denied_read.json()["detail"]
+    # Member-role writes the old middleware waved through are denied outright now:
+    # workspace creation, share-link minting, comments, and org-level deal listings.
+    attempts = [
+        client.post(
+            "/api/workspaces",
+            json={"name": "Sneaky", "deal_type": "buyout"},
+            headers=_bearer(key),
+        ),
+        client.post(
+            f"/api/workspaces/{workspace_id}/share-links", json={}, headers=_bearer(key)
+        ),
+        client.get(f"/api/workspaces/{workspace_id}/share-links", headers=_bearer(key)),
+        client.post("/api/comments", json={}, headers=_bearer(key)),
+        client.get(f"/api/organizations/{org}/deals", headers=_bearer(key)),
+        client.post(f"/api/organizations/{org}/api-keys", json={}, headers=_bearer(key)),
+    ]
+    assert [response.status_code for response in attempts] == [403] * len(attempts)
+
+    # The same surfaces keep working for the human session that minted the key.
+    assert client.get(
+        f"/api/workspaces/{workspace_id}", headers=_bearer(owner["access_token"])
+    ).status_code == 200
+
+
 def test_api_key_cannot_reach_other_organizations_workspace(client):
     org_a = _register(client, "apikey-tenant-a")
     org_b = _register(client, "apikey-tenant-b")
@@ -210,6 +249,39 @@ def test_api_key_cannot_reach_other_organizations_workspace(client):
         json=_case_payload(),
         headers=_bearer(a_key),
     ).status_code == 404
+
+
+def test_expiry_offsets_are_normalized_to_utc_before_storage(client):
+    """Audit M8: a "-05:00" expiry must not be stored as wall-time on SQLite.
+
+    Un-normalized, a key expiring 2h from now expressed in UTC-5 was persisted as its wall
+    clock (now-3h), reinterpreted as UTC on read, and rejected as already expired — and the
+    same key behaved differently on Postgres, which normalizes to UTC.
+    """
+    owner = _register(client, "apikey-utc")
+    org = owner["principal"]["organization_id"]
+    workspace_id = _create_workspace(client, owner["access_token"])
+    expires_utc = now_utc() + timedelta(hours=2)
+    payload = {
+        "name": "tz key",
+        "scopes": ["read:underwriting"],
+        "expires_at": expires_utc.astimezone(timezone(timedelta(hours=-5))).isoformat(),
+    }
+    created = client.post(
+        f"/api/organizations/{org}/api-keys", json=payload, headers=_bearer(owner["access_token"])
+    )
+    assert created.status_code == 201, created.text
+
+    # The key is valid right now, on every database backend.
+    assert client.get(
+        f"/api/workspaces/{workspace_id}/underwriting/cases",
+        headers=_bearer(created.json()["plaintext_key"]),
+    ).status_code == 200
+    with SessionLocal() as session:
+        stored = session.get(ApiKey, created.json()["api_key"]["id"]).expires_at
+        if stored.tzinfo is None:
+            stored = stored.replace(tzinfo=timezone.utc)
+        assert abs((stored - expires_utc).total_seconds()) < 60
 
 
 def test_admin_gate_and_scope_validation_on_key_administration(client):

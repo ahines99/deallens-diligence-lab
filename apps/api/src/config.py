@@ -32,8 +32,6 @@ class Settings(BaseSettings):
     schema_management: str = "migrate"
 
     # --- API ---------------------------------------------------------------
-    api_host: str = "0.0.0.0"
-    api_port: int = 8000
     # Emit structured single-line JSON logs (with request_id) for prod log pipelines.
     # Off by default so local/dev keeps human-readable logs.
     json_logs: bool = False

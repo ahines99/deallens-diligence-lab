@@ -12,6 +12,7 @@ from collections.abc import Callable
 from datetime import timedelta
 
 from sqlalchemy import or_, select, update
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from src.db.base import new_uuid, now_utc
@@ -28,21 +29,32 @@ JobHandler = Callable[[Session, BackgroundJob], None]
 
 
 def _handle_workspace_build(session: Session, job: BackgroundJob) -> None:
+    from src.db.session import SessionLocal
     from src.services import workspace_service
 
     workspace_id = (job.payload or {}).get("workspace_id")
     if not workspace_id:
         raise ValueError("workspace_build job payload requires 'workspace_id'")
+
+    def _beat() -> None:
+        # Liveness pings run on their OWN session: `heartbeat` commits, and committing the
+        # shared build session mid-stage would flush the projection deletes and break
+        # run_full_analysis's atomic-projection contract (a later stage failure could then
+        # leave the workspace with no risks/memo/plan). Best-effort: a skipped beat (e.g.
+        # SQLite write-lock contention with the build transaction) only risks a benign
+        # stale-recovery re-run, never a poisoned build.
+        try:
+            with SessionLocal() as beat_session:
+                heartbeat(beat_session, job.id, job.claimed_by or "")
+        except OperationalError:
+            logger.debug("Heartbeat skipped for job %s (transient DB contention)", job.id)
+
     # Two failure domains are deliberately separated. Build-level failures (bad ticker, EDGAR
     # down) are caught inside run_build and land on Workspace.build_status="failed", which the
     # user retries via POST /build/retry — the JOB legitimately "succeeded" because it ran the
     # build to completion. Infrastructure failures (a raised exception: DB lock, process crash)
     # propagate out of the handler and drive the job's retry/backoff and stale recovery.
-    workspace_service.run_build(
-        session,
-        workspace_id,
-        heartbeat=lambda: heartbeat(session, job.id, job.claimed_by or ""),
-    )
+    workspace_service.run_build(session, workspace_id, heartbeat=_beat)
 
 
 def _reconcile_workspace_build(session: Session, workspace_id: str, reason: str) -> None:
@@ -162,7 +174,11 @@ def claim_next(
 
 
 def heartbeat(session: Session, job_id: str, worker_id: str) -> bool:
-    """Refresh the liveness timestamp; returns False if this worker no longer owns the job."""
+    """Refresh the liveness timestamp; returns False if this worker no longer owns the job.
+
+    Commits ``session`` — never pass a session holding uncommitted handler work; use a
+    dedicated short-lived session when beating from inside a job handler.
+    """
     result = session.execute(
         update(BackgroundJob)
         .where(

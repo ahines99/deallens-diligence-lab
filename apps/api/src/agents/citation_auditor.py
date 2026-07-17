@@ -13,6 +13,25 @@ NUMERIC_PATTERN = re.compile(
     r"(?:\s*(?:%|x|bps|basis\s+points|thousand|million|billion|k|m|mm|bn))?",
     re.IGNORECASE,
 )
+# Spelled-out cardinalities. A rewrite inventing "one in seven revenue dollars" or "top five
+# customers" is numeric drift exactly like digit drift, so the rewrite gate normalizes these
+# into the digit token space. Deliberately conservative: an innocuous added "one" fails closed
+# to the deterministic text, which is the safe direction for a faithfulness guard.
+NUMBER_WORD_PATTERN = re.compile(
+    r"\b(zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen"
+    r"|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty"
+    r"|sixty|seventy|eighty|ninety|hundred|thousand|dozen|million|billion|trillion)s?\b",
+    re.IGNORECASE,
+)
+_NUMBER_WORD_VALUES = {
+    "zero": "0", "one": "1", "two": "2", "three": "3", "four": "4", "five": "5",
+    "six": "6", "seven": "7", "eight": "8", "nine": "9", "ten": "10", "eleven": "11",
+    "twelve": "12", "thirteen": "13", "fourteen": "14", "fifteen": "15", "sixteen": "16",
+    "seventeen": "17", "eighteen": "18", "nineteen": "19", "twenty": "20", "thirty": "30",
+    "forty": "40", "fifty": "50", "sixty": "60", "seventy": "70", "eighty": "80",
+    "ninety": "90", "hundred": "100", "thousand": "1000", "dozen": "12",
+    "million": "million", "billion": "billion", "trillion": "trillion",
+}
 
 
 @dataclass(frozen=True)
@@ -52,17 +71,30 @@ class CitationAuditor(BaseAgent):
         return Counter(values)
 
     @classmethod
+    def extract_quantity_tokens(cls, text: str) -> Counter[str]:
+        """Digit tokens plus spelled-out cardinalities normalized into the same token space.
+
+        Used by the rewrite gate: without this, only digit-form drift was caught and an LLM
+        re-voicing could invent quantities in word form without tripping the audit.
+        """
+        tokens = cls.extract_numeric_tokens(text)
+        without_refs = EV_REF_PATTERN.sub("", text or "")
+        for match in NUMBER_WORD_PATTERN.finditer(without_refs):
+            tokens[_NUMBER_WORD_VALUES[match.group(1).casefold()]] += 1
+        return tokens
+
+    @classmethod
     def citation_numeric_context(cls, text: str) -> list[tuple[str, tuple[str, ...]]]:
-        """Bind each citation occurrence to numeric tokens in its sentence/line."""
+        """Bind each citation occurrence to quantity tokens in its sentence/line."""
         contexts: list[tuple[str, tuple[str, ...]]] = []
         for segment in re.split(r"(?<=[.!?])\s+|\n+", text or ""):
-            numbers = tuple(sorted(cls.extract_numeric_tokens(segment).elements()))
+            numbers = tuple(sorted(cls.extract_quantity_tokens(segment).elements()))
             contexts.extend((ref, numbers) for ref in cls.extract_ref_sequence(segment))
         return contexts
 
     @classmethod
     def audit_rewrite(cls, source: str, candidate: str) -> FaithfulnessAudit:
-        """Fail closed when a rewrite changes citation order/count or any numeric token."""
+        """Fail closed when a rewrite changes citation order/count or any quantity token."""
         if not candidate or not candidate.strip():
             return FaithfulnessAudit(
                 faithful=False,
@@ -78,8 +110,8 @@ class CitationAuditor(BaseAgent):
         citation_context_changed = (
             cls.citation_numeric_context(source) != cls.citation_numeric_context(candidate)
         )
-        source_numbers = cls.extract_numeric_tokens(source)
-        candidate_numbers = cls.extract_numeric_tokens(candidate)
+        source_numbers = cls.extract_quantity_tokens(source)
+        candidate_numbers = cls.extract_quantity_tokens(candidate)
         added = tuple(sorted((candidate_numbers - source_numbers).elements()))
         removed = tuple(sorted((source_numbers - candidate_numbers).elements()))
         faithful = not citation_changed and not citation_context_changed and not added and not removed

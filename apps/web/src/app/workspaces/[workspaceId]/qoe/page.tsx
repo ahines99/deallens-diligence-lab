@@ -1,4 +1,4 @@
-import { api } from "@/lib/serverApi";
+import { api, loadOrUnavailable } from "@/lib/serverApi";
 import { formatDate, titleCase } from "@/lib/formatting";
 import { Badge, type BadgeTone } from "@/components/ui/Badge";
 import { Card } from "@/components/ui/Card";
@@ -13,7 +13,13 @@ const statusTone = (status: string): BadgeTone => status === "approved" ? "green
 
 export default async function QoEPage({ params }: { params: Promise<{ workspaceId: string }> }) {
   const { workspaceId: id } = await params;
-  const [adjustments, bridge] = await Promise.all([api.getQoEAdjustments(id).catch(() => []), api.getQoEBridge(id).catch(() => null)]);
+  const [adjustmentsLoad, bridgeLoad] = await Promise.all([
+    loadOrUnavailable(api.getQoEAdjustments(id), []),
+    loadOrUnavailable(api.getQoEBridge(id), null),
+  ]);
+  const adjustments = adjustmentsLoad.data;
+  const bridge = bridgeLoad.data;
+  const unavailable = adjustmentsLoad.unavailable || bridgeLoad.unavailable;
   const proposed = adjustments.filter((x) => x.status === "proposed").length;
   const currency = bridge?.currency ?? adjustments[0]?.currency ?? "USD";
 
@@ -29,8 +35,9 @@ export default async function QoEPage({ params }: { params: Promise<{ workspaceI
         <Metric label="Review queue" value={proposed} detail={`${adjustments.length - proposed} adjudicated`} tone={proposed ? "warning" : "positive"} />
       </MetricStrip>
 
+      {unavailable && <Callout tone="warning" title="QoE data unavailable">The QoE ledger and bridge could not be loaded from the API. The figures above reflect a data outage, not an empty ledger — retry once the service is reachable.</Callout>}
       {bridge?.warnings?.length ? <Callout tone="warning" title="Bridge controls">{bridge.warnings.join(" ")}</Callout> : null}
-      {!bridge && <Callout tone="muted" title="Bridge not ready">Import and map a reported EBITDA fact before constructing the bridge. Missing data remains incomplete rather than defaulting to zero.</Callout>}
+      {!bridge && !unavailable && <Callout tone="muted" title="Bridge not ready">Import and map a reported EBITDA fact before constructing the bridge. Missing data remains incomplete rather than defaulting to zero.</Callout>}
 
       <Card eyebrow="Adjustment intake" title="Propose an adjustment" subtitle="The amount is signed. Positive values increase EBITDA; negative values reduce it."><QoEAdjustmentForm workspaceId={id} /></Card>
 
