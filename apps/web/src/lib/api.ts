@@ -35,6 +35,7 @@ import type {
   CompSimilarity,
   RiskDiff,
   CrossCorpusQA,
+  ModelQuality,
   WorkspaceSearchResult,
   QuotaUsage,
   SignalsOverview,
@@ -421,8 +422,9 @@ export const api = {
     requestOrNull<CompSimilarity>(`/api/workspaces/${id}/comps/similarity`),
   getRiskDiff: (id: string) =>
     requestOrNull<RiskDiff>(`/api/workspaces/${id}/filings/risk-diff`),
-  crossCorpusQA: (id: string, question: string) =>
-    request<CrossCorpusQA>(`/api/workspaces/${id}/cross-corpus-qa`, { method: "POST", body: { question } }),
+  crossCorpusQA: (id: string, question: string, grounded = false) =>
+    request<CrossCorpusQA>(`/api/workspaces/${id}/cross-corpus-qa`, { method: "POST", body: { question, grounded } }),
+  getModelQuality: () => request<ModelQuality>(`/api/model-ops/quality`),
   searchWorkspace: (id: string, q: string) =>
     request<WorkspaceSearchResult>(`/api/workspaces/${id}/search?q=${encodeURIComponent(q)}`),
   getQuotaUsage: (org: string) =>

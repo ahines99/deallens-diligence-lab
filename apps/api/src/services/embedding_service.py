@@ -1,29 +1,34 @@
-"""Deterministic, dependency-free local text embedding.
+"""Local text embedding facade: feature hashing by default, optional local neural model (G55).
 
-This is a **feature-hashing** embedding: each document is decomposed into lexical features
-(word unigrams, word bigrams, and character 3-grams), and every feature is hashed — with a
-stable cryptographic hash, not Python's salted ``hash()`` — into a fixed-dimension float
+The default is a **feature-hashing** embedding: each document is decomposed into lexical
+features (word unigrams, word bigrams, and character 3-grams), and every feature is hashed —
+with a stable cryptographic hash, not Python's salted ``hash()`` — into a fixed-dimension float
 vector using the signed hashing trick. The vector is L2-normalized, so a cosine similarity is
 just a dot product. It is pure Python and needs no model download, no API key, and no network,
 which keeps the project's determinism invariant intact: identical text always yields the byte-
-identical vector, offline and across processes.
+identical vector, offline and across processes. CI runs exclusively on this backend.
 
-Why not a real transformer? The hash-pinned ``requirements.lock`` and CI forbid heavyweight ML
-deps (torch/transformers/onnxruntime/sentence-transformers). A hashing embedding is a legitimate
-keyless embedding that gives semantic-ish vector similarity (subword character n-grams let it
-reward near-matches, not just exact tokens) while staying reproducible.
+G55 adds an operator opt-in neural backend (``EMBEDDINGS_BACKEND=onnx_local`` — see
+``onnx_embedding``): a local ONNX sentence model whose dependencies ship as an optional extra,
+so the base install stays dependency-stable. This module is the ROUTING facade: ``embed`` /
+``embed_chunk`` dispatch to the active backend, and ``active_method()`` is the single source of
+truth for the producer tag.
 
-Pluggable seam: the persisted vector lives on ``DocumentChunk.embedding`` and its producer tag
-on ``DocumentChunk.embedding_id``. Swapping in a real model later is a drop-in change — compute
-a different vector here, bump ``EMBED_METHOD``, and re-run the backfill worker. In production a
-pgvector-backed column would store the same vector and compute cosine in the database; the Python
-``cosine`` here is the SQLite-friendly equivalent and the interface is identical.
+Vector-space isolation: the persisted vector lives on ``DocumentChunk.embedding`` and its
+producer tag on ``DocumentChunk.embedding_id``. Vectors from different producers are NEVER
+comparable — retrieval filters stored vectors by the active method tag, and the backfill worker
+re-embeds rows whose tag is stale. In production a pgvector-backed column would store the same
+vector and compute cosine in the database; the Python ``cosine`` here is the SQLite-friendly
+equivalent and the interface is identical.
 """
 from __future__ import annotations
 
 import hashlib
 import math
 import re
+
+from src.config import settings
+from src.services import onnx_embedding
 
 # Fixed embedding dimensionality. 256 buckets keep hash collisions low for filing-sized chunks
 # while staying cheap to store as JSON and to dot-product in Python.
@@ -61,8 +66,8 @@ def _bucket_and_sign(feature: str) -> tuple[int, float]:
     return bucket, sign
 
 
-def embed(text: str) -> list[float]:
-    """Return the deterministic, L2-normalized embedding vector for ``text``.
+def _hash_embed(text: str) -> list[float]:
+    """The deterministic feature-hashing embedding (default backend and CI baseline).
 
     Empty / feature-less text yields the zero vector (norm 0); callers treat that as "no
     embedding signal" and fall back to lexical retrieval.
@@ -75,6 +80,57 @@ def embed(text: str) -> list[float]:
     if norm == 0.0:
         return vector
     return [value / norm for value in vector]
+
+
+def _use_onnx() -> bool:
+    if (settings.embeddings_backend or "").lower() != "onnx_local":
+        return False
+    ok, _note = onnx_embedding.available()
+    return ok
+
+
+def embed(text: str) -> list[float]:
+    """Embed ``text`` with the ACTIVE backend (neural when configured and usable, else hashing)."""
+    if _use_onnx():
+        return onnx_embedding.embed(text)
+    return _hash_embed(text)
+
+
+def active_method() -> str:
+    """The producer tag the active backend stamps on new vectors.
+
+    Retrieval and backfill both key on this, so a backend/model change can never silently
+    compare vectors from different spaces.
+    """
+    if _use_onnx():
+        return onnx_embedding.method() or EMBED_METHOD
+    return EMBED_METHOD
+
+
+def embedding_status() -> dict:
+    """Honest backend report: what is configured, what is actually active, and why they differ."""
+    configured = (settings.embeddings_backend or "feature_hashing").lower()
+    if configured == "onnx_local":
+        ok, note = onnx_embedding.available()
+        if ok:
+            return {
+                "backend_configured": "onnx_local",
+                "backend_active": "onnx_local",
+                "method": onnx_embedding.method(),
+                "note": None,
+            }
+        return {
+            "backend_configured": "onnx_local",
+            "backend_active": "feature_hashing",
+            "method": EMBED_METHOD,
+            "note": note,
+        }
+    return {
+        "backend_configured": "feature_hashing",
+        "backend_active": "feature_hashing",
+        "method": EMBED_METHOD,
+        "note": None,
+    }
 
 
 def cosine(a: list[float], b: list[float]) -> float:
@@ -97,4 +153,4 @@ def embed_chunk(chunk) -> None:
     """
     combined = f"{chunk.section or ''} {chunk.chunk_text or ''}"
     chunk.embedding = embed(combined)
-    chunk.embedding_id = EMBED_METHOD
+    chunk.embedding_id = active_method()

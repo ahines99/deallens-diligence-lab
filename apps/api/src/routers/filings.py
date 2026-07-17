@@ -55,4 +55,13 @@ def cross_corpus_qa(
         result = cross_corpus_qa_service.answer(session, workspace_id, payload.question)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if payload.grounded:
+        # G54: consent is resolved server-side, never from the request. A restricted
+        # classification or missing workspace consent keeps every quote — confidential ones
+        # above all — inside the box: the provider is never constructed.
+        ws = get_workspace_or_404(session, workspace_id)
+        external_allowed = ws.external_llm_allowed and ws.data_classification != "restricted"
+        result = cross_corpus_qa_service.maybe_synthesize_cross_corpus(
+            result, external_allowed=external_allowed
+        )
     return CrossCorpusQAOut.model_validate(result)

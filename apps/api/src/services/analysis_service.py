@@ -13,6 +13,7 @@ from collections.abc import Callable
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
+from src.agents import llm_risk_extractor
 from src.agents.diligence_lead import DiligenceLead
 from src.agents.ic_memo_writer import ICMemoWriter
 from src.agents.llm_provider import polish_markdown
@@ -175,6 +176,10 @@ def _run_full_analysis(
         )
         fin_refs["revenue_cagr"] = ev.ref
 
+    # External-LLM consent (G51 gating), computed once so the risk extractor (step 2) and the
+    # memo polish (step 5) apply identical consent + classification semantics.
+    external_llm_allowed = ws.external_llm_allowed and ws.data_classification != "restricted"
+
     # 2) Risk findings (text scan + financial flags + GovCon flags) with evidence.
     from src.services import govcon_service
 
@@ -182,8 +187,17 @@ def _run_full_analysis(
     taxonomy = loader.risk_taxonomy()
     chunks = _chunks(session, workspace_id)
     govcon = govcon_service.get_optional(session, workspace_id)
+    # G52: LLM-first text extraction with verbatim-span verification. Whenever the substrate does
+    # not apply (mock CI, no consent, no key, provider/parse failure) or nothing survives
+    # verification, the signal-phrase scanner serves the text findings — it remains the offline
+    # path and the recall baseline. Financial/GovCon/extension flags stay deterministic either way.
+    text_findings, risk_extraction = llm_risk_extractor.extract(
+        chunks, taxonomy, filing_ctx, external_allowed=external_llm_allowed
+    )
+    if risk_extraction["engine"] != "llm":
+        text_findings = analyst.scan_text(chunks, taxonomy, filing_ctx)
     raw_findings = (
-        analyst.scan_text(chunks, taxonomy, filing_ctx)
+        text_findings
         + analyst.financial_flags(target, filing_ctx)
         + analyst.govcon_flags(govcon)
     )
@@ -271,7 +285,6 @@ def _run_full_analysis(
 
     # 5) IC memo.
     beat()
-    external_llm_allowed = ws.external_llm_allowed and ws.data_classification != "restricted"
     memo_polish = polish_markdown(
         ICMemoWriter().draft(ctx), external_allowed=external_llm_allowed
     )
@@ -335,6 +348,9 @@ def _run_full_analysis(
         "artifacts": ["plan", "ic_memo", "bear_case"],
         # Explicit source status: extension failures are recorded, never inferred clean.
         "degraded_sources": degraded_sources,
+        # G52: which engine produced the text risk findings, with proposal/verification counts,
+        # so a sealed run is honest about whether an LLM proposed them and why (or why not).
+        "risk_extraction": risk_extraction,
         "llm_polished": llm_applied,
         "llm_polish_outcome": {
             "ic_memo": memo_polish.reason,

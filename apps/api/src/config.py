@@ -25,6 +25,15 @@ class Settings(BaseSettings):
     llm_base_url: str = "https://api.anthropic.com/v1"
     llm_model: str = "claude-opus-4-8"
 
+    # --- Embeddings (G55) ---------------------------------------------------
+    # "feature_hashing" (default): deterministic, dependency-free, keyless.
+    # "onnx_local": operator-supplied local ONNX sentence-embedding model; requires the
+    # optional extra (pip install .[embeddings]) and EMBEDDINGS_MODEL_PATH pointing at a
+    # directory containing model.onnx + tokenizer.json. Unavailability degrades explicitly
+    # to feature hashing — never a crash, never silently mixed vector spaces.
+    embeddings_backend: str = "feature_hashing"
+    embeddings_model_path: str = ""
+
     # --- Database ----------------------------------------------------------
     database_url: str = "sqlite:///./data/deallens.sqlite3"
     # "migrate" applies Alembic to head, "external" expects deployment orchestration to do so,
@@ -92,6 +101,10 @@ class Settings(BaseSettings):
     # test suite never trip them; quota-boundary tests monkeypatch the relevant limit down.
     org_request_quota_per_minute: int = 600
     org_build_quota_per_hour: int = 60
+    # G58 — hourly cap on requests that MAY trigger a live external LLM call (analysis build,
+    # grounded QA, LLM extraction). Bounds the public demo's API spend; 0 = unlimited. Only
+    # meaningful when LLM_MODE=live — mock deployments never call out regardless.
+    org_llm_quota_per_hour: int = 120
 
     # --- Blob storage (G40) --------------------------------------------------
     # Backend for opaque blobs (data-room docs, EDGAR cache): "local" (default, zero setup) or

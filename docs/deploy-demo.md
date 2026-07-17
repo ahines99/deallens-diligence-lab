@@ -59,3 +59,21 @@ not an engineering project. Everything below is optional and off by default.
   `find apps/api/data/cache -mtime +7 -delete` (or a smaller TTL) is plenty.
 - All demo endpoints respect `AUTH_REQUIRED=true`. Never run a public instance with
   `AUTH_REQUIRED=false`.
+
+## Enabling the live LLM on a public demo (G58)
+
+The demo is fully functional with `LLM_MODE=mock` (everything deterministic; no key, no spend).
+To showcase the LLM-first paths (grounded synthesis, LLM risk/claim extraction):
+
+- Set `LLM_MODE=live` and `LLM_API_KEY` in the api service environment. Only workspaces whose
+  owner enabled external LLM consent (and whose classification is not `restricted`) ever call
+  out — guests exploring deterministic features never spend a token.
+- `ORG_LLM_QUOTA_PER_HOUR` (default 120) caps LLM-capable requests per organization per hour;
+  the shared Demo Sandbox org therefore has a hard hourly ceiling on API spend. When the quota
+  trips, callers get a 429 that says deterministic endpoints remain available — nothing else
+  degrades. Set it low (e.g. 20) for a public box.
+- The quota is in-process like the other limiters: effective as-is on the single-process
+  compose deployment; add an edge limiter if you scale replicas.
+- Spend math: worst case ≈ quota × (one extraction + one polish call) per hour. With
+  conservative prompts (~30k input tokens) and a mid-tier model, 20/hour is a few dollars/day
+  ceiling; verify against current pricing before announcing the URL.

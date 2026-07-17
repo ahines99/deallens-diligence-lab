@@ -152,6 +152,55 @@ def test_unlimited_quota_never_throttles(client, monkeypatch):
         assert _build(client, token) == 201
 
 
+def test_llm_quota_meters_live_mode_only(client, monkeypatch):
+    """G58: LLM-capable routes are metered per org ONLY when LLM_MODE=live — a mock deployment
+    never calls out, so throttling its deterministic work would be pure loss. The cap bounds a
+    public demo's API spend while every deterministic endpoint stays available."""
+    monkeypatch.setattr(settings, "org_request_quota_per_minute", 0)
+    monkeypatch.setattr(settings, "org_build_quota_per_hour", 0)
+    monkeypatch.setattr(settings, "org_llm_quota_per_hour", 1)
+    _org_quota_limiter.clear()
+
+    owner = _register(client, "llmquota")
+    token = owner["access_token"]
+    headers = _bearer(token)
+    workspace_id = client.post(
+        "/api/workspaces",
+        json={"name": "llm quota", "deal_type": "buyout"},
+        headers=headers,
+    ).json()["id"]
+
+    # Mock mode (the default): unmetered — repeated QA posts never 429 on the llm bucket.
+    for _ in range(3):
+        response = client.post(
+            f"/api/workspaces/{workspace_id}/qa",
+            json={"question": "What is the revenue concentration?"},
+            headers=headers,
+        )
+        assert response.status_code != 429
+
+    # Live mode: the 2nd LLM-capable request in the hour is throttled with Retry-After...
+    monkeypatch.setattr(settings, "llm_mode", "live")
+    monkeypatch.setattr(settings, "llm_api_key", "test-key")
+    first = client.post(
+        f"/api/workspaces/{workspace_id}/qa",
+        json={"question": "What about margins?"},
+        headers=headers,
+    )
+    assert first.status_code != 429
+    second = client.post(
+        f"/api/workspaces/{workspace_id}/qa",
+        json={"question": "And leverage?"},
+        headers=headers,
+    )
+    assert second.status_code == 429
+    assert "deterministic endpoints remain available" in second.json()["detail"]
+    assert "Retry-After" in second.headers
+
+    # ...while non-LLM routes are untouched by the exhausted llm bucket.
+    assert client.get("/api/workspaces", headers=headers).status_code == 200
+
+
 def test_clearing_the_limiter_resets_usage(client, monkeypatch):
     """(e) clear() releases an exhausted quota so requests succeed again."""
     monkeypatch.setattr(settings, "org_request_quota_per_minute", 1)

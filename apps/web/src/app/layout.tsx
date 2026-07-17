@@ -83,6 +83,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               >
                 Portfolio
               </Link>
+              <Link
+                href="/quality"
+                className="flex-1 rounded px-2 py-1.5 text-center text-white/70 transition hover:bg-white/10 hover:text-white lg:flex-none lg:px-2.5"
+              >
+                Quality
+              </Link>
             </nav>
             <NotificationBell />
             <IdentitySwitcher />

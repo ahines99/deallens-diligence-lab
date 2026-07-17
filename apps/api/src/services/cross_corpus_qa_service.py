@@ -10,18 +10,23 @@ lexical evidence.
 
 Every citation is labeled with its provenance: ``corpus`` is ``"public_filing"`` or
 ``"confidential_dataroom"`` and ``confidential`` is the matching boolean, so downstream consumers
-can never mistake a confidential data-room quote for a public disclosure. This service stays in the
-extractive-cite-or-abstain lane — it never composes a fluent free-text answer (that is G04's job).
+can never mistake a confidential data-room quote for a public disclosure. The default answer stays
+in the extractive-cite-or-abstain lane; :func:`maybe_synthesize_cross_corpus` (G54) optionally
+re-voices it through the same fail-closed fluency gate as G04, preserving those labels.
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime, timezone
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from src.agents.citation_auditor import CitationAuditor
+from src.agents.llm_provider import LiveProvider
+from src.config import settings
 from src.models import DataRoomChunk, DataRoomDocument, Deal, Filing
-from src.services import retrieval_service, textkit
+from src.services import prompt_registry, retrieval_service, textkit
 from src.services.common import get_workspace_or_404
 
 ABSTENTION = (
@@ -234,3 +239,79 @@ def answer(session: Session, workspace_id: str, question: str, k: int = 6) -> di
             "abstention_reason": None,
         },
     }
+
+
+# --- G54: grounded synthesis over the cross-corpus answer, failing closed on drift ----------
+
+# Statuses whose answers carry real extracted evidence and are eligible for a fluency pass.
+_SYNTHESIS_ELIGIBLE = {"answered", "partial"}
+
+
+def _synthesis_user_prompt(result: dict) -> str:
+    """Compose the LLM instruction from the labeled extracts only (no outside context).
+
+    Each quote keeps its provenance label so the registered ``cross_corpus_synthesis`` system
+    prompt can hold the rewrite to its no-cross-attribution rule.
+    """
+    quotes = [
+        f"- [{'CONFIDENTIAL' if c.get('confidential') else 'PUBLIC'}] {c['quote']}"
+        for c in result.get("citations", [])
+        if c.get("quote")
+    ]
+    if not quotes:
+        quotes = [f"- [PUBLIC] {result.get('answer', '')}"]
+    labeled = "\n".join(quotes)
+    return (
+        "Rewrite the following labeled verbatim extracts into one fluent answer to the question "
+        f"{result.get('question', '')!r}. Preserve every number exactly and never attribute "
+        "[CONFIDENTIAL] content to a public source or vice versa.\n\n"
+        f"Extracts:\n{labeled}"
+    )
+
+
+def maybe_synthesize_cross_corpus(
+    result: dict,
+    *,
+    external_allowed: bool,
+    provider_factory: Callable[[], LiveProvider] = LiveProvider,
+) -> dict:
+    """Optionally re-voice ``result``'s extractive answer for fluency, failing closed on drift.
+
+    The G04 discipline applied to the cross-corpus lane: eligible only when the answer carries
+    real evidence (abstentions are never sent to an LLM), gated on consent/mock/no-key, audited
+    by :class:`CitationAuditor` against the extractive answer, and falling back on any drift or
+    provider failure. The ``citations`` list — including every public/confidential label and
+    provenance block — is passed through untouched in every path.
+    """
+    if result.get("status") not in _SYNTHESIS_ELIGIBLE:
+        return {**result, "grounded": {"applied": False, "reason": "not_eligible"}}
+    if not external_allowed:
+        return {**result, "grounded": {"applied": False, "reason": "no_consent"}}
+    if settings.is_mock:
+        return {**result, "grounded": {"applied": False, "reason": "mock"}}
+    if not settings.llm_api_key:
+        return {**result, "grounded": {"applied": False, "reason": "no_api_key"}}
+
+    extractive_answer = result.get("answer", "")
+    try:
+        provider = provider_factory()
+        candidate = provider.complete(
+            prompt_registry.get("cross_corpus_synthesis").template,
+            _synthesis_user_prompt(result),
+        )
+        audit = CitationAuditor.audit_rewrite(extractive_answer, candidate)
+        man = prompt_registry.manifest("cross_corpus_synthesis", model=provider.model)
+        if audit.faithful:
+            return {
+                **result,
+                "answer": candidate,
+                "method": f"{result.get('method', METHOD)}+grounded_llm",
+                "grounded": {"applied": True, "reason": "applied", "manifest": man},
+            }
+        return {
+            **result,
+            "grounded": {"applied": False, "reason": "audit_rejected", "manifest": man},
+        }
+    except Exception:
+        # Any provider/parse failure falls back to the deterministic extractive answer.
+        return {**result, "grounded": {"applied": False, "reason": "error"}}

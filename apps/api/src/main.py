@@ -268,7 +268,17 @@ _org_quota_limiter = _OrgQuotaLimiter()
 
 # Bucket -> window (seconds). Limits are read from settings at request time so a monkeypatched
 # limit takes effect without rebuilding anything (mirrors how the demo limiter reads settings).
-_ORG_QUOTA_WINDOWS: dict[str, float] = {"requests": 60.0, "builds": 3600.0}
+_ORG_QUOTA_WINDOWS: dict[str, float] = {"requests": 60.0, "builds": 3600.0, "llm": 3600.0}
+
+# G58 — routes that MAY trigger a live external LLM call (analysis build with polish/extraction,
+# grounded QA passes, deal-room extraction). Counted only when LLM_MODE=live: a mock deployment
+# never calls out, so metering it would throttle free deterministic work for nothing.
+_LLM_CAPABLE_PATHS = re.compile(
+    r"^/api/(?:"
+    r"workspaces/[a-zA-Z0-9_-]+/(?:risks/generate|qa|cross-corpus-qa)"
+    r"|deals/[a-zA-Z0-9_-]+/intelligence/extractions"
+    r")$"
+)
 
 
 def _org_quota_limit(bucket: str) -> int:
@@ -276,6 +286,8 @@ def _org_quota_limit(bucket: str) -> int:
         return settings.org_request_quota_per_minute
     if bucket == "builds":
         return settings.org_build_quota_per_hour
+    if bucket == "llm":
+        return settings.org_llm_quota_per_hour
     return 0
 
 
@@ -365,6 +377,28 @@ async def organization_quota_guard(request: Request, call_next):
                 status_code=429,
                 content={
                     "detail": "Organization build quota exceeded for this hour; retry later"
+                },
+                headers={"Retry-After": str(retry_after)},
+            )
+    if (
+        not settings.is_mock
+        and request.method == "POST"
+        and _LLM_CAPABLE_PATHS.match(request.url.path)
+    ):
+        retry_after = _org_quota_limiter.check(
+            organization_id,
+            "llm",
+            limit=settings.org_llm_quota_per_hour,
+            window_seconds=_ORG_QUOTA_WINDOWS["llm"],
+        )
+        if retry_after is not None:
+            return JSONResponse(
+                status_code=429,
+                content={
+                    "detail": (
+                        "Organization LLM quota exceeded for this hour; deterministic "
+                        "endpoints remain available"
+                    )
                 },
                 headers={"Retry-After": str(retry_after)},
             )

@@ -94,12 +94,18 @@ def retrieve(session: Session, workspace_id: str, query: str, k: int = 5) -> lis
 
 
 def workspace_has_embeddings(session: Session, workspace_id: str) -> bool:
-    """True when at least one chunk in the workspace has a stored embedding vector."""
+    """True when at least one chunk has a stored vector from the ACTIVE embedding method.
+
+    Vectors from a different producer (a previous backend or model — G55) are not comparable
+    with the active method's query vector, so they must not enable the hybrid path; the backfill
+    worker refreshes them.
+    """
     hit = session.scalar(
         select(DocumentChunk.id)
         .where(
             DocumentChunk.workspace_id == workspace_id,
             DocumentChunk.embedding.is_not(None),
+            DocumentChunk.embedding_id == embedding_service.active_method(),
         )
         .limit(1)
     )
@@ -109,7 +115,7 @@ def workspace_has_embeddings(session: Session, workspace_id: str) -> bool:
 def _vector_candidates(
     session: Session, workspace_id: str, query: str, k: int
 ) -> list[RetrievedChunk]:
-    """Cosine similarity of the query embedding against every stored chunk embedding."""
+    """Cosine similarity of the query embedding against same-method stored chunk embeddings."""
     query_vector = embedding_service.embed(query)
     if not any(query_vector):
         return []
@@ -118,6 +124,8 @@ def _vector_candidates(
             select(DocumentChunk).where(
                 DocumentChunk.workspace_id == workspace_id,
                 DocumentChunk.embedding.is_not(None),
+                # Same-space guard: never compare vectors from different producers/models.
+                DocumentChunk.embedding_id == embedding_service.active_method(),
             )
         )
     )

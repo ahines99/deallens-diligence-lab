@@ -1568,6 +1568,25 @@ export interface CrossCorpusCitation {
   source_name: string;
   provenance: Record<string, unknown>;
 }
+export interface PromptManifest {
+  prompt_id: string;
+  prompt_version: string;
+  prompt_hash: string;
+  model: string;
+}
+/** G54 — provenance of the optional fail-closed fluency pass over a cross-corpus answer. */
+export interface CrossCorpusGrounded {
+  applied: boolean;
+  reason:
+    | "applied"
+    | "not_eligible"
+    | "no_consent"
+    | "mock"
+    | "no_api_key"
+    | "audit_rejected"
+    | "error";
+  manifest: PromptManifest | null;
+}
 export interface CrossCorpusQA {
   workspace_id: string;
   deal_id: string | null;
@@ -1579,6 +1598,42 @@ export interface CrossCorpusQA {
   retrieval: Record<string, unknown>;
   method: string;
   generated_at: string;
+  grounded?: CrossCorpusGrounded | null;
+}
+
+// --- G56 model-quality dashboard ---------------------------------------------------------------
+export interface QualitySection {
+  status: "available" | "unavailable";
+  note: string | null;
+}
+export interface JudgeEvalGroup {
+  model_version: string | null;
+  prompt_version: string | null;
+  count: number;
+  faithful: number;
+  faithful_rate: number;
+  mean_score: number | null;
+}
+export interface ModelQuality {
+  generated_at: string;
+  judge_evals: QualitySection & {
+    total?: number;
+    faithful?: number;
+    faithful_rate?: number;
+    groups?: JudgeEvalGroup[];
+  };
+  retrieval_metrics: QualitySection & {
+    num_questions?: number;
+    recall_ks?: number[];
+    rankers?: Record<string, Record<string, number>>;
+  };
+  calibration: QualitySection & {
+    partial_coverage_threshold?: number;
+    abstain_coverage?: number;
+    study?: string;
+  };
+  prompts: QualitySection & { prompts?: PromptManifest[] };
+  extraction_comparison: QualitySection & Record<string, unknown>;
 }
 
 export interface WorkspaceSearchHit {

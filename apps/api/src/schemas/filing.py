@@ -111,6 +111,10 @@ class RiskDiffOut(BaseModel):
 
 class CrossCorpusQARequest(BaseModel):
     question: str = Field(min_length=1, max_length=2_000)
+    # G54: opt into the fail-closed grounded-synthesis pass. Consent is resolved server-side
+    # (workspace external-LLM consent + non-restricted classification); this flag alone never
+    # sends anything to an LLM.
+    grounded: bool = False
 
 
 class CrossCorpusCitation(BaseModel):
@@ -120,6 +124,14 @@ class CrossCorpusCitation(BaseModel):
     quote: str
     source_name: str
     provenance: dict[str, Any]
+
+
+class CrossCorpusGrounded(BaseModel):
+    """G54 provenance: whether a grounded-synthesis rewrite was applied, and why (not)."""
+
+    applied: bool
+    reason: str  # applied | not_eligible | no_consent | mock | no_api_key | audit_rejected | error
+    manifest: dict[str, str] | None = None
 
 
 class CrossCorpusQAOut(BaseModel):
@@ -133,3 +145,6 @@ class CrossCorpusQAOut(BaseModel):
     retrieval: dict[str, Any]
     method: str
     generated_at: str
+    # Present only when the request asked for grounded synthesis (default None keeps the
+    # existing extractive contract byte-identical for current consumers).
+    grounded: CrossCorpusGrounded | None = None

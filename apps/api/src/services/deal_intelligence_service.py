@@ -15,11 +15,13 @@ from typing import Any, Iterable
 from docx import Document as WordDocument
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
+from pydantic import BaseModel, Field
 from pypdf import PdfReader
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from src.agents.llm_provider import structured_llm
 from src.db.base import new_uuid
 from src.models.deal_intelligence import (
     CitedQARun,
@@ -32,7 +34,7 @@ from src.models.deal_intelligence import (
     StructuredClaim,
 )
 from src.models.document import DocumentChunk as FilingChunk
-from src.models.deal_workflow import Deal
+from src.models.deal_workflow import Deal, WorkflowAuditEvent
 from src.models.evidence import Evidence
 from src.models.filing import Filing
 from src.models.workspace import Workspace
@@ -53,6 +55,12 @@ MAX_DOCUMENT_BYTES = 20 * 1024 * 1024
 MAX_CHUNK_CHARS = 4_000
 QA_ALGORITHM_VERSION = "lexical-cited-v2"
 EXTRACTION_VERSION = "rules-evidence-v1"
+# G53: claims minted through the LLM path carry their own extraction_version so engine
+# provenance is distinguishable on every claim row and API response — no schema change needed.
+LLM_EXTRACTION_VERSION = "llm-verified-v1"
+# One fixed confidence for verified LLM claims: the score reflects that a deterministic
+# verifier bound the quote and value to a real chunk, not a model-reported probability.
+LLM_CLAIM_CONFIDENCE = 0.85
 COMPARISON_VERSION = "locator-diff-v1"
 EVALUATION_VERSION = "evidence-eval-v1"
 ABSTENTION = "I could not find a supported answer in the selected documents."
@@ -923,12 +931,309 @@ def _documents_for_extraction(
     return _filtered_documents(session, deal_id, filters, actor)
 
 
+class _LLMClaimProposal(BaseModel):
+    """One claim the model proposes for the ``claim_extraction`` prompt (G53).
+
+    Deliberately lenient: every load-bearing field is re-verified deterministically before a
+    ``StructuredClaim`` is minted, so a single unverifiable proposal is rejected with a
+    machine-readable reason instead of failing the whole batch.
+    """
+
+    category: str = ""
+    field_name: str = ""
+    value_text: str = ""
+    value_number: float | None = None
+    unit: str | None = None
+    period: str | None = None
+    quote: str = ""
+    chunk_index: int | None = None
+
+
+class _LLMClaimBatch(BaseModel):
+    """Whole-response contract for the ``claim_extraction`` prompt."""
+
+    claims: list[_LLMClaimProposal] = Field(default_factory=list)
+
+
+def _external_llm_extraction_allowed(session: Session, deal: Deal) -> bool:
+    """External-LLM consent comes from the deal's linked workspace (mirrors
+    ``analysis_service``): the opt-in flag is set AND the classification is not restricted.
+    A deal without a workspace stays deterministic — which also keeps mock CI byte-stable."""
+    if not deal.workspace_id:
+        return False
+    workspace = session.get(Workspace, deal.workspace_id)
+    return bool(
+        workspace is not None
+        and workspace.external_llm_allowed
+        and workspace.data_classification != "restricted"
+    )
+
+
+def _extraction_batch(
+    session: Session, documents: list[DataRoomDocument]
+) -> list[tuple[DataRoomDocument, DataRoomChunk]]:
+    batch: list[tuple[DataRoomDocument, DataRoomChunk]] = []
+    for document in documents:
+        chunks = session.scalars(
+            select(DataRoomChunk)
+            .where(DataRoomChunk.document_id == document.id)
+            .order_by(DataRoomChunk.ordinal)
+        )
+        batch.extend((document, chunk) for chunk in chunks)
+    return batch
+
+
+def _claim_extraction_prompt(
+    categories: list[str], batch: list[tuple[DataRoomDocument, DataRoomChunk]]
+) -> str:
+    excerpts = "\n\n".join(
+        f"Excerpt {index}:\n{chunk.text}" for index, (_, chunk) in enumerate(batch)
+    )
+    return (
+        f"Allowed category slugs: {', '.join(categories)}.\n"
+        "Extract structured claims from the numbered excerpts below, using each excerpt's "
+        "number as chunk_index.\n\n"
+        f"{excerpts}"
+    )
+
+
+def _whitespace_collapsed(text: str) -> str:
+    return " ".join(text.split())
+
+
+def _verbatim_span(chunk_text: str, quote: str) -> tuple[int, int] | None:
+    """Locate ``quote`` in ``chunk_text`` verbatim under whitespace normalization ONLY.
+
+    A whitespace run in the quote matches any whitespace run in the chunk; every other
+    character must match exactly — no case folding, so a paraphrased or "corrected" quote
+    fails. Returns the raw character span so the minted claim's source_span reproduces
+    ``chunk_text[start:end]`` exactly, as ``_resolved_claim_source`` later re-checks.
+    """
+    parts = quote.split()
+    if not parts:
+        return None
+    match = re.search(r"\s+".join(re.escape(part) for part in parts), chunk_text)
+    return (match.start(), match.end()) if match else None
+
+
+def _number_in_quote(value: float, quote: str) -> bool:
+    """True when a string form of ``value`` appears inside the verified quote.
+
+    Matching rule (deliberately literal): the float repr ("38.25", "3.0") plus — for integral
+    values — the plain ("3") and thousands-separated ("3,000,000") integer forms, required to
+    sit on digit boundaries so a proposed 3 never verifies against the "3" inside "38.25".
+    The quote is also checked with digit-grouping commas removed, so "1,200" in the quote
+    matches a proposed 1200. No rounding and no scale-word inference: "$3 million" verifies
+    value_number=3, never 3000000.
+    """
+    forms = {f"{value}"}
+    if value.is_integer():
+        forms.add(f"{int(value)}")
+        forms.add(f"{int(value):,}")
+    alternatives = "|".join(re.escape(form) for form in sorted(forms, key=len, reverse=True))
+    pattern = re.compile(rf"(?<!\d)(?<!\d[.,])(?:{alternatives})(?!\d)(?![.,]\d)")
+    return bool(pattern.search(quote) or pattern.search(quote.replace(",", "")))
+
+
+def _bounded(value: str | None, limit: int) -> str | None:
+    """Advisory metadata (unit/period) is dropped, never truncated into altered text."""
+    cleaned = (value or "").strip()
+    return cleaned if cleaned and len(cleaned) <= limit else None
+
+
+def _llm_extracted_claims(
+    session: Session,
+    deal_id: str,
+    data: ExtractionRequest,
+    batch: list[tuple[DataRoomDocument, DataRoomChunk]],
+    proposals: _LLMClaimBatch,
+    signatures: dict[tuple[Any, ...], StructuredClaim],
+    actor: ActorContext | None,
+) -> tuple[list[StructuredClaim], list[dict[str, Any]]]:
+    """Deterministically verify each proposed claim, minting only what the source supports.
+
+    Verification is the trust boundary: chunk_index must address a real excerpt from the
+    prompt batch, the quote must appear verbatim in that chunk (whitespace-normalized only),
+    the claimed value_text/value_number must be visible inside the quote, and the category
+    must be one the request allowed. Anything else is rejected with a machine-readable
+    reason; nothing unverified is ever minted as a ``StructuredClaim``.
+    """
+    allowed = set(data.categories)
+    results: list[StructuredClaim] = []
+    rejected: list[dict[str, Any]] = []
+
+    def reject(index: int, reason: str) -> None:
+        rejected.append({"proposal_index": index, "reason": reason})
+
+    for index, proposal in enumerate(proposals.claims):
+        if proposal.chunk_index is None or not 0 <= proposal.chunk_index < len(batch):
+            reject(index, "invalid_chunk_index")
+            continue
+        document, chunk = batch[proposal.chunk_index]
+        span = _verbatim_span(chunk.text, proposal.quote)
+        if span is None:
+            reject(index, "quote_not_verbatim")
+            continue
+        start, end = span
+        quoted = chunk.text[start:end]
+        value_text = proposal.value_text.strip()
+        if not value_text:
+            reject(index, "missing_value_text")
+            continue
+        if _whitespace_collapsed(value_text) not in _whitespace_collapsed(quoted):
+            reject(index, "value_text_not_in_quote")
+            continue
+        if proposal.value_number is not None and not _number_in_quote(
+            proposal.value_number, quoted
+        ):
+            reject(index, "value_number_not_in_quote")
+            continue
+        if proposal.category not in allowed:
+            reject(index, "category_not_allowed")
+            continue
+        field_name = proposal.field_name.strip()
+        if not field_name or len(field_name) > 100:
+            reject(index, "invalid_field_name")
+            continue
+        if LLM_CLAIM_CONFIDENCE < data.min_confidence:
+            reject(index, "below_min_confidence")
+            continue
+        signature = (chunk.id, proposal.category, field_name, start, end)
+        if signature in signatures:
+            results.append(signatures[signature])
+            continue
+        claim = StructuredClaim(
+            deal_id=deal_id,
+            logical_claim_id=new_uuid(),
+            revision=1,
+            document_id=document.id,
+            chunk_id=chunk.id,
+            category=proposal.category,
+            field_name=field_name,
+            value_text=value_text,
+            value_number=proposal.value_number,
+            unit=_bounded(proposal.unit, 40),
+            period=_bounded(proposal.period, 40),
+            currency=None,
+            confidence=LLM_CLAIM_CONFIDENCE,
+            source_locator=deepcopy(chunk.locator),
+            source_span={"start": start, "end": end, "text": quoted},
+            review_status="unreviewed",
+            extraction_version=LLM_EXTRACTION_VERSION,
+            created_by_actor_id=_actor_id(actor),
+        )
+        session.add(claim)
+        session.flush()
+        signatures[signature] = claim
+        results.append(claim)
+    return results, rejected
+
+
+def _pattern_extracted_claims(
+    session: Session,
+    deal_id: str,
+    data: ExtractionRequest,
+    batch: list[tuple[DataRoomDocument, DataRoomChunk]],
+    signatures: dict[tuple[Any, ...], StructuredClaim],
+    actor: ActorContext | None,
+) -> list[StructuredClaim]:
+    """The deterministic rule-based extractor: the offline default and the LLM fallback."""
+    results: list[StructuredClaim] = []
+    for document, chunk in batch:
+        for start, end, sentence in _sentence_spans(chunk.text):
+            normalized_sentence = _normalized(sentence)
+            for category in data.categories:
+                field_match = _field_for(category, normalized_sentence)
+                if field_match is None:
+                    continue
+                field_name, keyword_count = field_match
+                value_number, unit, currency = _numeric_attributes(sentence)
+                confidence = min(
+                    0.96,
+                    0.7 + min(keyword_count, 2) * 0.06 + (0.08 if value_number is not None else 0),
+                )
+                if confidence < data.min_confidence:
+                    continue
+                signature = (chunk.id, category, field_name, start, end)
+                if signature in signatures:
+                    results.append(signatures[signature])
+                    continue
+                claim = StructuredClaim(
+                    deal_id=deal_id,
+                    logical_claim_id=new_uuid(),
+                    revision=1,
+                    document_id=document.id,
+                    chunk_id=chunk.id,
+                    category=category,
+                    field_name=field_name,
+                    value_text=sentence,
+                    value_number=value_number,
+                    unit=unit,
+                    period=_period(sentence),
+                    currency=currency,
+                    confidence=round(confidence, 3),
+                    source_locator=deepcopy(chunk.locator),
+                    source_span={"start": start, "end": end, "text": sentence},
+                    review_status="unreviewed",
+                    extraction_version=EXTRACTION_VERSION,
+                    created_by_actor_id=_actor_id(actor),
+                )
+                session.add(claim)
+                session.flush()
+                signatures[signature] = claim
+                results.append(claim)
+    return results
+
+
+def _record_extraction_provenance(
+    session: Session, deal: Deal, actor: ActorContext | None, detail: dict[str, Any]
+) -> None:
+    """Append which extraction engine served a request to the organization's audit outbox.
+
+    The extraction route's response is a plain claim list, so the run-level provenance block
+    (engine / LLM reason / proposed / verified / rejected / prompt manifest) is recorded as an
+    audit event rather than a response field; per-claim provenance additionally rides on
+    ``extraction_version``. Emitted only when the LLM path was actually consulted, so
+    consent-less (and therefore mock-CI) extractions stay byte-identical to the pattern era.
+    """
+    event = WorkflowAuditEvent(
+        organization_id=deal.organization_id,
+        deal_id=deal.id,
+        actor_id=_actor_id(actor),
+        actor_display_name=actor.display_name if actor else None,
+        action="intelligence.claim_extraction",
+        entity_type="Deal",
+        entity_id=deal.id,
+        detail=detail,
+        request_id=actor.request_id if actor else None,
+    )
+    session.add(event)
+    session.flush()
+    # Same-transaction webhook fan-out, mirroring ``deal_workflow_service._audit``'s outbox rule.
+    from src.services import webhook_service
+
+    webhook_service.queue_for_audit_event(session, event)
+
+
 def extract_structured_claims(
     session: Session,
     deal_id: str,
     data: ExtractionRequest,
     actor: ActorContext | None = None,
+    *,
+    provider_factory=None,
 ) -> list[StructuredClaim]:
+    """Extract review-ready claims: LLM-first when the workspace consents, verified always.
+
+    With workspace consent in live mode, the LLM proposes claims with supporting quotes and a
+    deterministic verifier mints only the proposals whose quote, value, and category check out
+    against the real chunks (G53) — those claims then REPLACE the pattern output for the
+    request. Every other path (no workspace, no consent, restricted classification, mock mode,
+    no key, provider/parse/schema failure) runs the unchanged pattern extractor. Both engines
+    mint through the same append-only revision discipline, land ``unreviewed``, and feed the
+    identical four-eyes human review loop.
+    """
+    deal = _deal(session, deal_id, actor)
     documents = _documents_for_extraction(session, deal_id, data, actor)
     existing = list(
         session.scalars(select(StructuredClaim).where(StructuredClaim.deal_id == deal_id))
@@ -946,58 +1251,45 @@ def extract_structured_claims(
                 )
             ] = claim
 
-    results: list[StructuredClaim] = []
-    for document in documents:
-        chunks = list(
-            session.scalars(
-                select(DataRoomChunk)
-                .where(DataRoomChunk.document_id == document.id)
-                .order_by(DataRoomChunk.ordinal)
-            )
+    batch = _extraction_batch(session, documents)
+    results: list[StructuredClaim] | None = None
+    if batch and _external_llm_extraction_allowed(session, deal):
+        outcome = structured_llm(
+            "claim_extraction",
+            _claim_extraction_prompt(data.categories, batch),
+            _LLMClaimBatch,
+            external_allowed=True,
+            provider_factory=provider_factory,
         )
-        for chunk in chunks:
-            for start, end, sentence in _sentence_spans(chunk.text):
-                normalized_sentence = _normalized(sentence)
-                for category in data.categories:
-                    field_match = _field_for(category, normalized_sentence)
-                    if field_match is None:
-                        continue
-                    field_name, keyword_count = field_match
-                    value_number, unit, currency = _numeric_attributes(sentence)
-                    confidence = min(
-                        0.96,
-                        0.7 + min(keyword_count, 2) * 0.06 + (0.08 if value_number is not None else 0),
-                    )
-                    if confidence < data.min_confidence:
-                        continue
-                    signature = (chunk.id, category, field_name, start, end)
-                    if signature in signatures:
-                        results.append(signatures[signature])
-                        continue
-                    claim = StructuredClaim(
-                        deal_id=deal_id,
-                        logical_claim_id=new_uuid(),
-                        revision=1,
-                        document_id=document.id,
-                        chunk_id=chunk.id,
-                        category=category,
-                        field_name=field_name,
-                        value_text=sentence,
-                        value_number=value_number,
-                        unit=unit,
-                        period=_period(sentence),
-                        currency=currency,
-                        confidence=round(confidence, 3),
-                        source_locator=deepcopy(chunk.locator),
-                        source_span={"start": start, "end": end, "text": sentence},
-                        review_status="unreviewed",
-                        extraction_version=EXTRACTION_VERSION,
-                        created_by_actor_id=_actor_id(actor),
-                    )
-                    session.add(claim)
-                    session.flush()
-                    signatures[signature] = claim
-                    results.append(claim)
+        llm_detail: dict[str, Any] = {
+            "applied": outcome.applied,
+            "reason": outcome.reason,
+            "manifest": outcome.manifest,
+        }
+        if outcome.applied and isinstance(outcome.data, _LLMClaimBatch):
+            results, rejections = _llm_extracted_claims(
+                session, deal_id, data, batch, outcome.data, signatures, actor
+            )
+            llm_detail.update(
+                proposed=len(outcome.data.claims),
+                verified=len(results),
+                rejected=rejections,
+            )
+        engine = "pattern" if results is None else "llm"
+        _record_extraction_provenance(
+            session,
+            deal,
+            actor,
+            {
+                "engine": engine,
+                "extraction_version": (
+                    LLM_EXTRACTION_VERSION if engine == "llm" else EXTRACTION_VERSION
+                ),
+                "llm": llm_detail,
+            },
+        )
+    if results is None:
+        results = _pattern_extracted_claims(session, deal_id, data, batch, signatures, actor)
     session.commit()
     return results
 
