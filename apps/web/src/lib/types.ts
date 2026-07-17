@@ -1601,6 +1601,34 @@ export interface CrossCorpusQA {
   grounded?: CrossCorpusGrounded | null;
 }
 
+// --- G57 diligence agent -----------------------------------------------------------------------
+export interface AgentStep {
+  tool: string;
+  arguments: Record<string, unknown>;
+  ok: boolean;
+  result: Record<string, unknown> | null;
+  error: string | null;
+}
+export interface AgentGrounding {
+  grounded: boolean;
+  numeric_violations: string[];
+  unknown_refs: string[];
+}
+export interface AgentRun {
+  workspace_id: string;
+  objective: string;
+  status: "completed" | "rejected_ungrounded" | "budget_exhausted" | "error" | "not_run";
+  reason: string;
+  answer: string | null;
+  steps: AgentStep[];
+  tools_used: string[];
+  steps_used: number;
+  artifact_version_id: string | null;
+  manifest: PromptManifest | null;
+  grounding: AgentGrounding | null;
+  generated_at: string;
+}
+
 // --- G56 model-quality dashboard ---------------------------------------------------------------
 export interface QualitySection {
   status: "available" | "unavailable";

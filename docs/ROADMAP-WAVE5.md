@@ -1,9 +1,8 @@
 # Wave 5 Roadmap — Real AI, still governed
 
-**Status: 7 / 8 complete (G51–G56, G58 done; G57 diligence agent is the remaining stretch
-item).** Same rules as `FEATURE_LEDGER.md` and `ROADMAP-WAVE4.md`: an item is `done` only when
-its implementation **and** its acceptance test/artifact both exist in the worktree, verified
-green (backend pytest + frontend vitest + ruff + tsc + lint).
+**Status: 8 / 8 complete.** Same rules as `FEATURE_LEDGER.md` and `ROADMAP-WAVE4.md`: an item
+is `done` only when its implementation **and** its acceptance test/artifact both exist in the
+worktree, verified green (backend pytest + frontend vitest + ruff + tsc + lint).
 
 **The thesis of this wave.** Waves 1–4 built a production-grade LLM *harness* — evidence
 grounding, citation auditing, abstention, prompt manifests, judge evals, retrieval gates — around
@@ -48,8 +47,9 @@ baseline.** Nothing an LLM produces enters the governed record unverified.
 
 | ID | Capability | Effort | Acceptance evidence |
 |---|---|---|---|
-| G57 | Diligence agent: a tool-use loop (Anthropic tools API) over the workbench's governed services — ingest, extract, run cases, draft memo — where every step lands in the audit outbox with actor attribution, budget-capped and consent-gated | XL | planned |
+| G57 | Diligence agent: a budget-capped, consent-gated tool-use loop (Anthropic tools API) over a curated allowlist of governed READ-ONLY/pure-compute workspace tools (overview, filing search, cited Q&A, risks, evidence, saved cases, in-memory underwriting scenarios). The harness scopes every call; the agent cannot write to governed records (the four-eyes boundary holds for agents too). Every run seals an append-only `agent_run` ArtifactVersion with the full transcript; deal-linked workspaces also emit an `agent.run_completed` audit event. The final answer passes a fail-closed grounding gate: any quantity token or EV-### ref no tool result produced withholds the answer. `/agent` workbench tab renders the transcript + grounding verdict | XL | `done` — grounded completion + sealing, fabricated-number rejection with the transcript still sealed, unknown-tool/bad-args as recorded errors, step-budget fail-closed, mock/no-consent/restricted never construct a provider, pure-compute scenario tool, route contract + G58 quota classification (`apps/api/tests/test_diligence_agent.py`); console renders completed/rejected/not_run honestly (`apps/web/src/components/workbench/AgentConsole.test.tsx`) |
 | G58 | Live-LLM demo hardening: per-org LLM-call quota bucket over the existing `_OrgQuotaLimiter` (`ORG_LLM_QUOTA_PER_HOUR`, metered only when `LLM_MODE=live`), applied to every route that can trigger a live LLM call; deploy runbook updated so the public demo can enable synthesis without an open-ended API bill | S | `done` — live-only metering, per-org boundary, deterministic endpoints unaffected, Retry-After contract (`apps/api/tests/test_quotas.py::test_llm_quota_meters_live_mode_only`); `docs/deploy-demo.md` §"Enabling the live LLM" |
 
-**Sequencing:** G51 first (everything depends on it) → G52/G53/G54 in parallel (disjoint
-territory; prompts pre-registered centrally in G51) → G56 → G55 → G58 → G57.
+**Sequencing (as delivered):** G51 first (everything depends on it) → G52/G53/G54 in parallel
+(disjoint territory; prompts pre-registered centrally in G51) with G55/G58 alongside → G56 →
+G57 last.

@@ -92,6 +92,22 @@ CROSS_CORPUS_SYNTHESIS_PROMPT = (
 )
 
 
+# G57 — the diligence agent's system prompt. The harness (not this prompt) enforces workspace
+# scoping, read-only tools, budgets, and the grounding gate; the prompt sets the discipline the
+# gate then verifies.
+DILIGENCE_AGENT_VERSION = "diligence-agent-v1"
+DILIGENCE_AGENT_PROMPT = (
+    "You are a private-equity diligence analyst agent working inside a governed evidence "
+    "workbench. Use ONLY the provided tools to gather facts about the single workspace you are "
+    "given; you cannot access anything else. Plan briefly, call tools as needed, then write one "
+    "final answer to the analyst's objective. HARD RULES: every number, percentage, multiple, "
+    "and EV-### evidence reference in your final answer MUST come from a tool result (or the "
+    "objective itself) — never from memory; if the tools do not support an answer, say so "
+    "explicitly instead of guessing; cite EV-### references where tool results provide them; "
+    "never present output as investment advice."
+)
+
+
 # The registered prompts. The memo-polish entry reuses the invariant SYSTEM_PROMPT/PROMPT_VERSION
 # defined in ``llm_provider`` so there is a single source of truth for the editor prompt.
 _REGISTRY: dict[str, PromptSpec] = {
@@ -107,6 +123,9 @@ _REGISTRY: dict[str, PromptSpec] = {
     ),
     "cross_corpus_synthesis": PromptSpec(
         "cross_corpus_synthesis", CROSS_CORPUS_SYNTHESIS_VERSION, CROSS_CORPUS_SYNTHESIS_PROMPT
+    ),
+    "diligence_agent": PromptSpec(
+        "diligence_agent", DILIGENCE_AGENT_VERSION, DILIGENCE_AGENT_PROMPT
     ),
 }
 

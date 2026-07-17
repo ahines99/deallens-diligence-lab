@@ -34,6 +34,7 @@ def test_grounded_synthesis_prompt_is_registered_and_hashed():
         "risk_extraction",
         "claim_extraction",
         "cross_corpus_synthesis",
+        "diligence_agent",
     }
 
 
@@ -128,5 +129,6 @@ def test_prompt_manifest_endpoint_lists_registered_prompts(client):
         "risk_extraction",
         "claim_extraction",
         "cross_corpus_synthesis",
+        "diligence_agent",
     }
     assert all(len(p["prompt_hash"]) == 64 for p in body["prompts"])

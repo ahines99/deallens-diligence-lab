@@ -36,6 +36,7 @@ import type {
   RiskDiff,
   CrossCorpusQA,
   ModelQuality,
+  AgentRun,
   WorkspaceSearchResult,
   QuotaUsage,
   SignalsOverview,
@@ -425,6 +426,11 @@ export const api = {
   crossCorpusQA: (id: string, question: string, grounded = false) =>
     request<CrossCorpusQA>(`/api/workspaces/${id}/cross-corpus-qa`, { method: "POST", body: { question, grounded } }),
   getModelQuality: () => request<ModelQuality>(`/api/model-ops/quality`),
+  runDiligenceAgent: (id: string, objective: string, maxSteps = 8) =>
+    request<AgentRun>(`/api/workspaces/${id}/agent/run`, {
+      method: "POST",
+      body: { objective, max_steps: maxSteps },
+    }),
   searchWorkspace: (id: string, q: string) =>
     request<WorkspaceSearchResult>(`/api/workspaces/${id}/search?q=${encodeURIComponent(q)}`),
   getQuotaUsage: (org: string) =>

@@ -24,6 +24,7 @@ const GROUPS: { label: string; items: { label: string; seg: string }[] }[] = [
     items: [
       { label: "Workplan & requests", seg: "execution" },
       { label: "Evidence intelligence", seg: "intelligence" },
+      { label: "Diligence agent", seg: "agent" },
       { label: "IC readiness & decision", seg: "ic" },
     ],
   },

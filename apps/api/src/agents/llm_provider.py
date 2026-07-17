@@ -98,6 +98,38 @@ class LiveProvider:
             resp.raise_for_status()
             return resp.json()["choices"][0]["message"]["content"]
 
+    def complete_with_tools(self, system: str, messages: list[dict], tools: list[dict]) -> dict:
+        """One tool-use turn (G57): returns ``{"stop_reason", "content"}`` in Anthropic block form.
+
+        The agent loop appends tool_result blocks and calls again. Tool use is Anthropic-format
+        only; a non-Anthropic base URL raises so the agent service can fail closed with an
+        explicit reason instead of mistranslating a different provider's tool protocol.
+        """
+        if not self.is_anthropic:
+            raise RuntimeError(
+                "The diligence agent's tool loop requires an Anthropic-format endpoint"
+            )
+        headers = {
+            "x-api-key": settings.llm_api_key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        }
+        payload = {
+            "model": self.model,
+            "max_tokens": 4096,
+            "system": system,
+            "messages": messages,
+            "tools": tools,
+        }
+        with httpx.Client(timeout=180) as client:
+            resp = client.post(f"{self.base_url}/messages", headers=headers, json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+            return {
+                "stop_reason": data.get("stop_reason"),
+                "content": data.get("content", []),
+            }
+
 
 SchemaT = TypeVar("SchemaT", bound=BaseModel)
 

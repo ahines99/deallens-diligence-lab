@@ -21,6 +21,7 @@ _PROMPT_IDS = {
     "risk_extraction",
     "claim_extraction",
     "cross_corpus_synthesis",
+    "diligence_agent",
 }
 _CONTEXT = "Revenue was $100 million in FY2025 [EV-001]."
 
@@ -110,7 +111,7 @@ def test_calibration_section_reports_the_active_threshold_and_study(client):
     assert section["study"] == "src/eval/calibration_study.md"
 
 
-def test_prompts_section_lists_the_five_registered_prompt_ids(client):
+def test_prompts_section_lists_the_registered_prompt_ids(client):
     section = client.get("/api/model-ops/quality").json()["prompts"]
     assert section["status"] == "available"
     assert {p["prompt_id"] for p in section["prompts"]} == _PROMPT_IDS
