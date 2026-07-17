@@ -151,6 +151,44 @@ def test_mention_of_member_is_recorded_and_notifies_the_recipient(db: Session):
     assert created_notes[0].recipient_user_id is None
 
 
+def test_directed_mention_notification_is_private_to_its_recipient(db: Session):
+    """Regression: directed rows were filtered only by organization, so any member could read —
+    and dismiss — another member's "you were mentioned" notification."""
+    organization, author, alice, viewer = _setup(db)
+    comment_service.create_comment(
+        db,
+        CommentCreate(
+            entity_type="risk", entity_id="risk-7", body="@alice-acme please take a look"
+        ),
+        _principal(author, organization.id),
+    )
+    created = notification_service.sync_from_audit(db, organization.id)
+    mention = next(n for n in created if n.event_type == "comment.mentioned")
+    assert mention.recipient_user_id == alice.id
+
+    visible_to_alice = notification_service.list_notifications(
+        db, organization.id, user_id=alice.id
+    )
+    assert mention.id in {n.id for n in visible_to_alice}
+    for other_user_id in (viewer.id, author.id, None):
+        visible = notification_service.list_notifications(
+            db, organization.id, user_id=other_user_id
+        )
+        assert mention.id not in {n.id for n in visible}
+
+    # Unread counts follow the same visibility.
+    alice_unread = notification_service.unread_count(db, organization.id, user_id=alice.id)
+    viewer_unread = notification_service.unread_count(db, organization.id, user_id=viewer.id)
+    assert alice_unread == viewer_unread + 1
+
+    # Only the recipient can mark the directed row read; everyone else gets the same 404 as a
+    # nonexistent id.
+    with pytest.raises(NotFound):
+        notification_service.mark_read(db, mention.id, organization.id, user_id=viewer.id)
+    marked = notification_service.mark_read(db, mention.id, organization.id, user_id=alice.id)
+    assert marked.read_at is not None
+
+
 def test_mention_of_non_member_is_ignored(db: Session):
     organization, author, _alice, _viewer = _setup(db)
     principal = _principal(author, organization.id)

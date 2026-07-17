@@ -20,17 +20,21 @@ export function WorkspaceSearch({ workspaceId, base }: { workspaceId: string; ba
   const [q, setQ] = useState("");
   const [hits, setHits] = useState<WorkspaceSearchHit[] | null>(null);
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
     if (!q.trim()) return;
     setBusy(true);
+    setError(null);
     try {
       const res = await api.searchWorkspace(workspaceId, q.trim());
       setHits(res.hits);
     } catch (e) {
       if (!(e instanceof ApiError)) throw e;
-      setHits([]);
+      // A failed search must never render as "No matches." — that reads as a clean empty result.
+      setHits(null);
+      setError("Search is unavailable right now. This is an API error, not an empty result.");
     } finally {
       setBusy(false);
     }
@@ -47,6 +51,11 @@ export function WorkspaceSearch({ workspaceId, base }: { workspaceId: string; ba
           aria-label="Search workspace artifacts"
         />
       </form>
+      {error && (
+        <div className="mt-2 rounded-md border border-line-faint bg-panel2 p-2">
+          <p className="text-2xs text-warn">{error}</p>
+        </div>
+      )}
       {hits !== null && (
         <div className="mt-2 rounded-md border border-line-faint bg-panel2 p-2">
           {busy ? (

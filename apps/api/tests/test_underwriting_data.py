@@ -561,6 +561,50 @@ def test_analysis_and_artifact_versions_are_reproducible(underwriting_session):
         )
 
 
+def test_version_allocation_retries_when_a_concurrent_writer_wins(
+    underwriting_session, monkeypatch
+):
+    """Regression: SELECT max(version)+1 then INSERT surfaced a concurrent writer's win as a raw
+    IntegrityError (HTTP 500). The unique constraint is the concurrency authority; the loser must
+    re-read and retry inside a savepoint — the evidence_service pattern."""
+    session, workspace = underwriting_session
+    _private_target(session, workspace.id)
+    first = service.create_analysis_run(
+        session,
+        workspace.id,
+        AnalysisRunCreate(
+            run_type="operating_case",
+            input_manifest={"case": "base"},
+            output_summary={"ok": True},
+        ),
+    )
+    assert first.version == 1
+
+    real_allocator = service._next_stream_version
+    calls = {"count": 0}
+
+    def stale_once(inner_session, model, workspace_id, type_column, type_value):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            # Simulate having read max(version) before a concurrent writer committed version 1.
+            return 1, None
+        return real_allocator(inner_session, model, workspace_id, type_column, type_value)
+
+    monkeypatch.setattr(service, "_next_stream_version", stale_once)
+    second = service.create_analysis_run(
+        session,
+        workspace.id,
+        AnalysisRunCreate(
+            run_type="operating_case",
+            input_manifest={"case": "downside"},
+            output_summary={"ok": True},
+        ),
+    )
+    assert calls["count"] >= 2  # the losing allocation was retried, not surfaced as a 500
+    assert second.version == 2
+    assert second.supersedes_id == first.id
+
+
 def test_underwriting_http_contract(underwriting_session):
     session, workspace = underwriting_session
     app = FastAPI()

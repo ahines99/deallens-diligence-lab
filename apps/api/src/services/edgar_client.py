@@ -250,8 +250,10 @@ def annual_points(facts: dict, concept: str, instant: bool = False, unit: str = 
     """Return the latest filed value for each annual reporting period, oldest first.
 
     `unit` defaults to "USD"; pass "shares" for share-count concepts (which live under units.shares).
-    Duration facts are keyed by the issuer fiscal year when SEC supplies ``fy`` (falling back to
-    the annual frame). Instant facts are keyed by balance-sheet
+    Duration facts are keyed by their annual ``CY####`` frame — the frame identifies the period the
+    fact covers. ``fy`` is NOT usable as a period key: in live Company Facts it is the fiscal year
+    of the *reporting filing*, so all comparative periods restated in one 10-K share the same
+    ``fy`` and keying on it collapses distinct years. Instant facts are keyed by balance-sheet
     date and, when filing context is present, must come from a fiscal-year 10-K. This intentionally
     accepts Q1/Q2/Q3 instant frames for non-December fiscal year ends instead of assuming Q4.
     Company Facts retains comparative values from later filings, so keeping the most recently filed
@@ -277,8 +279,7 @@ def annual_points(facts: dict, concept: str, instant: bool = False, unit: str = 
         else:
             if not _ANNUAL_DURATION.match(frame):
                 continue
-            fiscal_year = str(point.get("fy") or "").strip()
-            period_key = f"FY{fiscal_year}" if fiscal_year else frame
+            period_key = frame
         if not period_key:
             continue
         existing = by_period.get(period_key)

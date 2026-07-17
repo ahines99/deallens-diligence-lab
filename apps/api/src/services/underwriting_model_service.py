@@ -444,7 +444,7 @@ def _covenant_results(
     capex: float,
     cash_taxes: float,
     cash_interest: float,
-    paid_amortization: float,
+    scheduled_amortization: float,
     ending_cash: float,
     debt_rows: list[dict],
 ) -> tuple[list[dict], dict[str, float | None]]:
@@ -462,7 +462,10 @@ def _covenant_results(
         for tranche in assumptions.debt_tranches
         if tranche.tranche_type == "revolver"
     )
-    fixed_charges = cash_interest + paid_amortization
+    # Fixed charges are the CONTRACTUAL debt service — scheduled amortization, not the amount the
+    # company managed to pay. Measuring paid amortization pins the ratio at ~1.0x in exactly the
+    # cash-short regime a fixed-charge covenant exists to flag (partial payment reads as passing).
+    fixed_charges = cash_interest + scheduled_amortization
     metrics: dict[str, float | None] = {
         "total_leverage": total_debt / annualized_ebitda if annualized_ebitda > 0 else None,
         "senior_leverage": senior_debt / annualized_ebitda if annualized_ebitda > 0 else None,
@@ -565,7 +568,7 @@ def calculate_projection(assumptions: UnderwritingAssumptions) -> list[dict]:
             capex / year_fraction,
             cash_taxes / year_fraction,
             cash_interest / year_fraction,
-            paid_amort / year_fraction,
+            sum(row["required_amortization"] for row in debt_rows) / year_fraction,
             ending_cash,
             debt_rows,
         )
@@ -802,7 +805,10 @@ def calculate_working_capital_peg(payload: WorkingCapitalPegRequest) -> WorkingC
     if not eligible:
         raise UnderwritingCalculationError("No working-capital observation predates closing")
     cutoff = _add_months(payload.closing_date, -12)
-    trailing = [row for row in eligible if row.observation_date >= cutoff] or eligible
+    # Strictly after the cutoff: a trailing-twelve-month window over monthly observations holds 12
+    # points. ``>=`` also admits the observation exactly 12 months before closing, double-weighting
+    # the anniversary month in the peg (and therefore the purchase-price adjustment).
+    trailing = [row for row in eligible if row.observation_date > cutoff] or eligible
 
     def normalized(row) -> float:
         return (
@@ -1049,7 +1055,11 @@ def run_monte_carlo(payload: MonteCarloRequest) -> MonteCarloResult:
 
     A single ``random.Random(seed)`` generator drives every draw, so identical seed + inputs
     always reproduce identical output. Iterations whose sampled drivers make the assumptions
-    invalid, or whose IRR/MoIC do not converge, are skipped and counted as ``failed``.
+    invalid, or whose IRR/MoIC do not converge, are skipped and counted as ``failed``. An equity
+    wipeout is NOT a failure: when sponsor exit proceeds are <= 0 no IRR solves (there is no
+    positive cash flow), but the economic outcome is a total loss — it enters the sample with its
+    computed MoIC and an IRR of -100%. Censoring wipeouts into ``failed`` would understate every
+    loss statistic exactly when the tail risk is worst.
     """
     rng = random.Random(payload.seed)
     irr_values: list[float] = []
@@ -1076,6 +1086,8 @@ def run_monte_carlo(payload: MonteCarloRequest) -> MonteCarloResult:
             failed += 1
             continue
         irr, moic = returns["xirr"], returns["moic"]
+        if irr is None and moic is not None and returns["sponsor_exit_proceeds"] <= 0:
+            irr = -1.0
         if irr is None or moic is None:
             failed += 1
             continue
@@ -1360,6 +1372,11 @@ def _score_dimension(
 
 
 def _rescope_hold(assumptions: UnderwritingAssumptions, hold_years: float) -> UnderwritingAssumptions:
+    if math.isclose(hold_years, assumptions.transaction.hold_period_years, abs_tol=1e-9):
+        # The unchanged hold must reproduce the headline case exactly — including per-period
+        # driver overrides. Regenerating periods here made the grid row disagree with the
+        # deterministic result for the very same hold.
+        return assumptions
     data = assumptions.model_dump(mode="json")
     data["transaction"]["hold_period_years"] = hold_years
     # Regenerate standard periods so the projection spans the requested hold under the same
@@ -1388,6 +1405,23 @@ def calculate_exit_readiness(assumptions: UnderwritingAssumptions) -> ExitReadin
         if period.interest_coverage is not None
     ]
     min_coverage = min(coverage_values) if coverage_values else None
+    if min_coverage is None and all(period.cash_interest == 0 for period in projection):
+        # Debt-free (no cash interest in any period): coverage is trivially satisfied, not
+        # "insufficient data" — there are no interest charges to cover.
+        coverage_dimension = {
+            "dimension": "coverage",
+            "metric": "minimum_interest_coverage",
+            "value": None,
+            "threshold": _ratio(2.0),
+            "direction": "higher_is_better",
+            "meets_threshold": True,
+            "score": 100.0,
+            "rating": "strong",
+        }
+    else:
+        coverage_dimension = _score_dimension(
+            "coverage", "minimum_interest_coverage", min_coverage, 2.0, "higher_is_better",
+        )
     dimensions = [
         _score_dimension(
             "leverage", "maximum_total_leverage",
@@ -1400,9 +1434,7 @@ def calculate_exit_readiness(assumptions: UnderwritingAssumptions) -> ExitReadin
             "margin", "exit_ebitda_margin",
             result.summary.exit_ebitda_margin, 0.20, "higher_is_better",
         ),
-        _score_dimension(
-            "coverage", "minimum_interest_coverage", min_coverage, 2.0, "higher_is_better",
-        ),
+        coverage_dimension,
     ]
     overall_score = round(
         statistics.fmean(dimension["score"] for dimension in dimensions), 2
@@ -1544,12 +1576,18 @@ def _parse_driver_formula(name: str, formula: str) -> tuple[ast.Expression, set[
                 f"Driver '{name}' uses an unsupported expression ({type(node).__name__}); only "
                 "+ - * /, parentheses, numeric constants, and driver names are allowed"
             )
-        if isinstance(node, ast.Constant) and (
-            isinstance(node.value, bool) or not isinstance(node.value, (int, float))
-        ):
-            raise UnderwritingCalculationError(
-                f"Driver '{name}' may only reference numeric constants"
-            )
+        if isinstance(node, ast.Constant):
+            if isinstance(node.value, bool) or not isinstance(node.value, (int, float)):
+                raise UnderwritingCalculationError(
+                    f"Driver '{name}' may only reference numeric constants"
+                )
+            # A literal like 1e999 parses as float infinity: unguarded it yields a silent null
+            # value, and inf/inf raises decimal.InvalidOperation (an HTTP 500) at evaluation.
+            if not math.isfinite(node.value):
+                raise UnderwritingCalculationError(
+                    f"Driver '{name}' contains a non-finite constant; "
+                    "literals must be finite numbers"
+                )
         if isinstance(node, ast.Name):
             references.add(node.id)
     return tree, references
@@ -1623,7 +1661,16 @@ def calculate_driver_model(request: DriverModelRequest) -> DriverModelResult:
     values: dict[str, Decimal] = {}
     transitive: dict[str, set[str]] = {}
     for name in order:
-        values[name] = _evaluate_driver_node(parsed[name], values)
+        value = _evaluate_driver_node(parsed[name], values)
+        try:
+            representable = math.isfinite(float(value))
+        except OverflowError:
+            representable = False
+        if not representable:
+            raise UnderwritingCalculationError(
+                f"Driver '{name}' evaluates to a value outside the representable numeric range"
+            )
+        values[name] = value
         closure: set[str] = set(dependencies[name])
         for dep in dependencies[name]:
             closure |= transitive[dep]

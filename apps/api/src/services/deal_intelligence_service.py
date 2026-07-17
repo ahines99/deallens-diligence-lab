@@ -47,6 +47,7 @@ from src.schemas.deal_intelligence import (
     SecFilingComparisonRequest,
 )
 from src.schemas.deal_workflow import ActorContext
+from src.services.common import insert_versioned
 
 MAX_DOCUMENT_BYTES = 20 * 1024 * 1024
 MAX_CHUNK_CHARS = 4_000
@@ -184,6 +185,19 @@ def _require_actor(actor: ActorContext | None, action: str) -> str:
     return actor_id
 
 
+def _require_human_reviewer(actor: ActorContext | None, action: str) -> str:
+    """Four-eyes reviews demand a server-verified human identity: the trusted-service path's
+    actor id is caller-chosen, so one automation token could satisfy both sides of the rule."""
+    actor_id = _require_actor(actor, action)
+    if actor is not None and actor.via_trusted_service:
+        raise IntelligenceError(
+            f"{action} requires a human user session; trusted-service automation "
+            "cannot act as a reviewer",
+            status_code=403,
+        )
+    return actor_id
+
+
 def _verify_scope(actor: ActorContext | None, organization_id: str) -> None:
     if actor and actor.organization_id and actor.organization_id != organization_id:
         raise IntelligenceError(
@@ -193,9 +207,12 @@ def _verify_scope(actor: ActorContext | None, organization_id: str) -> None:
 
 def _deal(session: Session, deal_id: str, actor: ActorContext | None = None) -> Deal:
     deal = session.get(Deal, deal_id)
-    if deal is None:
+    # Cross-tenant lookups return the SAME 404 as an unknown id (mirroring ``_document``): a 403
+    # here would confirm the deal id exists in another tenant.
+    if deal is None or (
+        actor and actor.organization_id and actor.organization_id != deal.organization_id
+    ):
         raise IntelligenceNotFound(f"Deal '{deal_id}' not found")
-    _verify_scope(actor, deal.organization_id)
     return deal
 
 
@@ -503,38 +520,41 @@ def ingest_document(
 
     parsed_chunks = extract_chunks(content, extension)
     logical_id = logical_document_id or new_uuid()
-    previous = session.scalar(
-        select(DataRoomDocument)
-        .where(
-            DataRoomDocument.deal_id == deal_id,
-            DataRoomDocument.logical_document_id == logical_id,
-        )
-        .order_by(DataRoomDocument.version.desc())
-    )
     digest = _sha256_bytes(content)
-    if previous and previous.sha256 == digest:
-        raise IntelligenceConflict(
-            f"Document content is identical to logical document {logical_id} version {previous.version}"
+
+    def _build_document() -> DataRoomDocument:
+        previous = session.scalar(
+            select(DataRoomDocument)
+            .where(
+                DataRoomDocument.deal_id == deal_id,
+                DataRoomDocument.logical_document_id == logical_id,
+            )
+            .order_by(DataRoomDocument.version.desc())
         )
-    version = (previous.version + 1) if previous else 1
-    document = DataRoomDocument(
-        deal_id=deal_id,
-        logical_document_id=logical_id,
-        version=version,
-        supersedes_document_id=previous.id if previous else None,
-        title=(title or safe_name).strip()[:240],
-        filename=safe_name,
-        original_filename=filename[:500],
-        extension=extension,
-        content_type=canonical_type,
-        sha256=digest,
-        byte_size=len(content),
-        raw_bytes=content,
-        document_metadata=deepcopy(document_metadata or {}),
-        uploaded_by_actor_id=_actor_id(actor),
-    )
-    session.add(document)
-    session.flush()
+        # Inside the retry loop deliberately: a concurrent upload that wins the version race may
+        # have identical content, and the retry must then surface the same 409 as a serial upload.
+        if previous and previous.sha256 == digest:
+            raise IntelligenceConflict(
+                f"Document content is identical to logical document {logical_id} version {previous.version}"
+            )
+        return DataRoomDocument(
+            deal_id=deal_id,
+            logical_document_id=logical_id,
+            version=(previous.version + 1) if previous else 1,
+            supersedes_document_id=previous.id if previous else None,
+            title=(title or safe_name).strip()[:240],
+            filename=safe_name,
+            original_filename=filename[:500],
+            extension=extension,
+            content_type=canonical_type,
+            sha256=digest,
+            byte_size=len(content),
+            raw_bytes=content,
+            document_metadata=deepcopy(document_metadata or {}),
+            uploaded_by_actor_id=_actor_id(actor),
+        )
+
+    document = insert_versioned(session, _build_document)
     for ordinal, (locator_type, text, locator) in enumerate(parsed_chunks, 1):
         normalized = _normalized(text)
         session.add(
@@ -1087,7 +1107,7 @@ def review_claim(
     actor: ActorContext | None = None,
 ) -> tuple[StructuredClaim, ClaimReviewEvent]:
     source = _claim(session, claim_id, actor)
-    reviewer_id = _require_actor(actor, "Claim review")
+    reviewer_id = _require_human_reviewer(actor, "Claim review")
     latest = _latest_claim_revision(session, source.logical_claim_id)
     if latest is None or latest.id != source.id:
         latest_revision = latest.revision if latest else "unknown"

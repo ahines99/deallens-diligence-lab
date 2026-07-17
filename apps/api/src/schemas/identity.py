@@ -53,6 +53,15 @@ class PrincipalContext(StrictModel):
     def is_api_key(self) -> bool:
         return self.scopes is not None
 
+    @property
+    def is_service_account(self) -> bool:
+        """True for the trusted-service (internal token) path, whose actor id is caller-chosen.
+
+        Four-eyes review planes must reject these principals as reviewers: the header-claimed
+        actor id would let automation "review" its own proposal under a second name.
+        """
+        return self.session_id == "trusted-service"
+
     def has_scope(self, scope: str) -> bool:
         """Human/service principals (``scopes is None``) are unrestricted; keys need the grant."""
         return self.scopes is None or scope in self.scopes

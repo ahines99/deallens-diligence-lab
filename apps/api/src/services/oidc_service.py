@@ -12,16 +12,22 @@ Config-gated: password auth remains the default and these code paths are inert u
      user by verified email, maps the IdP role claim to a membership role, and issues a normal
      revocable DealLens session (reusing ``identity_service._new_session``).
 
-SECURITY CAVEAT — the ``id_token`` signature is NOT verified here. We parse the JWT payload and
-perform only basic ``iss`` / ``aud`` / ``exp`` checks. A production deployment MUST verify the
-RS256 signature against the issuer's JWKS (and ideally validate ``nonce``) before trusting any
-claim. This is called out explicitly so the reduced scope is never mistaken for complete.
+The flow enforces: a single-use, TTL-bounded ``state`` (login-CSRF protection — the callback
+rejects any state it did not mint), a ``nonce`` echoed through the ``id_token`` (token-replay
+protection), and REQUIRED ``iss`` / ``aud`` / ``exp`` claims (absent claims are rejected, never
+skipped).
+
+SECURITY CAVEAT — the ``id_token`` signature is NOT verified here. A production deployment MUST
+verify the RS256 signature against the issuer's JWKS before trusting any claim. This is called
+out explicitly so the reduced scope is never mistaken for complete.
 """
 from __future__ import annotations
 
 import base64
 import json
 import secrets
+import threading
+import time
 from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlencode
@@ -48,6 +54,42 @@ from src.services.identity_service import (
 _SSO_NO_PASSWORD = "!oidc-sso-no-password"
 _VALID_ROLES = {"owner", "admin", "member", "viewer"}
 _TOKEN_TIMEOUT_SECONDS = 10.0
+
+# Pending authorize states: state -> (monotonic expiry, expected nonce). Single-use and
+# TTL-bounded so a forged or replayed callback cannot complete a login (login CSRF / session
+# fixation). In-process like the auth rate limiter: the Compose deployment runs one API process;
+# multi-replica deployments should back this with a shared store.
+_STATE_TTL_SECONDS = 600.0
+_MAX_PENDING_STATES = 5_000
+_pending_states: dict[str, tuple[float, str]] = {}
+_pending_lock = threading.Lock()
+
+
+def _remember_state(state: str, nonce: str) -> None:
+    now = time.monotonic()
+    with _pending_lock:
+        expired = [key for key, (expiry, _) in _pending_states.items() if expiry <= now]
+        for key in expired:
+            _pending_states.pop(key, None)
+        while len(_pending_states) >= _MAX_PENDING_STATES:
+            # Oldest-first eviction keeps an unauthenticated flood from growing memory unbounded.
+            oldest = min(_pending_states, key=lambda key: _pending_states[key][0])
+            _pending_states.pop(oldest, None)
+        _pending_states[state] = (now + _STATE_TTL_SECONDS, nonce)
+
+
+def _consume_state(state: str | None) -> str | None:
+    """Pop and return the nonce for a state this process minted; None when unknown/expired."""
+    if not state:
+        return None
+    with _pending_lock:
+        entry = _pending_states.pop(state, None)
+    if entry is None:
+        return None
+    expiry, nonce = entry
+    if expiry <= time.monotonic():
+        return None
+    return nonce
 
 
 def _require_enabled() -> None:
@@ -78,9 +120,15 @@ def _token_endpoint() -> str:
 
 
 def build_authorize_url(state: str | None = None) -> tuple[str, str]:
-    """Return ``(authorize_url, state)`` to redirect the browser to the IdP (G48)."""
+    """Return ``(authorize_url, state)`` to redirect the browser to the IdP (G48).
+
+    The minted state is remembered (single-use, TTL-bounded) so the callback can reject any
+    state it did not issue, and a nonce is sent for the IdP to echo through the ``id_token``.
+    """
     _require_enabled()
     state = state or secrets.token_urlsafe(24)
+    nonce = secrets.token_urlsafe(24)
+    _remember_state(state, nonce)
     query = urlencode(
         {
             "response_type": "code",
@@ -88,6 +136,7 @@ def build_authorize_url(state: str | None = None) -> tuple[str, str]:
             "redirect_uri": settings.oidc_redirect_uri,
             "scope": settings.oidc_scopes,
             "state": state,
+            "nonce": nonce,
         }
     )
     return f"{_authorize_endpoint()}?{query}", state
@@ -131,20 +180,27 @@ def _claims_from_id_token(id_token: str) -> dict[str, Any]:
         raise IdentityUnauthorized("Unreadable id_token claims") from exc
 
 
-def _validate_claims(claims: dict[str, Any]) -> None:
-    """Basic issuer/audience/expiry checks (NOT a signature verification — see module caveat)."""
+def _validate_claims(claims: dict[str, Any], expected_nonce: str) -> None:
+    """Issuer/audience/expiry/nonce checks (NOT a signature verification — see module caveat).
+
+    ``iss``, ``aud``, ``exp``, and ``nonce`` are REQUIRED: an id_token that omits any of them is
+    rejected. Skipping absent claims would let a token minted for another client, an expired
+    token, or a replayed token complete a login.
+    """
     issuer = claims.get("iss")
-    if settings.oidc_issuer and issuer and issuer.rstrip("/") != settings.oidc_issuer.rstrip("/"):
-        raise IdentityUnauthorized("id_token issuer mismatch")
+    if not isinstance(issuer, str) or issuer.rstrip("/") != settings.oidc_issuer.rstrip("/"):
+        raise IdentityUnauthorized("id_token issuer is missing or mismatched")
     audience = claims.get("aud")
     audiences = {audience} if isinstance(audience, str) else set(audience or ())
-    if settings.oidc_client_id and audiences and settings.oidc_client_id not in audiences:
-        raise IdentityUnauthorized("id_token audience mismatch")
+    if settings.oidc_client_id not in audiences:
+        raise IdentityUnauthorized("id_token audience is missing or mismatched")
     expiry = claims.get("exp")
-    if isinstance(expiry, (int, float)) and datetime.fromtimestamp(
+    if not isinstance(expiry, (int, float)) or datetime.fromtimestamp(
         expiry, tz=timezone.utc
     ) <= now_utc():
-        raise IdentityUnauthorized("id_token has expired")
+        raise IdentityUnauthorized("id_token expiry is missing or has passed")
+    if claims.get("nonce") != expected_nonce:
+        raise IdentityUnauthorized("id_token nonce is missing or mismatched")
 
 
 def _role_map() -> dict[str, str]:
@@ -206,12 +262,16 @@ def handle_callback(
     if organization is None:
         raise IdentityError("OIDC organization is not provisioned", status_code=500)
 
+    expected_nonce = _consume_state(state)
+    if expected_nonce is None:
+        raise IdentityUnauthorized("OIDC state is missing, unknown, expired, or already used")
+
     tokens = _exchange_code(code)
     id_token = tokens.get("id_token")
     if not isinstance(id_token, str) or not id_token:
         raise IdentityUnauthorized("OIDC response did not include an id_token")
     claims = _claims_from_id_token(id_token)
-    _validate_claims(claims)
+    _validate_claims(claims, expected_nonce)
 
     email = _verified_email(claims)
     role = _mapped_role(claims)

@@ -6,6 +6,7 @@ import {
   configureServerAuthorizationProvider,
 } from "./api";
 import { getServerAuthorization } from "./serverAuth";
+import type { Deal } from "./types";
 
 // getServerAuthorization reads Next's request-local cookie store on every call;
 // no credential is captured in module state or shared between requests.
@@ -28,5 +29,21 @@ export async function loadOrUnavailable<T>(promise: Promise<T>, fallback: T): Pr
     return { data: await promise, unavailable: false };
   } catch {
     return { data: fallback, unavailable: true };
+  }
+}
+
+/**
+ * Load the workspace-linked deal, distinguishing "no deal linked" (a genuine 404 →
+ * `data: null, unavailable: false`) from an API outage (`unavailable: true`). A bare
+ * `.catch(() => null)` told the analyst to connect a pipeline deal that already exists.
+ */
+export async function loadWorkspaceDeal(workspaceId: string): Promise<Loaded<Deal | null>> {
+  try {
+    return { data: await api.getWorkspaceDeal(workspaceId), unavailable: false };
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) {
+      return { data: null, unavailable: false };
+    }
+    return { data: null, unavailable: true };
   }
 }

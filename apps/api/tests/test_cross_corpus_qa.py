@@ -174,6 +174,96 @@ def test_filings_only_workspace_answers_labeled_public(client):
     assert all(c["confidential"] is False for c in result["citations"])
 
 
+_SHARED_SENTENCE = (
+    "The retention rate of subscription customers exceeded 95 percent during the fiscal year."
+)
+
+
+def test_score_ties_prefer_the_public_corpus(client):
+    """Regression: the tie-break comment promised public-over-confidential, but the preference
+    tuple gave confidential the higher component under max()/descending order — an identically
+    scored sentence surfaced as a confidential quote when a public disclosure said the same."""
+    ws_id = client.post(
+        "/api/workspaces", json={"name": "Tie break", "deal_type": "buyout"}
+    ).json()["id"]
+    with SessionLocal() as session:
+        filing = Filing(
+            workspace_id=ws_id,
+            company_name="Tie Corp",
+            ticker="TIE",
+            cik="0000000002",
+            form_type="10-K",
+            filing_date="2025-02-01",
+            accession_number="0000000002-25-000001",
+            document_url="https://www.sec.gov/Archives/tie-10k.htm",
+        )
+        session.add(filing)
+        session.flush()
+        session.add(
+            DocumentChunk(
+                filing_id=filing.id,
+                workspace_id=ws_id,
+                section="Item 7 MD&A",
+                chunk_index=0,
+                chunk_text=_SHARED_SENTENCE,
+                source_url=filing.document_url,
+            )
+        )
+        org = Organization(name="Tie Org", slug=f"tie-{ws_id[:8]}")
+        session.add(org)
+        session.flush()
+        fund = Fund(organization_id=org.id, name="Fund I")
+        session.add(fund)
+        session.flush()
+        deal = Deal(
+            organization_id=org.id,
+            fund_id=fund.id,
+            workspace_id=ws_id,
+            code=f"TIE-{ws_id[:6]}",
+            name="Tie Deal",
+            target_company="Tie Corp",
+        )
+        session.add(deal)
+        session.flush()
+        content = _SHARED_SENTENCE.encode("utf-8")
+        document = DataRoomDocument(
+            deal_id=deal.id,
+            logical_document_id=f"tie-{ws_id[:8]}",
+            version=1,
+            title="Retention analysis",
+            filename="Retention.txt",
+            original_filename="Retention.txt",
+            extension=".txt",
+            content_type="text/plain",
+            sha256=hashlib.sha256(content).hexdigest(),
+            byte_size=len(content),
+            raw_bytes=content,
+            document_metadata={},
+        )
+        session.add(document)
+        session.flush()
+        session.add(
+            DataRoomChunk(
+                deal_id=deal.id,
+                document_id=document.id,
+                ordinal=1,
+                locator_type="text",
+                locator={"type": "text", "paragraph": 1},
+                text=_SHARED_SENTENCE,
+                normalized_text=_SHARED_SENTENCE.casefold(),
+                content_hash=hashlib.sha256(content).hexdigest(),
+                char_count=len(_SHARED_SENTENCE),
+            )
+        )
+        session.commit()
+        result = cross_corpus_qa_service.answer(
+            session, ws_id, "What was the retention rate of subscription customers?"
+        )
+
+    assert result["citations"]
+    assert [c["corpus"] for c in result["citations"]] == ["public_filing"]
+
+
 def test_abstains_when_neither_corpus_matches(cross_corpus_workspace):
     ws_id, _ = cross_corpus_workspace
     with SessionLocal() as session:

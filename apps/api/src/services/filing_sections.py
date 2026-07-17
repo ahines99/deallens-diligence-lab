@@ -70,7 +70,11 @@ def split_paragraphs(section_text: str, min_len: int = 200, max_len: int = 1600)
         if buf and len(buf) + len(s) > max_len:
             if len(buf) >= min_len:
                 chunks.append(buf.strip())
-            buf = s
+                buf = s
+            else:
+                # Never silently drop filing text: a buffer too short to stand alone rides
+                # along with the next sentence even when the merge exceeds max_len (soft bound).
+                buf = f"{buf} {s}"
         else:
             buf = f"{buf} {s}" if buf else s
     if buf.strip() and len(buf.strip()) >= min_len:

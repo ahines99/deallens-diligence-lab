@@ -50,18 +50,19 @@ _FRAME_YEAR = re.compile(r"^CY(\d{4})")
 
 
 def _period_year(point: dict) -> str:
-    """Return the fiscal label carried by an annual duration frame when available.
+    """Return the annual label for the period a fact covers, from its ``CY####`` frame.
 
-    This matters for 52/53-week issuers whose FY2024 can end in early January 2025. Instant facts
-    are aligned separately to the duration fact's exact period end; their calendar-quarter frame is
-    not assumed to represent the issuer's fiscal year.
+    The frame identifies the covered period, including for 52/53-week issuers whose FY2024 can end
+    in early January 2025 (SEC assigns that period the CY2024 frame). ``fy`` is deliberately a
+    last-resort fallback only: in live Company Facts it is the fiscal year of the *reporting
+    filing*, so every comparative period restated in one 10-K carries the same ``fy``.
     """
-    fiscal_year = str(point.get("fy") or "").strip()
-    if re.fullmatch(r"\d{4}", fiscal_year):
-        return fiscal_year
     match = _FRAME_YEAR.match(point.get("frame", ""))
     if match:
         return match.group(1)
+    fiscal_year = str(point.get("fy") or "").strip()
+    if re.fullmatch(r"\d{4}", fiscal_year):
+        return fiscal_year
     return point.get("end", "")[:4]
 
 
@@ -119,11 +120,12 @@ def _latest_two(facts: dict, concepts: list[str]) -> tuple[Point | None, Point |
 def _ratio(num: Point | None, den: Point | None) -> float | None:
     if not num or not den or not den.value:
         return None
-    if num.fy and den.fy and num.fy != den.fy:
+    # Same covered period, judged by frame year — comparing ``fy`` would spuriously reject facts
+    # for the same period restated in different filings.
+    num_year = _period_year({"frame": num.frame, "fy": num.fy, "end": num.end})
+    den_year = _period_year({"frame": den.frame, "fy": den.fy, "end": den.end})
+    if num_year != den_year:
         return None
-    if num.frame and den.frame and _FRAME_YEAR.match(num.frame) and _FRAME_YEAR.match(den.frame):
-        if _FRAME_YEAR.match(num.frame).group(1) != _FRAME_YEAR.match(den.frame).group(1):
-            return None
     return round(num.value / den.value, 4)
 
 

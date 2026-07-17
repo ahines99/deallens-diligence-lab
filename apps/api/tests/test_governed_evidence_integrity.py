@@ -620,3 +620,58 @@ def test_verified_principal_overrides_spoofed_actor_headers():
     assert actor.display_name == "Verified User"
     assert actor.organization_id == "a" * 32
     assert "organization_admin" in actor.roles
+    assert actor.via_trusted_service is False
+
+
+def test_trusted_service_principal_cannot_act_as_four_eyes_reviewer(db: Session):
+    """Regression: a trusted-service principal's actor id is caller-chosen (X-Actor-ID), so one
+    automation token could propose under one name and 'review' under another — bypassing every
+    four-eyes plane. Review paths must demand a human session."""
+    lead, partner, workspace, deal = _governed_deal(db)
+    document = intelligence.ingest_text_document(
+        db,
+        deal.id,
+        DocumentTextCreate(
+            filename="qoe.txt",
+            text="Management proposed a one-time $3 million EBITDA add-back.",
+        ),
+        lead,
+    )
+    claim = next(
+        item
+        for item in intelligence.extract_structured_claims(
+            db,
+            deal.id,
+            ExtractionRequest(document_ids=[document.id], categories=["qoe_candidate"]),
+            lead,
+        )
+        if item.category == "qoe_candidate"
+    )
+    service_reviewer = partner.model_copy(update={"via_trusted_service": True})
+    with pytest.raises(intelligence.IntelligenceError, match="human user session"):
+        intelligence.review_claim(
+            db,
+            claim.id,
+            ClaimReviewRequest(action="approve", expected_revision=1),
+            service_reviewer,
+        )
+    # The same identity through a human session is still a valid distinct reviewer.
+    approved, _ = intelligence.review_claim(
+        db, claim.id, ClaimReviewRequest(action="approve", expected_revision=1), partner
+    )
+    assert approved.review_status == "approved"
+
+
+def test_trusted_service_actor_context_carries_the_service_flag():
+    request = Request({"type": "http", "method": "GET", "path": "/", "headers": []})
+    request.state.principal = PrincipalContext(
+        user_id="automation-claimed-actor",
+        session_id="trusted-service",
+        email="automation-claimed-actor@trusted-service.invalid",
+        display_name="Automation",
+        organization_id="a" * 32,
+        membership_id="trusted-service",
+        role="admin",
+    )
+    actor = actor_context(request)
+    assert actor.via_trusted_service is True

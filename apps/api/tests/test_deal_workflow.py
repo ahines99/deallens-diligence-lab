@@ -218,7 +218,9 @@ def test_tenant_scope_and_optimistic_deal_update(db: Session):
     actor, organization, _, deal = _setup(db)
     outsider = ActorContext(actor_id="outside", organization_id="f" * 32)
 
-    with pytest.raises(service.WorkflowForbidden):
+    # Cross-tenant reads get the SAME 404 as an unknown id — a 403 would confirm the deal id
+    # exists in another tenant (existence oracle).
+    with pytest.raises(service.NotFound):
         service.get_deal(db, deal.id, outsider)
 
     assert [item.id for item in service.list_organizations(db, actor)] == [organization.id]
@@ -666,11 +668,18 @@ def test_router_translates_tenant_and_version_conflicts():
         assert deal_response.status_code == 201, deal_response.text
         deal_id = deal_response.json()["id"]
 
-        forbidden = client.get(
+        # Cross-tenant reads answer with the SAME 404 as an unknown id — a 403 would confirm
+        # the deal exists in another tenant (existence oracle).
+        cross_tenant = client.get(
             f"/api/deals/{deal_id}",
             headers={"X-Actor-ID": "outside", "X-Organization-ID": "f" * 32},
         )
-        assert forbidden.status_code == 403
+        assert cross_tenant.status_code == 404
+        missing = client.get(
+            "/api/deals/" + "0" * 32,
+            headers={"X-Actor-ID": "outside", "X-Organization-ID": "f" * 32},
+        )
+        assert missing.status_code == 404
 
         first_update = client.patch(
             f"/api/deals/{deal_id}",

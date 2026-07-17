@@ -67,6 +67,9 @@ class ActorContext(StrictModel):
     organization_id: str | None = Field(default=None, max_length=32)
     roles: tuple[str, ...] = ()
     request_id: str | None = Field(default=None, max_length=100)
+    # True when the principal authenticated via the trusted-service internal token: its actor_id
+    # is caller-chosen (X-Actor-ID), so four-eyes review planes must not accept it as a reviewer.
+    via_trusted_service: bool = False
 
 
 class OrganizationCreate(StrictModel):

@@ -157,32 +157,49 @@ def _require_actor(actor: ActorContext | None, action: str) -> str:
     return actor_id
 
 
-def _verify_org_scope(actor: ActorContext | None, organization_id: str) -> None:
-    if actor and actor.organization_id and actor.organization_id != organization_id:
-        raise WorkflowForbidden()
+def _require_human_reviewer(actor: ActorContext | None, action: str) -> str:
+    """Four-eyes reviews demand a server-verified human identity.
+
+    A trusted-service principal's actor id is caller-chosen (X-Actor-ID), so accepting it as a
+    reviewer would let one automation token satisfy both sides of the four-eyes rule.
+    """
+    actor_id = _require_actor(actor, action)
+    if actor is not None and actor.via_trusted_service:
+        raise WorkflowError(
+            f"{action} requires a human user session; trusted-service automation "
+            "cannot act as a reviewer",
+            status_code=403,
+        )
+    return actor_id
+
+
+def _cross_tenant(actor: ActorContext | None, organization_id: str) -> bool:
+    """True when the actor's verified organization differs from the resource's.
+
+    Resource lookups answer cross-tenant access with the SAME 404 as an unknown id: a 403 would
+    confirm the id exists in another tenant (an existence oracle on otherwise non-enumerable ids).
+    """
+    return bool(actor and actor.organization_id and actor.organization_id != organization_id)
 
 
 def _organization(session: Session, organization_id: str, actor: ActorContext | None = None) -> Organization:
     obj = session.get(Organization, organization_id)
-    if obj is None:
+    if obj is None or _cross_tenant(actor, obj.id):
         raise NotFound(f"Organization '{organization_id}' not found")
-    _verify_org_scope(actor, obj.id)
     return obj
 
 
 def _fund(session: Session, fund_id: str, actor: ActorContext | None = None) -> Fund:
     obj = session.get(Fund, fund_id)
-    if obj is None:
+    if obj is None or _cross_tenant(actor, obj.organization_id):
         raise NotFound(f"Fund '{fund_id}' not found")
-    _verify_org_scope(actor, obj.organization_id)
     return obj
 
 
 def _deal(session: Session, deal_id: str, actor: ActorContext | None = None) -> Deal:
     obj = session.get(Deal, deal_id)
-    if obj is None:
+    if obj is None or _cross_tenant(actor, obj.organization_id):
         raise NotFound(f"Deal '{deal_id}' not found")
-    _verify_org_scope(actor, obj.organization_id)
     return obj
 
 
@@ -353,9 +370,8 @@ def get_deal_by_workspace(
     session: Session, workspace_id: str, actor: ActorContext | None = None
 ) -> Deal:
     deal = session.scalar(select(Deal).where(Deal.workspace_id == workspace_id))
-    if deal is None:
+    if deal is None or _cross_tenant(actor, deal.organization_id):
         raise NotFound(f"No deal is linked to workspace '{workspace_id}'")
-    _verify_org_scope(actor, deal.organization_id)
     return deal
 
 
@@ -902,7 +918,7 @@ def review_diligence_request(
     )
     if latest is None:
         raise WorkflowConflict("A request cannot be reviewed before it has a response")
-    reviewer = _require_actor(actor, "Diligence review")
+    reviewer = _require_human_reviewer(actor, "Diligence review")
     if reviewer == latest.responded_by_actor_id:
         raise WorkflowConflict("The response author cannot accept their own response")
     request.review_note = data.note
@@ -1824,7 +1840,11 @@ def resolve_ic_comment(
     deal = _deal(session, packet.deal_id, actor)
     if comment.status == "resolved":
         raise WorkflowConflict("IC comment is already resolved")
-    resolver = _require_actor(actor, "IC comment resolution")
+    resolver = (
+        _require_human_reviewer(actor, "Blocking IC comment resolution")
+        if comment.blocking
+        else _require_actor(actor, "IC comment resolution")
+    )
     if comment.blocking and (
         not comment.author_actor_id or resolver == comment.author_actor_id
     ):

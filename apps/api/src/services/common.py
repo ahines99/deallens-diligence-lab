@@ -1,10 +1,16 @@
-"""Shared service helpers: not-found handling and workspace lookups."""
+"""Shared service helpers: not-found handling, workspace lookups, versioned inserts."""
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import TypeVar
+
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from src.models import Workspace
+
+RowT = TypeVar("RowT")
 
 
 class NotFound(Exception):
@@ -44,6 +50,30 @@ def get_workspace_scoped_or_404(
     if effective_org != organization_id:
         raise NotFound(f"Workspace '{workspace_id}' not found")
     return ws
+
+
+def insert_versioned(session: Session, build: Callable[[], RowT], *, attempts: int = 5) -> RowT:
+    """Insert an append-only row whose version was allocated as SELECT max(version)+1.
+
+    ``build`` must re-read the latest version and return a FRESH ORM instance each call. The
+    unique constraint is the concurrency authority: a losing allocation raises IntegrityError
+    inside a savepoint (so the surrounding transaction — which may already hold other rows —
+    survives) and the allocation is retried against refreshed state. Mirrors
+    ``evidence_service.create``; without this, two concurrent writers on one workspace stream
+    surface as an HTTP 500.
+    """
+    for attempt in range(attempts):
+        row = build()
+        try:
+            with session.begin_nested():
+                session.add(row)
+                session.flush()
+            return row
+        except IntegrityError:
+            if attempt == attempts - 1:
+                raise
+            session.expire_all()
+    raise RuntimeError("Versioned insert retry exhausted")  # pragma: no cover
 
 
 def touch_status(ws: Workspace, status: str) -> None:

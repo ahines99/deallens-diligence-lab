@@ -36,7 +36,12 @@ def list_notifications(
     service.sync_from_audit(session, organization_id)
     return [
         NotificationOut.model_validate(item)
-        for item in service.list_notifications(session, organization_id, unread_only=unread_only)
+        for item in service.list_notifications(
+            session,
+            organization_id,
+            unread_only=unread_only,
+            user_id=principal.user_id if principal else None,
+        )
     ]
 
 
@@ -53,7 +58,9 @@ def get_unread_count(
     service.sync_from_audit(session, organization_id)
     return UnreadCount(
         organization_id=organization_id,
-        unread=service.unread_count(session, organization_id),
+        unread=service.unread_count(
+            session, organization_id, user_id=principal.user_id if principal else None
+        ),
     )
 
 
@@ -68,6 +75,7 @@ def mark_notification_read(
             session,
             notification_id,
             principal.organization_id if principal else None,
+            user_id=principal.user_id if principal else None,
         )
     except NotFound as exc:
         raise HTTPException(status_code=404, detail=exc.message) from exc

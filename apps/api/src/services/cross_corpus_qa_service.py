@@ -203,10 +203,11 @@ def answer(session: Session, workspace_id: str, question: str, k: int = 6) -> di
 
     # Greedy coverage across the merged pool: each added sentence must cover a question term the
     # already-selected sentences did not. Ties break toward higher score, then public over
-    # confidential, then quote text — all deterministic.
+    # confidential, then quote text — all deterministic. Selection uses max()/descending order,
+    # so the preferred (public) corpus must carry the HIGHER component value.
     def _preference(candidate: tuple) -> tuple:
         score, _, citation, quote = candidate
-        return (score, 0 if citation["corpus"] == "public_filing" else 1, quote)
+        return (score, 1 if citation["corpus"] == "public_filing" else 0, quote)
 
     remaining = set(question_terms)
     selected: list[tuple] = []

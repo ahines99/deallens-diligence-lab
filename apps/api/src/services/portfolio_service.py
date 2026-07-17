@@ -221,6 +221,7 @@ def _financial_quality(
     reconciliations: list[FinancialReconciliation],
     exceptions: list[FinancialImportException],
     adjustments: list[QoEAdjustment],
+    snapshots: list[SourceSnapshot] | None = None,
 ) -> dict[str, Any]:
     # Coverage counts every mapped_* state ("mapped", "mapped_explicit"), matching the import
     # summary and the QoE bridge's `mapping_state LIKE 'mapped%'` filter — an exact "mapped"
@@ -236,9 +237,11 @@ def _financial_quality(
     )
     open_exceptions = sum(item.state == "open" for item in exceptions)
 
-    # Base-fact selection mirrors get_qoe_bridge: mapped currency facts only, newest period,
-    # then newest fact as a deterministic tie-break. A bare max() over the unordered query
-    # result made reported_ebitda nondeterministic when two snapshots shared a period end.
+    # Base-fact selection mirrors get_qoe_bridge exactly: mapped currency facts only, newest
+    # period, then the newest SNAPSHOT's created_at (the bridge orders by
+    # SourceSnapshot.created_at, not the fact's), with the fact id as a deterministic final
+    # tie-break the SQL limit(1) leaves implicit.
+    snapshot_created = {item.id: item.created_at for item in (snapshots or [])}
     ebitda_facts = [
         item
         for item in facts
@@ -249,7 +252,11 @@ def _financial_quality(
     ]
     latest_ebitda = max(
         ebitda_facts,
-        key=lambda item: (item.period_end, item.created_at, item.id),
+        key=lambda item: (
+            item.period_end,
+            snapshot_created.get(item.source_snapshot_id) or item.created_at,
+            item.id,
+        ),
         default=None,
     )
     reported_ebitda = _number(latest_ebitda.value) if latest_ebitda else None
@@ -496,6 +503,7 @@ def get_dashboard(
             reconciliation_by_workspace[workspace_id],
             exceptions_by_workspace[workspace_id],
             adjustments_by_workspace[workspace_id],
+            snapshots_by_workspace[workspace_id],
         )
         latest_packet = max(
             packets_by_deal[deal.id], key=lambda item: item.version, default=None

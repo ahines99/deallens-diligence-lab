@@ -8,7 +8,7 @@ sync never duplicates a row.
 """
 from __future__ import annotations
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -133,16 +133,37 @@ def sync_from_audit(session: Session, organization_id: str) -> list[Notification
     return created
 
 
+def _recipient_filter(user_id: str | None):
+    """Directed notifications (``recipient_user_id`` set) are visible ONLY to their recipient.
+
+    Broadcast rows (recipient ``None``) are visible to the whole organization. Without this
+    filter any member could read — and dismiss — another member's "you were mentioned" rows.
+    """
+    if user_id is None:
+        return Notification.recipient_user_id.is_(None)
+    return or_(
+        Notification.recipient_user_id.is_(None),
+        Notification.recipient_user_id == user_id,
+    )
+
+
 def list_notifications(
-    session: Session, organization_id: str, *, unread_only: bool = False
+    session: Session,
+    organization_id: str,
+    *,
+    unread_only: bool = False,
+    user_id: str | None = None,
 ) -> list[Notification]:
-    statement = select(Notification).where(Notification.organization_id == organization_id)
+    statement = select(Notification).where(
+        Notification.organization_id == organization_id,
+        _recipient_filter(user_id),
+    )
     if unread_only:
         statement = statement.where(Notification.read_at.is_(None))
     return list(session.scalars(statement.order_by(Notification.created_at.desc(), Notification.id)))
 
 
-def unread_count(session: Session, organization_id: str) -> int:
+def unread_count(session: Session, organization_id: str, *, user_id: str | None = None) -> int:
     return (
         session.scalar(
             select(func.count())
@@ -150,6 +171,7 @@ def unread_count(session: Session, organization_id: str) -> int:
             .where(
                 Notification.organization_id == organization_id,
                 Notification.read_at.is_(None),
+                _recipient_filter(user_id),
             )
         )
         or 0
@@ -157,16 +179,26 @@ def unread_count(session: Session, organization_id: str) -> int:
 
 
 def mark_read(
-    session: Session, notification_id: str, organization_id: str | None = None
+    session: Session,
+    notification_id: str,
+    organization_id: str | None = None,
+    user_id: str | None = None,
 ) -> Notification:
     """Flip ``read_at`` for a notification, scoped to its organization when known.
 
     ``organization_id`` is enforced only when supplied (an authenticated request), keeping the
-    tenant boundary non-enumerable while preserving zero-config local development.
+    tenant boundary non-enumerable while preserving zero-config local development. A directed
+    notification can be marked read only by its recipient — anyone else gets the same 404 as a
+    nonexistent id, so directed rows are not enumerable either.
     """
     notification = session.get(Notification, notification_id)
-    if notification is None or (
-        organization_id is not None and notification.organization_id != organization_id
+    if (
+        notification is None
+        or (organization_id is not None and notification.organization_id != organization_id)
+        or (
+            notification.recipient_user_id is not None
+            and notification.recipient_user_id != user_id
+        )
     ):
         raise NotFound(f"Notification '{notification_id}' not found")
     if notification.read_at is None:

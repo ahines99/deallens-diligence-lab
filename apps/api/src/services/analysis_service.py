@@ -31,7 +31,7 @@ from src.models import (
 from src.models.underwriting_data import AnalysisRun, ArtifactVersion
 from src.seed import loader
 from src.services import evidence_service
-from src.services.common import NotFound, get_workspace_or_404, touch_status
+from src.services.common import NotFound, get_workspace_or_404, insert_versioned, touch_status
 
 logger = logging.getLogger("deallens.analysis")
 
@@ -353,42 +353,44 @@ def _run_full_analysis(
             else None
         ),
     }
-    latest_run = session.scalar(
-        select(AnalysisRun)
-        .where(
-            AnalysisRun.workspace_id == workspace_id,
-            AnalysisRun.run_type == "full_diligence",
-        )
-        .order_by(AnalysisRun.version.desc())
-    )
     completed_at = now_utc()
-    run = AnalysisRun(
-        workspace_id=workspace_id,
-        run_type="full_diligence",
-        version=(latest_run.version + 1) if latest_run else 1,
-        supersedes_id=latest_run.id if latest_run else None,
-        status="succeeded",
-        input_hash=underwriting_data_service.content_hash(input_manifest),
-        content_hash=underwriting_data_service.content_hash(output_summary),
-        source_snapshot_ids=[],
-        input_manifest=input_manifest,
-        output_summary=output_summary,
-        model_version=(
-            (memo_polish.model or bear_polish.model or "external-llm")
-            if llm_applied
-            else "deterministic-wave3"
-        ),
-        prompt_version=(
-            (memo_polish.prompt_version or bear_polish.prompt_version) if llm_applied else None
-        ),
-        code_version="wave3",
-        error_message=None,
-        created_by="analysis_service",
-        started_at=completed_at,
-        completed_at=completed_at,
-    )
-    session.add(run)
-    session.flush()
+
+    def _build_run() -> AnalysisRun:
+        latest_run = session.scalar(
+            select(AnalysisRun)
+            .where(
+                AnalysisRun.workspace_id == workspace_id,
+                AnalysisRun.run_type == "full_diligence",
+            )
+            .order_by(AnalysisRun.version.desc())
+        )
+        return AnalysisRun(
+            workspace_id=workspace_id,
+            run_type="full_diligence",
+            version=(latest_run.version + 1) if latest_run else 1,
+            supersedes_id=latest_run.id if latest_run else None,
+            status="succeeded",
+            input_hash=underwriting_data_service.content_hash(input_manifest),
+            content_hash=underwriting_data_service.content_hash(output_summary),
+            source_snapshot_ids=[],
+            input_manifest=input_manifest,
+            output_summary=output_summary,
+            model_version=(
+                (memo_polish.model or bear_polish.model or "external-llm")
+                if llm_applied
+                else "deterministic-wave3"
+            ),
+            prompt_version=(
+                (memo_polish.prompt_version or bear_polish.prompt_version) if llm_applied else None
+            ),
+            code_version="wave3",
+            error_message=None,
+            created_by="analysis_service",
+            started_at=completed_at,
+            completed_at=completed_at,
+        )
+
+    run = insert_versioned(session, _build_run)
     content_json = {
         "plan": plan_data,
         "risk_findings": raw_findings,
@@ -397,33 +399,35 @@ def _run_full_analysis(
         "red_team": rt,
         "financial_evidence_refs": fin_refs,
     }
-    latest_artifact = session.scalar(
-        select(ArtifactVersion)
-        .where(
-            ArtifactVersion.workspace_id == workspace_id,
-            ArtifactVersion.artifact_type == "diligence_pack",
+    def _build_artifact() -> ArtifactVersion:
+        latest_artifact = session.scalar(
+            select(ArtifactVersion)
+            .where(
+                ArtifactVersion.workspace_id == workspace_id,
+                ArtifactVersion.artifact_type == "diligence_pack",
+            )
+            .order_by(ArtifactVersion.version.desc())
         )
-        .order_by(ArtifactVersion.version.desc())
-    )
-    artifact = ArtifactVersion(
-        workspace_id=workspace_id,
-        artifact_type="diligence_pack",
-        version=(latest_artifact.version + 1) if latest_artifact else 1,
-        supersedes_id=latest_artifact.id if latest_artifact else None,
-        analysis_run_id=run.id,
-        source_snapshot_ids=[],
-        input_hash=underwriting_data_service.content_hash(input_manifest),
-        content_hash=underwriting_data_service.content_hash(content_json),
-        content_json=content_json,
-        content_text=None,
-        file_uri=None,
-        artifact_metadata={
-            "target_name": target.name,
-            "filing_accession": tenk.accession_number if tenk else None,
-        },
-        created_by="analysis_service",
-    )
-    session.add(artifact)
+        return ArtifactVersion(
+            workspace_id=workspace_id,
+            artifact_type="diligence_pack",
+            version=(latest_artifact.version + 1) if latest_artifact else 1,
+            supersedes_id=latest_artifact.id if latest_artifact else None,
+            analysis_run_id=run.id,
+            source_snapshot_ids=[],
+            input_hash=underwriting_data_service.content_hash(input_manifest),
+            content_hash=underwriting_data_service.content_hash(content_json),
+            content_json=content_json,
+            content_text=None,
+            file_uri=None,
+            artifact_metadata={
+                "target_name": target.name,
+                "filing_accession": tenk.accession_number if tenk else None,
+            },
+            created_by="analysis_service",
+        )
+
+    insert_versioned(session, _build_artifact)
     session.commit()
 
 

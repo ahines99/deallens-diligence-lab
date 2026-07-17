@@ -8,7 +8,7 @@ from src.agents.risk_analyst import RiskAnalyst
 from src.schemas.common import RiskCategory, Workstream
 from src.seed import loader
 from src.services import edgar_client, evidence_service, fred_service, sec_financials, usaspending_service
-from src.services.filing_sections import extract_sections
+from src.services.filing_sections import extract_sections, split_paragraphs
 
 VALID_CATEGORIES = set(RiskCategory.__args__)
 VALID_WORKSTREAMS = set(Workstream.__args__)
@@ -28,6 +28,18 @@ def test_taxonomy_integrity():
         assert c["workstream_owner"] in VALID_WORKSTREAMS
         assert c["signals"]
     assert tax["severity_scale"]["critical"] == [9, 10]
+
+
+def test_split_paragraphs_preserves_short_lead_in_on_overflow():
+    """Regression: when the buffer overflowed max_len while still under min_len, the short
+    lead-in (10-K risk factors often open with a bolded phrase) was silently DROPPED instead of
+    riding along with the next sentence. Filing text must never disappear from the chunks."""
+    lead = "Customer concentration remains our most acute risk;"
+    body = "The " + "very " * 320 + "long disclosure concludes here."
+    chunks = split_paragraphs(f"{lead} {body}")
+    joined = " ".join(chunks)
+    assert lead in joined
+    assert "long disclosure concludes here." in joined
 
 
 def test_financial_math():

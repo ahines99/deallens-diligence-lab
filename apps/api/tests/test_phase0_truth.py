@@ -104,7 +104,10 @@ def test_non_december_fye_instants_align_to_duration_end_not_calendar_q4():
     assert "2025" not in forensic["years"]
 
 
-def test_fiscal_year_label_wins_over_calendar_frame_for_january_year_end():
+def test_frame_year_labels_annual_periods_for_january_year_end():
+    """A January-FYE issuer's FY ending 2026-01-31 carries the CY2025 frame; the frame is the
+    period key. ``fy`` cannot be one — it is the reporting filing's fiscal year (see the
+    comparative-collapse regression below)."""
     facts = _facts(
         {
             "Revenues": _usd(
@@ -145,12 +148,87 @@ def test_fiscal_year_label_wins_over_calendar_frame_for_january_year_end():
     )
     financials = sec_financials.extract_financials(facts)
     assert financials["fiscal_year_end"] == "2026-01-31"
-    assert financials["sources"]["revenue"]["fy"] == "2026"
     assert financials["sources"]["cash"]["end"] == "2026-01-31"
     forensic = sec_financials.extract_forensic_inputs(facts)
-    assert forensic["years"] == ["2025", "2026"]
-    assert forensic["by_year"]["2026"]["cash"] == 25.0
-    assert sec_financials.extract_trends(facts)["years"] == ["2025", "2026"]
+    assert forensic["years"] == ["2024", "2025"]
+    assert forensic["by_year"]["2025"]["cash"] == 25.0
+    assert sec_financials.extract_trends(facts)["years"] == ["2024", "2025"]
+
+
+def test_comparative_periods_sharing_the_filing_fy_do_not_collapse():
+    """Live-SEC regression: every point in Company Facts carries the *reporting filing's* ``fy``,
+    so the three comparative years restated in one 10-K all share it. Keying annual periods by
+    ``fy`` collapsed them into a single year — dropping FY2023/FY2024 for real filers (Apple,
+    Coca-Cola) and computing "growth" across a three-year gap. Periods must be keyed by frame."""
+    one_filing = {"form": "10-K", "fy": 2025, "accn": "acc-2025", "filed": "2025-11-01"}
+    facts = _facts(
+        {
+            "Revenues": _usd(
+                [
+                    {
+                        "start": "2021-01-01",
+                        "end": "2021-12-31",
+                        "val": 365.0,
+                        "frame": "CY2021",
+                        "form": "10-K",
+                        "fy": 2023,
+                        "accn": "acc-2023",
+                        "filed": "2023-11-01",
+                    },
+                    {
+                        "start": "2022-01-01",
+                        "end": "2022-12-31",
+                        "val": 394.0,
+                        "frame": "CY2022",
+                        "form": "10-K",
+                        "fy": 2023,
+                        "accn": "acc-2023",
+                        "filed": "2023-11-01",
+                    },
+                    # The current 10-K restates its two comparatives — all three share fy=2025.
+                    {
+                        "start": "2023-01-01",
+                        "end": "2023-12-31",
+                        "val": 383.0,
+                        "frame": "CY2023",
+                        **one_filing,
+                    },
+                    {
+                        "start": "2024-01-01",
+                        "end": "2024-12-31",
+                        "val": 391.0,
+                        "frame": "CY2024",
+                        **one_filing,
+                    },
+                    {
+                        "start": "2025-01-01",
+                        "end": "2025-12-31",
+                        "val": 416.0,
+                        "frame": "CY2025",
+                        **one_filing,
+                    },
+                ]
+            ),
+        }
+    )
+    points = edgar_client.annual_points(facts, "Revenues")
+    assert [p["frame"] for p in points] == [
+        "CY2021",
+        "CY2022",
+        "CY2023",
+        "CY2024",
+        "CY2025",
+    ]
+
+    trends = sec_financials.extract_trends(facts)
+    assert trends["years"] == ["2021", "2022", "2023", "2024", "2025"]
+    assert [row["revenue"] for row in trends["rows"]] == [365.0, 394.0, 383.0, 391.0, 416.0]
+
+    financials = sec_financials.extract_financials(facts)
+    assert financials["revenue"] == 416.0
+    # YoY growth is CY2025 vs CY2024 — not vs a collapsed three-year-old comparative.
+    assert financials["revenue_prior"] == 391.0
+    assert financials["revenue_growth"] == round((416.0 - 391.0) / 391.0, 4)
 
 
 def test_instant_fact_does_not_fall_back_to_wrong_balance_sheet_date():

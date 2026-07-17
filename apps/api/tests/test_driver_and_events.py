@@ -181,6 +181,28 @@ def test_driver_model_rejects_unsafe_formulas(formula):
         service.calculate_driver_model(request)
 
 
+def test_driver_model_rejects_non_finite_literals_instead_of_nulls_or_500s():
+    """Regression: ``1e999`` parses as float infinity — it produced a silent null driver value,
+    and ``1e999 / 1e999`` raised decimal.InvalidOperation (an unhandled HTTP 500)."""
+    with pytest.raises(service.UnderwritingCalculationError, match="finite"):
+        service.calculate_driver_model(
+            DriverModelRequest.model_validate({"drivers": [{"name": "a", "formula": "1e999"}]})
+        )
+    with pytest.raises(service.UnderwritingCalculationError, match="finite"):
+        service.calculate_driver_model(
+            DriverModelRequest.model_validate(
+                {"drivers": [{"name": "a", "formula": "1e999 / 1e999"}]}
+            )
+        )
+    # Finite literals whose PRODUCT exceeds the float range must also fail cleanly.
+    with pytest.raises(service.UnderwritingCalculationError, match="range"):
+        service.calculate_driver_model(
+            DriverModelRequest.model_validate(
+                {"drivers": [{"name": "a", "formula": "1e308 * 1e308"}]}
+            )
+        )
+
+
 def test_driver_model_endpoint_contract_and_cycle_is_422(client, workspace_id):
     url = f"/api/workspaces/{workspace_id}/underwriting/driver-model"
     ok = client.post(url, json={"drivers": _drivers()})

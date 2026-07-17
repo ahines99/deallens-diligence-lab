@@ -278,6 +278,36 @@ def test_exit_readiness_scorecard_names_thresholds_and_grids_holds():
     assert holds[0].moic < holds[1].moic < holds[2].moic
 
 
+def test_exit_readiness_grid_matches_headline_at_the_unchanged_hold():
+    """Regression: rescoping regenerated standard periods even for the deal's own hold, dropping
+    per-period driver overrides — the grid's 5-year row disagreed with the headline IRR/MoIC for
+    the very same case."""
+    data = sample_assumptions().model_dump(mode="json")
+    data["projection"]["periods"][0]["annual_revenue_growth"] = 0.20  # Y1 override
+    with_overrides = UnderwritingAssumptions.model_validate(data)
+    headline = service.run_underwriting(with_overrides).returns
+    grid = {
+        point.hold_period_years: point
+        for point in service.calculate_exit_readiness(with_overrides).hold_period_grid
+    }
+    assert grid[5.0].irr == headline.xirr
+    assert grid[5.0].moic == headline.moic
+
+
+def test_exit_readiness_debt_free_deal_scores_coverage_strong_not_insufficient():
+    """Regression: a deal with no debt has no interest to cover — coverage is trivially
+    satisfied, not "insufficient data" (which scored 0 and dragged the overall rating)."""
+    data = sample_assumptions().model_dump(mode="json")
+    data["debt_tranches"] = []
+    data["historical"]["existing_debt"] = 0.0
+    debt_free = UnderwritingAssumptions.model_validate(data)
+    result = service.calculate_exit_readiness(debt_free)
+    coverage = next(d for d in result.dimensions if d.dimension == "coverage")
+    assert coverage.rating == "strong"
+    assert coverage.score == 100.0
+    assert coverage.meets_threshold is True
+
+
 def test_exit_readiness_endpoint(client, workspace_id):
     response = client.post(
         f"/api/workspaces/{workspace_id}/underwriting/exit-readiness",

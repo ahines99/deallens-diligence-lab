@@ -40,7 +40,12 @@ from src.schemas.underwriting_data import (
     QoEAdjustmentDecision,
     SourceSnapshotCreate,
 )
-from src.services.common import NotFound, get_workspace_or_404, touch_status
+from src.services.common import (
+    NotFound,
+    get_workspace_or_404,
+    insert_versioned,
+    touch_status,
+)
 
 
 class UnderwritingDataError(ValueError):
@@ -192,43 +197,46 @@ def register_source_snapshot(
     target = _target_for_workspace(session, workspace_id)
     source_type = "user_registered_reference"
     source_name = data.source_name.strip()
-    version, latest = _next_source_version(
-        session, workspace_id, source_type, source_name
-    )
-    snapshot = SourceSnapshot(
-        workspace_id=workspace_id,
-        target_id=target.id,
-        source_kind="user_input",
-        source_type=source_type,
-        source_name=source_name,
-        version=version,
-        supersedes_id=latest.id if latest else None,
-        filename=data.filename,
-        content_type=data.content_type,
-        storage_uri=data.storage_uri,
-        input_hash=data.input_hash or data.content_hash,
-        content_hash=data.content_hash,
-        byte_size=data.byte_size,
-        record_count=data.record_count,
-        status="partial",
-        source_metadata=_json_safe(
-            {
-                "provenance_origin": "user_submitted_reference",
-                "verification_status": "unverified",
-                "hash_attestation": "client_asserted",
-                "declared": {
-                    "source_kind": data.source_kind,
-                    "source_type": data.source_type,
-                    "status": data.status,
-                    "input_hash": data.input_hash,
-                    "content_hash": data.content_hash,
-                },
-                "declared_metadata": data.source_metadata,
-            }
-        ),
-        created_by=actor_id or data.created_by,
-    )
-    session.add(snapshot)
+
+    def _build_snapshot() -> SourceSnapshot:
+        version, latest = _next_source_version(
+            session, workspace_id, source_type, source_name
+        )
+        return SourceSnapshot(
+            workspace_id=workspace_id,
+            target_id=target.id,
+            source_kind="user_input",
+            source_type=source_type,
+            source_name=source_name,
+            version=version,
+            supersedes_id=latest.id if latest else None,
+            filename=data.filename,
+            content_type=data.content_type,
+            storage_uri=data.storage_uri,
+            input_hash=data.input_hash or data.content_hash,
+            content_hash=data.content_hash,
+            byte_size=data.byte_size,
+            record_count=data.record_count,
+            status="partial",
+            source_metadata=_json_safe(
+                {
+                    "provenance_origin": "user_submitted_reference",
+                    "verification_status": "unverified",
+                    "hash_attestation": "client_asserted",
+                    "declared": {
+                        "source_kind": data.source_kind,
+                        "source_type": data.source_type,
+                        "status": data.status,
+                        "input_hash": data.input_hash,
+                        "content_hash": data.content_hash,
+                    },
+                    "declared_metadata": data.source_metadata,
+                }
+            ),
+            created_by=actor_id or data.created_by,
+        )
+
+    snapshot = insert_versioned(session, _build_snapshot)
     session.commit()
     session.refresh(snapshot)
     return snapshot
@@ -254,33 +262,36 @@ def create_account_mapping(
         raise UnderwritingDataError("raw_account must contain letters or numbers")
 
     source_type = "management_financials"
-    latest = session.scalar(
-        select(AccountMapping)
-        .where(
-            AccountMapping.workspace_id == workspace_id,
-            AccountMapping.source_type == source_type,
-            AccountMapping.raw_account_normalized == normalized,
-        )
-        .order_by(AccountMapping.version.desc())
-        .limit(1)
-    )
     approved_by = data.approved_by or (data.created_by if data.status == "approved" else None)
-    mapping = AccountMapping(
-        workspace_id=workspace_id,
-        source_type=source_type,
-        raw_account=data.raw_account.strip(),
-        raw_account_normalized=normalized,
-        canonical_account=data.canonical_account,
-        statement=data.statement,
-        sign_multiplier=data.sign_multiplier,
-        status=data.status,
-        version=latest.version + 1 if latest else 1,
-        supersedes_id=latest.id if latest else None,
-        created_by=data.created_by,
-        approved_by=approved_by,
-        approved_at=now_utc() if approved_by else None,
-    )
-    session.add(mapping)
+
+    def _build_mapping() -> AccountMapping:
+        latest = session.scalar(
+            select(AccountMapping)
+            .where(
+                AccountMapping.workspace_id == workspace_id,
+                AccountMapping.source_type == source_type,
+                AccountMapping.raw_account_normalized == normalized,
+            )
+            .order_by(AccountMapping.version.desc())
+            .limit(1)
+        )
+        return AccountMapping(
+            workspace_id=workspace_id,
+            source_type=source_type,
+            raw_account=data.raw_account.strip(),
+            raw_account_normalized=normalized,
+            canonical_account=data.canonical_account,
+            statement=data.statement,
+            sign_multiplier=data.sign_multiplier,
+            status=data.status,
+            version=latest.version + 1 if latest else 1,
+            supersedes_id=latest.id if latest else None,
+            created_by=data.created_by,
+            approved_by=approved_by,
+            approved_at=now_utc() if approved_by else None,
+        )
+
+    mapping = insert_versioned(session, _build_mapping)
     session.commit()
     session.refresh(mapping)
     return mapping
@@ -1435,9 +1446,6 @@ def create_analysis_run(
     _validate_source_ids(session, workspace_id, data.source_snapshot_ids)
     completed_at = data.completed_at or now_utc()
     started_at = data.started_at or completed_at
-    version, latest = _next_stream_version(
-        session, AnalysisRun, workspace_id, AnalysisRun.run_type, data.run_type
-    )
     input_manifest = _json_safe(data.input_manifest)
     output_summary = _json_safe(data.output_summary)
     run_input_hash = content_hash(
@@ -1460,26 +1468,32 @@ def create_analysis_run(
         raise UnderwritingDataError("input_hash does not match the server-canonical run inputs")
     if data.content_hash is not None and data.content_hash != run_content_hash:
         raise UnderwritingDataError("content_hash does not match the server-canonical run output")
-    run = AnalysisRun(
-        workspace_id=workspace_id,
-        run_type=data.run_type,
-        version=version,
-        supersedes_id=latest.id if latest else None,
-        status=data.status,
-        input_hash=run_input_hash,
-        content_hash=run_content_hash,
-        source_snapshot_ids=data.source_snapshot_ids,
-        input_manifest=input_manifest,
-        output_summary=output_summary,
-        model_version=data.model_version,
-        prompt_version=data.prompt_version,
-        code_version=data.code_version,
-        error_message=data.error_message,
-        created_by=data.created_by,
-        started_at=started_at,
-        completed_at=completed_at,
-    )
-    session.add(run)
+
+    def _build_run() -> AnalysisRun:
+        version, latest = _next_stream_version(
+            session, AnalysisRun, workspace_id, AnalysisRun.run_type, data.run_type
+        )
+        return AnalysisRun(
+            workspace_id=workspace_id,
+            run_type=data.run_type,
+            version=version,
+            supersedes_id=latest.id if latest else None,
+            status=data.status,
+            input_hash=run_input_hash,
+            content_hash=run_content_hash,
+            source_snapshot_ids=data.source_snapshot_ids,
+            input_manifest=input_manifest,
+            output_summary=output_summary,
+            model_version=data.model_version,
+            prompt_version=data.prompt_version,
+            code_version=data.code_version,
+            error_message=data.error_message,
+            created_by=data.created_by,
+            started_at=started_at,
+            completed_at=completed_at,
+        )
+
+    run = insert_versioned(session, _build_run)
     session.commit()
     session.refresh(run)
     return run
@@ -1506,9 +1520,6 @@ def create_artifact_version(
         if run is None or run.workspace_id != workspace_id:
             raise UnderwritingDataError("analysis_run_id does not belong to this workspace")
 
-    version, latest = _next_stream_version(
-        session, ArtifactVersion, workspace_id, ArtifactVersion.artifact_type, data.artifact_type
-    )
     content_payload = (
         data.content_json
         if data.content_json is not None
@@ -1536,22 +1547,32 @@ def create_artifact_version(
         raise UnderwritingDataError(
             "content_hash does not match the server-canonical artifact content"
         )
-    artifact = ArtifactVersion(
-        workspace_id=workspace_id,
-        artifact_type=data.artifact_type,
-        version=version,
-        supersedes_id=latest.id if latest else None,
-        analysis_run_id=data.analysis_run_id,
-        source_snapshot_ids=data.source_snapshot_ids,
-        input_hash=artifact_input_hash,
-        content_hash=artifact_content_hash,
-        content_json=_json_safe(data.content_json),
-        content_text=data.content_text,
-        file_uri=data.file_uri,
-        artifact_metadata=_json_safe(data.artifact_metadata),
-        created_by=data.created_by,
-    )
-    session.add(artifact)
+
+    def _build_artifact() -> ArtifactVersion:
+        version, latest = _next_stream_version(
+            session,
+            ArtifactVersion,
+            workspace_id,
+            ArtifactVersion.artifact_type,
+            data.artifact_type,
+        )
+        return ArtifactVersion(
+            workspace_id=workspace_id,
+            artifact_type=data.artifact_type,
+            version=version,
+            supersedes_id=latest.id if latest else None,
+            analysis_run_id=data.analysis_run_id,
+            source_snapshot_ids=data.source_snapshot_ids,
+            input_hash=artifact_input_hash,
+            content_hash=artifact_content_hash,
+            content_json=_json_safe(data.content_json),
+            content_text=data.content_text,
+            file_uri=data.file_uri,
+            artifact_metadata=_json_safe(data.artifact_metadata),
+            created_by=data.created_by,
+        )
+
+    artifact = insert_versioned(session, _build_artifact)
     session.commit()
     session.refresh(artifact)
     return artifact

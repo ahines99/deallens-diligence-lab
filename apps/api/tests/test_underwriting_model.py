@@ -302,6 +302,78 @@ def test_working_capital_peg_normalizes_seasonality_and_true_up():
     assert result.purchase_price_adjustment == 10.0
 
 
+def test_working_capital_peg_ltm_window_is_twelve_months_not_thirteen():
+    """Regression: ``>= cutoff`` also admitted the observation exactly 12 months before closing,
+    so a monthly series contributed 13 points and the anniversary month was double-weighted in
+    the peg (and therefore the purchase-price adjustment)."""
+    month_ends = [
+        "2025-06-30",  # anniversary of closing — outside the trailing-twelve-month window
+        "2025-07-31", "2025-08-31", "2025-09-30", "2025-10-31", "2025-11-30", "2025-12-31",
+        "2026-01-31", "2026-02-28", "2026-03-31", "2026-04-30", "2026-05-31", "2026-06-30",
+    ]
+    payload = WorkingCapitalPegRequest.model_validate(
+        {
+            "closing_date": "2026-06-30",
+            "method": "average_ltm",
+            "observations": [
+                {
+                    "observation_date": day,
+                    "accounts_receivable": 1300.0 if index == 0 else 100.0,
+                }
+                for index, day in enumerate(month_ends)
+            ],
+        }
+    )
+    result = service.calculate_working_capital_peg(payload)
+    assert result.trailing_average == 100.0
+    assert result.peg == 100.0
+    assert result.high == 100.0  # the anniversary outlier is outside the window entirely
+
+
+def test_fixed_charge_coverage_uses_scheduled_not_paid_amortization():
+    """Regression: fixed charges are the CONTRACTUAL debt service. Measuring the amortization
+    actually paid made the covenant read healthier exactly when the company was cash-short and
+    defaulting on part of its scheduled amortization."""
+    data = sample_assumptions().model_dump(mode="json")
+    data["projection"]["default_drivers"]["ebitda_margin"] = 0.10
+    # A single term loan with heavy scheduled amortization and no revolver to fund it.
+    data["debt_tranches"] = [
+        {
+            "name": "First Lien",
+            "tranche_type": "term_loan",
+            "initial_amount": 800.0,
+            "senior": True,
+            "spread": 0.04,
+            "base_rate_floor": 0.05,
+            "annual_amortization_rate": 0.20,
+            "cash_sweep_priority": 10,
+        }
+    ]
+    data["covenants"] = [
+        {
+            "name": "FCCR",
+            "metric": "fixed_charge_coverage",
+            "test": "minimum",
+            "threshold": 0.5,
+        }
+    ]
+    stressed = UnderwritingAssumptions.model_validate(data)
+    projection = service.calculate_projection(stressed)
+    first = projection[0]
+    tranche = next(row for row in first["debt_tranches"] if row["name"] == "First Lien")
+    # The regime under test: cash-short but partially paying scheduled amortization.
+    assert tranche["paid_amortization"] > 0
+    assert tranche["unpaid_amortization"] > 0
+    expected = (first["ebitda"] - first["capex"] - first["cash_taxes"]) / (
+        first["cash_interest"] + tranche["required_amortization"]
+    )
+    assert first["fixed_charge_coverage"] == pytest.approx(expected, abs=1e-3)
+    fccr = next(row for row in first["covenants"] if row["metric"] == "fixed_charge_coverage")
+    # Against paid amortization the ratio computed ~0.79 here and "passed"; against the
+    # scheduled charge the company is far below a 0.5x floor while defaulting.
+    assert fccr["passed"] is False
+
+
 def test_sensitivity_and_reverse_stress_are_monotonic_and_solve_target():
     assumptions = sample_assumptions()
     sensitivity = service.calculate_sensitivity(

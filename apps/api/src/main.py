@@ -124,6 +124,9 @@ _PUBLIC_PATHS = {
 _SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 _VIEWER_SELF_SERVICE_PATHS = {"/api/auth/logout", "/api/auth/switch-organization"}
 _RATE_LIMITED_AUTH_PATHS = {"/api/auth/login", "/api/auth/register", "/api/auth/demo"}
+# The OIDC endpoints are GETs but still unauthenticated auth surface: /login mints server-side
+# state entries and /callback performs an outbound token exchange — both must be throttled.
+_RATE_LIMITED_AUTH_GET_PATHS = {"/api/auth/oidc/login", "/api/auth/oidc/callback"}
 # SEC-bound endpoints throttled per client IP when DEMO_MODE is on, so a public demo
 # box cannot be driven past EDGAR's fair-access guidance by one visitor.
 _DEMO_THROTTLED_BUILD_PATHS = re.compile(
@@ -188,6 +191,15 @@ class _DemoBuildRateLimiter:
             if len(builds) >= limit:
                 return max(1, round(window - (now - builds[0])))
             builds.append(now)
+            if len(self._builds) > 10_000:
+                # Same stale-key eviction as _AuthRateLimiter: per-key deques are pruned above,
+                # but abandoned keys would otherwise accumulate for the life of the process.
+                for stale_key in [
+                    item_key
+                    for item_key, values in self._builds.items()
+                    if not values or values[-1] <= now - window
+                ]:
+                    self._builds.pop(stale_key, None)
             return None
 
     def clear(self) -> None:
@@ -364,7 +376,9 @@ async def identity_and_tenant_guard(request: Request, call_next):
     """Resolve server-verified identity and enforce workspace tenant boundaries."""
     path = request.url.path
     request.state.principal = None
-    if request.method == "POST" and path in _RATE_LIMITED_AUTH_PATHS:
+    if (request.method == "POST" and path in _RATE_LIMITED_AUTH_PATHS) or (
+        request.method == "GET" and path in _RATE_LIMITED_AUTH_GET_PATHS
+    ):
         client_host = request.client.host if request.client else "unknown"
         retry_after = _auth_rate_limiter.check(f"{path}:{client_host}")
         if retry_after is not None:

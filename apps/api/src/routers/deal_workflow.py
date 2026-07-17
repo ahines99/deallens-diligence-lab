@@ -84,6 +84,7 @@ def actor_context(
             organization_id=principal.organization_id,
             roles=principal.actor_roles,
             request_id=header_request_id,
+            via_trusted_service=principal.is_service_account,
         )
     return ActorContext(
         actor_id=header_actor_id,
@@ -102,6 +103,9 @@ def _call(function: Callable[..., T], *args, **kwargs) -> T:
         return function(*args, **kwargs)
     except service.WorkflowError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+    except service.NotFound as exc:
+        # Mirrors the app-level NotFound handler so the router stays independently mountable.
+        raise HTTPException(status_code=404, detail=exc.message) from exc
 
 
 @router.post("/organizations", response_model=OrganizationOut, status_code=201)

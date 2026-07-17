@@ -192,6 +192,41 @@ def test_zero_variance_distributions_collapse_to_the_deterministic_result():
         assert band.mean == pytest.approx(expected, abs=1e-9)
 
 
+def test_equity_wipeouts_enter_the_sample_as_total_losses_not_failures():
+    """Regression: a draw that wipes out sponsor equity has no positive cash flow, so no IRR
+    solves — but the outcome is a total loss, not an invalid iteration. Censoring wipeouts into
+    ``failed`` silently understated P(MoIC<1) and the loss percentiles exactly under stress.
+    A wipeout must converge with its (negative) MoIC and an IRR of -100%."""
+    assumptions = sample_assumptions()
+    result = service.run_monte_carlo(
+        MonteCarloRequest.model_validate(
+            {
+                "assumptions": assumptions.model_dump(mode="json"),
+                "iterations": 100,
+                "seed": 42,
+                "distributions": [
+                    # Exit at 0.5x EBITDA — exit equity is deeply negative in every iteration.
+                    {"driver": "exit_multiple", "kind": "normal", "mean": 0.5, "std_dev": 0.0},
+                ],
+            }
+        )
+    )
+    # Sanity-check the fixture really is a wipeout, not merely a low-multiple exit.
+    stressed = assumptions.model_copy(deep=True)
+    stressed.transaction.exit_multiple = 0.5
+    deterministic = service.run_underwriting(stressed)
+    assert deterministic.returns.sponsor_exit_proceeds <= 0
+    assert deterministic.returns.xirr is None
+
+    assert result.converged == 100
+    assert result.failed == 0
+    assert result.irr.p5 == result.irr.p50 == result.irr.p95 == -1.0
+    assert result.moic.p50 == deterministic.returns.moic
+    assert result.moic.p50 < 1.0
+    assert result.probability_irr_below_zero == 1.0
+    assert result.probability_moic_below_1 == 1.0
+
+
 @pytest.mark.parametrize("exit_multiple", [10.0, 8.0])
 def test_attribution_components_sum_exactly_to_total_value_creation(exit_multiple):
     result = service.calculate_returns_attribution(

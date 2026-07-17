@@ -142,8 +142,9 @@ function SensitivityPanel({ workspaceId, model }: { workspaceId: string; model: 
       {result && (
         <div className="mt-5 overflow-x-auto">
           <table className="min-w-full border-collapse text-xs">
-            <thead><tr><th className="border border-line bg-panel2 px-3 py-2 text-left text-muted">{result.row_variable} ↓ / {result.column_variable} →</th>{result.column_values.map((value) => <th key={value} className="border border-line bg-panel2 px-3 py-2 text-right text-muted">{result.column_variable.includes("shift") ? pct(value) : value.toFixed(1)}</th>)}</tr></thead>
-            <tbody>{result.row_values.map((row, rowIndex) => <tr key={row}><th className="border border-line bg-panel2 px-3 py-2 text-left text-muted">{result.row_variable.includes("shift") ? pct(row) : row.toFixed(1)}</th>{result.grid[rowIndex].map((value, columnIndex) => <td key={columnIndex} className="border border-line px-3 py-2 text-right tabular-nums">{displayMetric(value, result.metric)}</td>)}</tr>)}</tbody>
+            {/* Axis values may repeat (the API accepts duplicate points), so keys include the index. */}
+            <thead><tr><th className="border border-line bg-panel2 px-3 py-2 text-left text-muted">{result.row_variable} ↓ / {result.column_variable} →</th>{result.column_values.map((value, columnIndex) => <th key={`${value}-${columnIndex}`} className="border border-line bg-panel2 px-3 py-2 text-right text-muted">{result.column_variable.includes("shift") ? pct(value) : value.toFixed(1)}</th>)}</tr></thead>
+            <tbody>{result.row_values.map((row, rowIndex) => <tr key={`${row}-${rowIndex}`}><th className="border border-line bg-panel2 px-3 py-2 text-left text-muted">{result.row_variable.includes("shift") ? pct(row) : row.toFixed(1)}</th>{result.grid[rowIndex].map((value, columnIndex) => <td key={columnIndex} className="border border-line px-3 py-2 text-right tabular-nums">{displayMetric(value, result.metric)}</td>)}</tr>)}</tbody>
           </table>
         </div>
       )}

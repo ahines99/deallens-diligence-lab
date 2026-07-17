@@ -51,6 +51,27 @@ def _verified_actor(
 ActorDep = Annotated[str, Depends(_verified_actor)]
 
 
+def _human_decider(
+    request: Request,
+    header_actor_id: Annotated[str | None, Header(alias="X-Actor-ID")] = None,
+) -> str:
+    """Four-eyes decisions require a human identity: a trusted-service principal's actor id is
+    caller-chosen, so one automation token could propose under one name and approve under another."""
+    principal = getattr(request.state, "principal", None)
+    if principal is not None and principal.is_service_account:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "QoE adjustment decisions require a human user session; "
+                "trusted-service automation cannot act as a reviewer"
+            ),
+        )
+    return principal.user_id if principal is not None else (header_actor_id or "system")
+
+
+HumanDeciderDep = Annotated[str, Depends(_human_decider)]
+
+
 def _translate_error(exc: service.UnderwritingDataError) -> HTTPException:
     code = status.HTTP_409_CONFLICT if isinstance(exc, service.UnderwritingDataConflict) else 422
     return HTTPException(status_code=code, detail=str(exc))
@@ -405,7 +426,7 @@ def decide_qoe_adjustment(
     adjustment_id: str,
     payload: QoEAdjustmentDecision,
     session: SessionDep,
-    actor_id: ActorDep,
+    actor_id: HumanDeciderDep,
 ) -> QoEAdjustmentOut:
     payload = payload.model_copy(update={"decided_by": actor_id})
     try:
