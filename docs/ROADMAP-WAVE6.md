@@ -82,3 +82,12 @@ should land before G59/G60 ship agent output into governed surfaces) → K/J in 
 (disjoint territory) → L last (G75 redaction is the largest single item and touches many
 surfaces). Same orchestration pattern as Wave 5: shared files (prompt registry, llm_provider,
 main.py, api.ts/types.ts) stay with the integrator; parallel agents get disjoint territory.
+
+## Post-wave audit (2026-07-18)
+
+The full Wave 5/6 diff (33 features, ~21k lines) was adversarially audited by six parallel
+auditors after completion: 2 HIGH (grounding-gate laundering through a tool's argument echo;
+cross-tenant access via the comparative-agent route), 5 MEDIUM, and ~13 LOW findings — all
+remediated with regression tests in commit `d63894a`, followed by an eight-angle self-review
+of the fix diff itself. Details and the running audit history live in
+[HANDOFF.md](HANDOFF.md) §6.

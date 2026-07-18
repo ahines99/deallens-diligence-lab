@@ -17,6 +17,7 @@ SEC EDGAR; `POST /api/examples/private-deal` loads the fictional example private
 `python -m src.seed.load_seed` remains a dev utility that pre-ingests MSFT/CRWD.
 
 Key env vars (see root `.env.example`): `SEC_USER_AGENT` (required for live SEC ingest),
-`LLM_MODE` (default `mock`), `DATABASE_URL` (default SQLite), `AUTH_REQUIRED` (default true),
-`AUTO_SEED` (default false; set `AUTH_REQUIRED=false` or `SEED_ORGANIZATION_SLUG` when seeding),
-`CORS_ORIGINS`.
+`LLM_MODE` (default `mock`), `GOLDEN_EVAL_LLM_ALLOWED` (default false; operator opt-in for
+workspace-unbound golden-set LLM evals like `POST /api/model-ops/prompt-ab`), `DATABASE_URL`
+(default SQLite), `AUTH_REQUIRED` (default true), `AUTO_SEED` (default false; set
+`AUTH_REQUIRED=false` or `SEED_ORGANIZATION_SLUG` when seeding), `CORS_ORIGINS`.

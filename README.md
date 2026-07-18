@@ -31,10 +31,12 @@ targets can additionally ingest live SEC EDGAR filings and XBRL facts
 |---|---|
 | **Measured, grounded AI** — hybrid retrieval (deterministic keyless embeddings fused with BM25 via reciprocal-rank fusion) gated by a CI eval harness (recall@k / MRR floors); extractive cited Q&A with explicit abstention; optional live-LLM grounded synthesis that fails closed on any citation/number drift; LLM-as-judge faithfulness evals; hashed prompt manifests bound to every LLM-touched run | "Ask the filings" tab · [`filings_qa_service.py`](apps/api/src/services/filings_qa_service.py) · [`retrieval_service.py`](apps/api/src/services/retrieval_service.py) · [`src/eval/`](apps/api/src/eval/) |
 | **Evidence governance** — append-only evidence with monotonic `EV-###` refs enforced at the ORM layer, plus a runtime faithfulness report that re-verifies every memo citation on demand | Evidence tab · memo faithfulness panel · [`evidence.py`](apps/api/src/models/evidence.py) |
+| **Governed agentic depth** — a consent-gated diligence agent over read-only governed tools whose final answer passes a fail-closed grounding gate (any number or `EV-###` ref no tool produced rejects the answer; the gate audits a curated evidence projection of each tool result, so argument echoes cannot launder fabricated figures); agent-drafted memo sections under human accept/reject; comparative multi-workspace runs with unanimous consent and tenant-scoped comps; idempotent streamed runs sealing append-only transcripts | Agent tab · [`agent_service.py`](apps/api/src/services/agent_service.py) · [`agent_tools.py`](apps/api/src/services/agent_tools.py) |
 | **Deterministic financial engineering** — XBRL-derived forensics (Altman Z″, Piotroski F, Beneish M), WACC/DCF, multi-tranche LBO with covenants, Monte Carlo returns bands, returns attribution, covenant-headroom projection, a safe driver-formula model (AST-whitelisted, cycle-detected), and fund-level portfolio construction — no imputation: missing data degrades to "n/a", never a guess | Forensics / Valuation / Underwriting / Stress tabs · [`underwriting_model_service.py`](apps/api/src/services/underwriting_model_service.py) |
 | **Public-data research depth** — live SEC EDGAR: XBRL financials + quarterly/TTM + segment revenue, 10-K risk-factor cross-year diff, DEF 14A proxy comp & governance flags, 13F ownership concentration, 13D/13G activist detection, debt maturity walls, insider-pattern analytics — all keyless, all honest about availability | Signals & research tabs · [`sec_financials.py`](apps/api/src/services/sec_financials.py) · [`ownership_service.py`](apps/api/src/services/ownership_service.py) |
 | **Institutional governance & collaboration** — multi-tenant auth with org-scoped 404s, four-eyes QoE/IC approvals, content-hash-frozen IC packets, HMAC-signed webhook outbox, scoped API keys, fine-grained capability grants, optional OIDC SSO, comment threads with @mentions, a cross-plane review inbox, and revocable read-only share links | IC readiness tab · [`deal_workflow_service.py`](apps/api/src/services/deal_workflow_service.py) |
-| **Operable platform** — Alembic migrations, hash-pinned lockfile, CI on both SQLite **and** a Postgres service matrix (lint, migration drift check, ~550 backend + ~50 frontend tests, retrieval-eval gate, perf-budget smoke, compose smoke), Prometheus `/metrics` + structured logs + request-ID tracing, durable job queue, full-text search, blob-storage abstraction, per-org quotas | [`.github/workflows/ci.yml`](.github/workflows/ci.yml) · [`docs/ROADMAP-WAVE4.md`](docs/ROADMAP-WAVE4.md) · [`docs/deploy-demo.md`](docs/deploy-demo.md) |
+| **Operable platform** — Alembic migrations, hash-pinned lockfile, CI on both SQLite **and** a Postgres service matrix (lint, migration drift check, ~820 backend + ~70 frontend tests, retrieval-eval gate, perf-budget smoke, compose smoke), Prometheus `/metrics` + structured logs + request-ID tracing, durable job queue, full-text search, blob-storage abstraction, per-org quotas | [`.github/workflows/ci.yml`](.github/workflows/ci.yml) · [`docs/ROADMAP-WAVE4.md`](docs/ROADMAP-WAVE4.md) · [`docs/deploy-demo.md`](docs/deploy-demo.md) |
+| **Red-team hardened** — four adversarial audit waves (2026-07-15 → 07-18) probed tenant isolation, grounding laundering, four-eyes bypasses, and quant knife-edges; every HIGH/MEDIUM/LOW finding was remediated with a regression test | [`docs/HANDOFF.md`](docs/HANDOFF.md) §6 · `git log` |
 
 | | |
 |---|---|
@@ -271,6 +273,33 @@ contracts are documented in [`docs/WAVE3.md`](docs/WAVE3.md).
 - **Data-governance policy** — each workspace has a classification and explicit external-LLM consent.
   Restricted workspaces cannot enable external processing; deterministic local generation remains the
   default for every classification.
+
+### Agentic diligence, model ops, and audit hardening (Waves 5–6, live)
+
+- **Governed diligence agent** (G57–G63) — objective in, cited answer out: a budget-capped tool loop
+  over read-only governed tools (filing search, cited Q&A, risks, evidence, in-memory underwriting
+  scenarios). Every run seals an append-only transcript; the final answer is **rejected outright** if
+  it contains any number or `EV-###` reference no tool produced — the grounding gate audits a curated
+  evidence projection of each tool result, so argument echoes cannot launder fabricated figures. Live
+  SSE streaming with idempotent recovery (`client_request_id`: one click can never run, bill, or seal
+  twice), agent-drafted memo sections under human accept/reject, and comparative runs across
+  workspaces with unanimous consent and tenant-scoped comps.
+- **Agent proposals under four-eyes** (G60) — the agent may *propose* QoE adjustments and structured
+  claims as the distinguishable identity `agent:diligence`; the proposer≠decider rules and the
+  human-reviewer requirements make automation approval provably impossible.
+- **Model ops, measured** (G56/G79/G80/G81) — a `/quality` dashboard (judge-eval faithfulness,
+  retrieval metrics, calibration, hashed prompt manifests), prompt A/B over a committed golden set
+  behind an explicit operator opt-in (`GOLDEN_EVAL_LLM_ALLOWED`), and per-org LLM spend telemetry.
+- **Redaction, attestation, and share analytics** (G74–G76) — four-eyes span redactions minting
+  immutable redacted versions that every read surface inherits automatically; optional
+  Ed25519-signed export attestation; watermarked share links with view analytics.
+- **Quant depth** (G64–G73) — peer percentile benchmarking, sum-of-the-parts with an explicit
+  never-force-balanced residual, buyback/dilution analysis, Item 3 litigation extraction,
+  sensitivity tornado, dividend-recap solver, facility sizing, fund-level Monte Carlo with a shown
+  (not asserted) correlation effect, and a Decimal-exact annual value-creation waterfall.
+- **Adversarially audited** — four audit waves (2026-07-15 → 07-18) probed tenant isolation,
+  grounding laundering, four-eyes bypasses, and quant knife-edges; every finding was remediated
+  with a regression test (see [`docs/HANDOFF.md`](docs/HANDOFF.md) §6).
 
 ## Architecture
 

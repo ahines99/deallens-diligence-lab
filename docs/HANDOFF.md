@@ -1,7 +1,7 @@
 # DealLens Diligence Lab — Handoff
 
-*Last updated 2026-07-17 at commit `2c65f20` (main, **2 commits ahead of origin — the two
-audit-remediation commits `2498feb` and `2c65f20` are unpushed**).*
+*Last updated 2026-07-18 after commit `d63894a` (main). Unpushed: the 2026-07-18
+audit-remediation commit `d63894a` and the documentation refresh that follows it.*
 
 This document is the orientation guide for anyone taking over or resuming work: what the project
 is, how it is built, the rules the code lives by, where everything is, and what remains open.
@@ -42,11 +42,16 @@ is expected to preserve them. They are the project's identity — reviewers *wil
    `AnalysisRun`, `ArtifactVersion`, `SourceSnapshot`, and underwriting case versions are
    **append-only** — ORM event listeners raise on mutation. Regeneration creates new versions
    with `supersedes_id` chains; frozen artifacts keep resolvable citations forever.
-3. **Deterministic first, LLM only as consent-gated polish.** The single LLM path is
-   `polish_markdown` (Anthropic, `LLM_MODE=live`), which re-voices prose and **fails closed** via
-   `CitationAuditor` if numbers or citations drift. Restricted-classification workspaces forbid
-   external LLM entirely. Sealed runs record honest provenance (`llm_polished`, hashed prompt
-   manifest, degraded sources).
+3. **Deterministic first, every LLM path consent-gated and fail-closed.** The LLM matrix now
+   spans memo polish, grounded QA synthesis (G54), claim extraction (G53), the diligence agent
+   and its memo/comparative composites (G57–G63), and prompt A/B (G81) — every one requires
+   workspace `external_llm_allowed` + a non-`restricted` classification (or, for the
+   workspace-unbound golden-set A/B, the operator-level `GOLDEN_EVAL_LLM_ALLOWED` opt-in), and
+   every one fails closed: `CitationAuditor` rejects drifted numbers/citations, and the agent's
+   grounding gate rejects any answer containing a quantity or `EV-###` ref no tool result's
+   evidence projection produced (argument echoes are excluded, so a tool round-trip cannot
+   launder a fabricated figure). Sealed runs record honest provenance (hashed prompt manifests,
+   degraded sources, `not_run` reasons). Restricted workspaces forbid external LLM entirely.
 4. **Honest degradation everywhere.** External feeds report
    `available / partial / unavailable`; a failed fetch is *recorded* as degraded, never inferred
    clean. The frontend mirrors this: server pages use `loadOrUnavailable` /
@@ -65,20 +70,20 @@ Monorepo, **zero exotic runtime dependencies** (a point of pride — Wave 4 adde
 an unchanged lockfile).
 
 ```
-apps/api      FastAPI + SQLAlchemy 2.0 + Pydantic v2 + Alembic (17 migrations)
+apps/api      FastAPI + SQLAlchemy 2.0 + Pydantic v2 + Alembic (21 migrations)
               SQLite by default; Postgres via docker-compose (CI runs both)
-  src/routers   41 modules — HTTP surface (thin; errors translated to HTTPException)
-  src/services  60 modules — ALL business logic lives here (routers stay dumb)
+  src/routers   44 modules — HTTP surface (thin; errors translated to HTTPException)
+  src/services  74 modules — ALL business logic lives here (routers stay dumb)
   src/models    30 modules — ORM; append-only guards; unique constraints
   src/schemas   Pydantic contracts (StrictModel, extra="forbid")
   src/agents    Deterministic "analysts" (risk/financial/memo/red-team) + llm_provider
   src/workers   webhooks outbox, durable jobs, demo cleanup (python -m src.workers.<name>)
   src/main.py   app assembly + ALL middleware (auth, tenant guard, rate limits, quotas, CORS)
-  tests/        69 files, ~550 test functions; offline-first (live SEC tests auto-skip)
+  tests/        97 files, ~820 test functions; offline-first (live SEC tests auto-skip)
 apps/web      Next.js 15 App Router, TS strict, Tailwind tokens, Recharts
   src/app       server-components-first pages; login/register/pipeline/portfolio +
-                /workspaces/[id]/<26 tabs> (risks, memo, underwriting, ic, intelligence, …)
-  src/components  workbench client components; colocated *.test.tsx (vitest, 24 files)
+                /workspaces/[id]/<26+ tabs> (risks, memo, underwriting, ic, intelligence, …)
+  src/components  workbench client components; colocated *.test.tsx (vitest, 29 files)
   src/lib       api.ts (client), serverApi.ts (server-only + loadOrUnavailable),
                 types.ts (mirror of CONTRACTS.md)
 docs/         contracts, architecture, methodology, deploy runbook, screenshots
@@ -162,40 +167,46 @@ Authentication paths, resolved in `main.py` middleware:
 
 ## 6. Testing, CI, and quality history
 
-- **Backend:** `pytest` — 69 files / ~550 tests, all offline (live-SEC alignment tests
+- **Backend:** `pytest` — 97 files / ~820 tests, all offline (live-SEC alignment tests
   auto-skip; conftest forces `LLM_MODE=mock`, `AUTH_REQUIRED=false`). Style: regression tests
   reproduce the bug they guard, with docstrings explaining the failure mode.
   `test_phase0_truth.py` guards data-truth gates; `test_no_uncited_material_claims.py` is the
   faithfulness guard; `test_migrations.py` guards Alembic integrity incl. Postgres's 63-char
   identifier cap.
-- **Frontend:** vitest, 54 tests colocated with components; `tsc --noEmit` and eslint clean.
+- **Frontend:** vitest, 29 files / ~71 tests colocated with components; `tsc --noEmit` and
+  eslint clean.
 - **CI (`.github/workflows/ci.yml`):** api ruff + alembic + pytest (SQLite **and Postgres
   matrix**), web vitest/lint/build, compose smoke test, retrieval-eval quality gate.
-- **Quality history:** three adversarial audit waves have been run and fully remediated —
+- **Quality history:** four adversarial audit waves have been run and fully remediated —
   2026-07-15 (5 HIGH/8 MED), 2026-07-16 (7 HIGH/14 MED, commit `2498feb`), 2026-07-17
-  (2 HIGH/9 MED/9 LOW, commit `2c65f20`). Every finding landed with a regression test. The
-  commit messages of `2498feb` and `2c65f20` are the best summaries of the sharp edges that were
-  found and fixed (period keying, wipeout censoring, negative-cash carry, scope enforcement,
-  four-eyes bypass, existence oracles, outage-as-empty rendering).
+  (2 HIGH/9 MED/9 LOW, commit `2c65f20`), and 2026-07-18 over the Wave 5/6 diff
+  (2 HIGH/5 MED/~13 LOW, commit `d63894a` — grounding-gate laundering via a tool's argument
+  echo, a cross-tenant comparative-agent route, claim-verifier number binding, SSE double-run
+  recovery, plus defense-in-depth guards and two quant labeling/knife-edge notes). Every
+  finding landed with a regression test. The commit messages of `2498feb`, `2c65f20`, and
+  `d63894a` are the best summaries of the sharp edges that were found and fixed (period keying,
+  wipeout censoring, negative-cash carry, scope enforcement, four-eyes bypass, existence
+  oracles, outage-as-empty rendering, grounding laundering, idempotent agent recovery).
 
 ## 7. Current state and open items
 
-**State:** Waves 1–4 complete (`FEATURE_LEDGER.md` 65/65, `ROADMAP-WAVE4.md` 50/50). CI green.
-Working tree clean at `2c65f20`.
+**State:** Waves 1–6 complete (`FEATURE_LEDGER.md` 65/65, `ROADMAP-WAVE4.md` 50/50,
+`ROADMAP-WAVE5.md` and `ROADMAP-WAVE6.md` shipped: G01–G83), 2026-07-18 audit fully
+remediated at `d63894a`. CI green.
 
 Open items, roughly in priority order:
 
-1. **Push the two unpushed commits** (`2498feb`, `2c65f20`) once the owner is ready — they
-   contain all 2026-07-16/17 audit fixes.
+1. **Push the unpushed commits** (`d63894a` + the docs refresh) once the owner is ready — they
+   contain all 2026-07-18 audit fixes.
 2. **Hosted public demo** — `docs/deploy-demo.md` is the runbook (VPS/domain/TLS, `DEMO_MODE=true`,
    EDGAR cache TTL, demo-cleanup worker). Deploy has not happened yet; repo pinning on the GitHub
    profile is also pending.
 3. **Documented security scope-cuts** (fine as portfolio caveats, must not silently regress):
-   OIDC signature verification; in-process rate limiters/OIDC state (single-process assumption);
-   share-link tokens as capabilities (deliberately outside API-key scope catalog).
-4. **Minor stale docs:** `apps/api/README.md` and the Makefile seed help still reference the
-   deleted "ChainAssure" synthetic demo (pre-2026-07-08 pivot).
-5. `alembic check` needs a migrated DB locally; CI covers migration integrity.
+   OIDC signature verification; in-process rate limiters/OIDC state and the agent
+   `client_request_id` in-flight registry (single-process assumption — a multi-worker deployment
+   needs a shared claim, documented in `routers/agent.py`); share-link tokens as capabilities
+   (deliberately outside API-key scope catalog).
+4. `alembic check` needs a migrated DB locally; CI covers migration integrity.
 
 ## 8. Where to look first (fast index)
 
