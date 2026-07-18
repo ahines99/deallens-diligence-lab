@@ -25,7 +25,9 @@ function Sparkline({ series }: { series: MacroSeries }) {
     return <div className="h-12 w-full" aria-hidden />;
   }
   return (
-    <div className="h-12 w-full">
+    // Decorative supplement: the latest value, YoY change, and as-of date are all rendered as
+    // text beside this sparkline, so it is hidden from assistive tech (matches the empty case).
+    <div className="h-12 w-full" aria-hidden>
       <ResponsiveContainer width="100%" height="100%">
         <LineChart data={points} margin={{ top: 4, right: 0, left: 0, bottom: 0 }}>
           <YAxis hide domain={["dataMin", "dataMax"]} />

@@ -70,7 +70,7 @@ export function TrendChart({ rows }: { rows: TrendPoint[] }) {
       {/* Revenue — single-axis bar chart (USD) */}
       <div>
         <ChartLabel>Revenue</ChartLabel>
-        <div className="h-56 w-full">
+        <div className="h-56 w-full" role="img" aria-label="Revenue by fiscal year, bar chart">
           <ResponsiveContainer width="100%" height="100%">
             <BarChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 4 }}>
               <CartesianGrid strokeDasharray="3 3" stroke={CHART.grid} vertical={false} />
@@ -107,7 +107,11 @@ export function TrendChart({ rows }: { rows: TrendPoint[] }) {
       {/* Margins — single-axis line chart (percent) */}
       <div>
         <ChartLabel>Margins</ChartLabel>
-        <div className="h-56 w-full">
+        <div
+          className="h-56 w-full"
+          role="img"
+          aria-label="Gross, operating, and net margin by fiscal year, line chart"
+        >
           <ResponsiveContainer width="100%" height="100%">
             <LineChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 4 }}>
               <CartesianGrid strokeDasharray="3 3" stroke={CHART.grid} vertical={false} />

@@ -36,7 +36,12 @@ export function AgencyConcentrationChart({ rows }: { rows: AgencyShare[] }) {
   }
 
   return (
-    <div className="w-full" style={{ height: Math.max(160, data.length * 40 + 32) }}>
+    <div
+      className="w-full"
+      style={{ height: Math.max(160, data.length * 40 + 32) }}
+      role="img"
+      aria-label="Federal obligations by awarding agency, horizontal bar chart"
+    >
       <ResponsiveContainer width="100%" height="100%">
         <BarChart
           data={data}

@@ -56,7 +56,11 @@ export function BenchmarkChart({ metrics }: { metrics: BenchmarkMetric[] }) {
   }
 
   return (
-    <div className="h-72 w-full">
+    <div
+      className="h-72 w-full"
+      role="img"
+      aria-label="Target company versus peer-median metrics, grouped bar chart"
+    >
       <ResponsiveContainer width="100%" height="100%">
         <BarChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 8 }}>
           <CartesianGrid stroke={CHART.grid} vertical={false} />

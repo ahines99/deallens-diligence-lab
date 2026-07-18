@@ -1,7 +1,8 @@
 # DealLens Diligence Lab — Handoff
 
-*Last updated 2026-07-18 after commit `d63894a` (main). Unpushed: the 2026-07-18
-audit-remediation commit `d63894a` and the documentation refresh that follows it.*
+*Last updated 2026-07-18. The 2026-07-18 audit-remediation commit `d63894a` and the
+documentation refresh `27ea178` that follows it are pushed to `origin/main`; CI is green on
+both the SQLite and Postgres matrices.*
 
 This document is the orientation guide for anyone taking over or resuming work: what the project
 is, how it is built, the rules the code lives by, where everything is, and what remains open.
@@ -196,17 +197,15 @@ remediated at `d63894a`. CI green.
 
 Open items, roughly in priority order:
 
-1. **Push the unpushed commits** (`d63894a` + the docs refresh) once the owner is ready — they
-   contain all 2026-07-18 audit fixes.
-2. **Hosted public demo** — `docs/deploy-demo.md` is the runbook (VPS/domain/TLS, `DEMO_MODE=true`,
+1. **Hosted public demo** — `docs/deploy-demo.md` is the runbook (VPS/domain/TLS, `DEMO_MODE=true`,
    EDGAR cache TTL, demo-cleanup worker). Deploy has not happened yet; repo pinning on the GitHub
    profile is also pending.
-3. **Documented security scope-cuts** (fine as portfolio caveats, must not silently regress):
+2. **Documented security scope-cuts** (fine as portfolio caveats, must not silently regress):
    OIDC signature verification; in-process rate limiters/OIDC state and the agent
    `client_request_id` in-flight registry (single-process assumption — a multi-worker deployment
    needs a shared claim, documented in `routers/agent.py`); share-link tokens as capabilities
    (deliberately outside API-key scope catalog).
-4. `alembic check` needs a migrated DB locally; CI covers migration integrity.
+3. `alembic check` needs a migrated DB locally; CI covers migration integrity.
 
 ## 8. Where to look first (fast index)
 
