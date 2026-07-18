@@ -9,6 +9,7 @@ import {
 import {
   BodyLimitError,
   declaredBodyExceedsLimit,
+  publicOrigin,
   readBodyWithLimit,
   SESSION_BRIDGE_BODY_LIMIT,
 } from "@/lib/backendProxyPolicy";
@@ -27,7 +28,12 @@ function sameOrigin(request: NextRequest) {
     return secFetchSite === "same-origin" || secFetchSite === "none";
   }
   try {
-    return new URL(origin).origin === request.nextUrl.origin;
+    return new URL(origin).origin === publicOrigin({
+      forwardedProto: request.headers.get("x-forwarded-proto"),
+      forwardedHost: request.headers.get("x-forwarded-host"),
+      host: request.headers.get("host"),
+      fallbackOrigin: request.nextUrl.origin,
+    });
   } catch {
     return false;
   }

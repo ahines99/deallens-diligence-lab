@@ -3,6 +3,7 @@ import { AUTH_COOKIE_NAME, authorizationFromSessionCookie } from "@/lib/sessionC
 import {
   BodyLimitError,
   declaredBodyExceedsLimit,
+  publicOrigin,
   readBodyWithLimit,
   resolveProxyPolicy,
 } from "@/lib/backendProxyPolicy";
@@ -66,7 +67,12 @@ function hasTrustedOrigin(request: NextRequest) {
     return secFetchSite === "same-origin" || secFetchSite === "none";
   }
   try {
-    return new URL(origin).origin === request.nextUrl.origin;
+    return new URL(origin).origin === publicOrigin({
+      forwardedProto: request.headers.get("x-forwarded-proto"),
+      forwardedHost: request.headers.get("x-forwarded-host"),
+      host: request.headers.get("host"),
+      fallbackOrigin: request.nextUrl.origin,
+    });
   } catch {
     return false;
   }

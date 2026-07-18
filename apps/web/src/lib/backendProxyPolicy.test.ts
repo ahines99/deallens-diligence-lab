@@ -69,6 +69,24 @@ describe("backend proxy policy", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("accepts a same-origin write forwarded by a TLS-terminating proxy (X-Forwarded-Proto/Host)", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    // The Node server sees the internal http hop; the public origin is https via the proxy headers.
+    const response = await proxyPost(request("/backend/api/workspaces", {
+      method: "POST",
+      headers: {
+        Origin: "https://deallens.alexhines.dev",
+        "X-Forwarded-Proto": "https",
+        "X-Forwarded-Host": "deallens.alexhines.dev",
+        "Content-Type": "application/json",
+      },
+      body: "{}",
+    }), { params: Promise.resolve({ path: ["api", "workspaces"] }) });
+    expect(response.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("rejects traversal and never forwards browser-supplied authorization", async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response("{}", {
       status: 200,
@@ -189,5 +207,21 @@ describe("session cookie bridge policy", () => {
       body: "{}",
     }));
     expect(originlessWrite.status).toBe(403);
+  });
+
+  it("accepts a proxied same-origin write past the origin gate (400 payload, not 403)", async () => {
+    // Same reverse-proxy shape as production: internal http hop, https public origin. The origin
+    // check must pass, so an invalid body reaches payload validation (400) rather than a 403.
+    const response = await bridgePost(request("/auth/session", {
+      method: "POST",
+      headers: {
+        Origin: "https://deallens.alexhines.dev",
+        "X-Forwarded-Proto": "https",
+        "X-Forwarded-Host": "deallens.alexhines.dev",
+        "Content-Type": "application/json",
+      },
+      body: "{}",
+    }));
+    expect(response.status).toBe(400);
   });
 });
