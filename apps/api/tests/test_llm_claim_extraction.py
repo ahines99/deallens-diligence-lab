@@ -249,6 +249,47 @@ def test_claimed_value_absent_from_the_quote_is_rejected(db, live_mode):
     ]
 
 
+def test_bare_leading_decimal_never_verifies_the_integer_part():
+    """M1 regression: ".3 pts" in a source is 0.3 — it must never verify a claimed 3 (a 10x
+    error). Plain integers, decimals, and grouped thousands keep verifying as before."""
+    assert intelligence.number_in_quote(3.0, "margin improved .3 pts in the quarter") is False
+    assert intelligence.number_in_quote(3.0, "(.3)") is False
+    assert intelligence.number_in_quote(3.0, "a 3 percent increase") is True
+    assert intelligence.number_in_quote(0.3, "margin improved 0.3 pts") is True
+    # The pre-existing digit-boundary discipline is unchanged.
+    assert intelligence.number_in_quote(3.0, "the yield was 38.25 percent") is False
+    assert intelligence.number_in_quote(25.0, "the yield was 38.25 percent") is False
+    assert intelligence.number_in_quote(38.25, "the yield was 38.25 percent") is True
+    assert intelligence.number_in_quote(1200.0, "totaling $1,200 thousand") is True
+
+
+def test_value_number_must_be_the_number_stated_in_value_text(db, live_mode):
+    """M2 regression: a quote holding two numbers cannot mint value_text="$200 million" bound
+    to value_number=5 — the claimed number must be the one value_text itself states."""
+    lead, _, deal, _ = _llm_deal(db)
+    contract = intelligence.ingest_text_document(
+        db,
+        deal.id,
+        DocumentTextCreate(
+            filename="contract.txt",
+            text="The customer committed to $200 million over 5 years.",
+        ),
+        lead,
+    )
+    quote = "The customer committed to $200 million over 5 years."
+    mismatched = _proposal(
+        value_text="$200 million", value_number=5, quote=quote, chunk_index=0, unit=None
+    )
+    control = {**mismatched, "value_number": 200}
+    provider = _FakeProvider(_payload([mismatched, control]))
+    claims = _extract(db, deal, lead, provider, document_ids=[contract.id])
+    assert [claim.value_number for claim in claims] == [200.0]
+    event = _extraction_events(db)[0]
+    assert [item["reason"] for item in event.detail["llm"]["rejected"]] == [
+        "value_number_not_in_value_text"
+    ]
+
+
 def test_paraphrase_fails_while_whitespace_only_differences_verify(db, live_mode):
     lead, _, deal, document = _llm_deal(db)
     chunks = intelligence.list_chunks(db, document.id, lead)

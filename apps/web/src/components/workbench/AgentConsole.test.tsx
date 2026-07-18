@@ -160,12 +160,25 @@ describe("AgentConsole", () => {
     expect(apiMocks.listAgentRuns).not.toHaveBeenCalled();
   });
 
-  it("rehydrates the newest sealed run when the stream drops mid-run, and says so", async () => {
+  it("rehydrates its OWN sealed run by client_request_id when the stream drops mid-run", async () => {
     const sse = sseResponse();
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(sse.response));
-    apiMocks.listAgentRuns.mockResolvedValue([
-      { ...base, answer: "Sealed answer reloaded from the transcript." },
-    ]);
+    const fetchMock = vi.fn().mockResolvedValue(sse.response);
+    vi.stubGlobal("fetch", fetchMock);
+    // A newer, unrelated run sits at index 0: recovery must match by request id, never take
+    // runs[0] (which races the end-of-run seal and can be a previous run entirely).
+    apiMocks.listAgentRuns.mockImplementation(async () => {
+      const body = JSON.parse(
+        (fetchMock.mock.calls[0]![1] as RequestInit).body as string,
+      ) as { client_request_id: string };
+      return [
+        { ...base, answer: "A previous unrelated run.", client_request_id: "prev-run-9999" },
+        {
+          ...base,
+          answer: "Sealed answer reloaded from the transcript.",
+          client_request_id: body.client_request_id,
+        },
+      ];
+    });
     submitObjective();
 
     sse.push("started", { workspace_id: "w1", objective: base.objective });
@@ -178,8 +191,58 @@ describe("AgentConsole", () => {
       await screen.findByText(/Sealed answer reloaded from the transcript/),
     ).toBeDefined();
     expect(screen.getByText(/stream dropped mid-run/)).toBeDefined();
+    expect(screen.queryByText(/A previous unrelated run/)).toBeNull();
     expect(apiMocks.listAgentRuns).toHaveBeenCalledWith("w1");
     // The fallback never re-runs the agent after a mid-run drop.
     expect(apiMocks.runDiligenceAgent).not.toHaveBeenCalled();
+  });
+
+  it("carries one request id from the stream POST into the fallback POST", async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new TypeError("streaming unavailable"));
+    vi.stubGlobal("fetch", fetchMock);
+    apiMocks.runDiligenceAgent.mockResolvedValue(base);
+    submitObjective();
+    await waitFor(() => expect(apiMocks.runDiligenceAgent).toHaveBeenCalled());
+
+    const streamBody = JSON.parse(
+      (fetchMock.mock.calls[0]![1] as RequestInit).body as string,
+    ) as { client_request_id: string };
+    expect(streamBody.client_request_id).toMatch(/^[A-Za-z0-9_-]{8,64}$/);
+    // Same id on both POSTs — the server deduplicates, so one click can never run twice.
+    expect(apiMocks.runDiligenceAgent).toHaveBeenCalledWith(
+      "w1",
+      "How concentrated is customer revenue?",
+      8,
+      streamBody.client_request_id,
+    );
+  });
+
+  it("recovers the sealed run when the fallback POST is refused as a duplicate (409)", async () => {
+    const { ApiError } = await import("@/lib/api");
+    const fetchMock = vi.fn().mockRejectedValue(new TypeError("connection reset"));
+    vi.stubGlobal("fetch", fetchMock);
+    apiMocks.runDiligenceAgent.mockRejectedValue(
+      new ApiError(409, "duplicate_in_flight: a run with this client_request_id is still executing"),
+    );
+    apiMocks.listAgentRuns.mockImplementation(async () => {
+      const body = JSON.parse(
+        (fetchMock.mock.calls[0]![1] as RequestInit).body as string,
+      ) as { client_request_id: string };
+      return [
+        {
+          ...base,
+          answer: "Sealed answer from the run the server refused to duplicate.",
+          client_request_id: body.client_request_id,
+        },
+      ];
+    });
+    submitObjective();
+
+    expect(
+      await screen.findByText(/Sealed answer from the run the server refused to duplicate/),
+    ).toBeDefined();
+    expect(screen.getByText(/the run had already started/)).toBeDefined();
+    // Exactly one fallback attempt — the 409 is resolved by recovery, never by re-POSTing.
+    expect(apiMocks.runDiligenceAgent).toHaveBeenCalledTimes(1);
   });
 });

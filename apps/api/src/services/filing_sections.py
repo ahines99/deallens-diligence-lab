@@ -2,7 +2,9 @@
 
 10-K text repeats item headers in the table of contents, so for each section we pick the
 candidate start whose span to the next section boundary is LARGEST — that reliably selects the
-real section body over the short TOC entry. Purely heuristic and honest about it.
+real section body over the short TOC entry. Inline cross-references ("see Item 3 ... below")
+are excluded as candidate starts first, since a pointer in an EARLIER section would otherwise
+open the largest span of all. Purely heuristic and honest about it.
 """
 from __future__ import annotations
 
@@ -32,11 +34,35 @@ def _starts(text: str, pat: str) -> list[int]:
     return [m.start() for m in re.finditer(pat, text, re.IGNORECASE)]
 
 
+# An "Item N" occurrence that is textually an inline cross-reference — "see Item 3, Legal
+# Proceedings, below", "described in Part I, Item 1A" — must not act as a section boundary in
+# either direction. As a candidate START, a pointer in an earlier section opens a LARGER span
+# than the real body (it swallows everything up to the boundary) and the largest-span rule
+# would prefer it: the extracted "section" would be another section's prose. As an END, a
+# pointer inside the real body ("for mine safety matters, see Item 4") would truncate the
+# section at the pointer. Occurrences whose immediately preceding words read as a
+# cross-reference lead-in are therefore excluded on both sides. The lead-in list is a
+# heuristic enumeration of the common phrasings — an unlisted phrasing falls back to the
+# pre-filter behavior — and a false positive on a real header degrades to a not-located
+# section, the honest degradation every caller already handles.
+_CROSS_REF_LEAD = re.compile(
+    r"(?:\bsee|\brefer\s+to|\bpursuant\s+to|\breference\s+to|"
+    r"\b(?:described|discussed|included|reported|set\s+forth|contained)\s+(?:in|under)|"
+    r"\bincorporated\s+(?:herein\s+)?by\s+reference(?:\s+(?:from|to|in))?)"
+    r"\s*[:,]?\s*(?:part\s+[ivx]+\s*[,.]?\s*)?[\"'“”‘’(]*\s*\Z",
+    re.IGNORECASE,
+)
+
+
+def _is_cross_reference(text: str, start: int) -> bool:
+    return bool(_CROSS_REF_LEAD.search(text, max(0, start - 60), start))
+
+
 def _largest_span(text: str, start_pat: str, end_pats: list[str]) -> str:
-    starts = _starts(text, start_pat)
+    starts = [s for s in _starts(text, start_pat) if not _is_cross_reference(text, s)]
     ends: list[int] = []
     for ep in end_pats:
-        ends += _starts(text, ep)
+        ends += [e for e in _starts(text, ep) if not _is_cross_reference(text, e)]
     ends.sort()
     best = ""
     for s in starts:

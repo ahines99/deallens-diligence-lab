@@ -24,6 +24,7 @@ from typing import get_args
 from pydantic import ValidationError
 from sqlalchemy import select
 
+from src.agents.citation_auditor import EV_REF_PATTERN
 from src.models import RiskFinding, Target
 from src.models.underwriting_model import UnderwritingCaseVersion
 from src.services import evidence_service, filings_qa_service, retrieval_service
@@ -139,7 +140,18 @@ def _tool_get_evidence(session, workspace_id: str, arguments: dict) -> dict:
     refs = arguments.get("refs")
     if not isinstance(refs, list) or not refs:
         raise ValueError("refs must be a non-empty list of EV-### strings")
-    wanted = {str(ref).strip() for ref in refs}
+    wanted: set[str] = set()
+    for ref in refs:
+        cleaned = str(ref).strip()
+        # Shape-validate BEFORE any lookup or echo, against the SAME pattern the grounding
+        # gate's auditor uses: only EV-### strings may flow through this tool at all, so
+        # free-text (a fabricated figure, prose, another workspace's ids) can never ride
+        # along as a "reference to resolve".
+        if not EV_REF_PATTERN.fullmatch(cleaned):
+            raise ValueError(
+                f"refs must be EV-### evidence references; {cleaned[:40]!r} is not one"
+            )
+        wanted.add(cleaned)
     rows = [
         row
         for row in evidence_service.list_evidence(session, workspace_id)
@@ -338,11 +350,13 @@ def _tool_propose_claim(session, workspace_id: str, arguments: dict) -> dict:
     collapse = intelligence.whitespace_collapsed
     if collapse(value_text) not in collapse(quoted):
         raise ValueError("value_text_not_in_quote: value_text must appear inside the quote")
-    if value_number is not None and not intelligence.number_in_quote(value_number, quoted):
-        raise ValueError(
-            "value_number_not_in_quote: value_number must appear inside the quote on digit "
-            "boundaries"
-        )
+    if value_number is not None:
+        mismatch = intelligence.value_number_mismatch(value_number, value_text, quoted)
+        if mismatch is not None:
+            raise ValueError(
+                f"{mismatch}: value_number must be the number stated in value_text and must "
+                "appear inside the quote on digit boundaries"
+            )
 
     # Same-span dedupe mirrors G53's signature reuse: an identical revision-1 claim is
     # returned, never re-minted into a second queue item.
@@ -402,11 +416,20 @@ def _tool_propose_claim(session, workspace_id: str, arguments: dict) -> dict:
     }
 
 
-_TOOLS: dict[str, tuple[str, dict, callable]] = {
+# Each registry entry is (description, input_schema, handler, argument_echo_fields). The LAST
+# member is a REQUIRED declaration: result fields that merely REFLECT the model's own arguments
+# rather than data the tool produced. The model still sees them (useful feedback, sealed in the
+# transcript), but the grounding gate must never treat them as evidence — an ungrounded figure
+# or EV-### ref passed as an argument would otherwise launder itself into the gate's source
+# (e.g. a fabricated ref echoed back through ``get_evidence.unresolved``). Making the
+# declaration a positional tuple member means a new tool CANNOT be registered without deciding
+# it — an empty frozenset is an explicit "echoes nothing" statement, not an omission.
+_TOOLS: dict[str, tuple[str, dict, callable, frozenset[str]]] = {
     "get_workspace_overview": (
         "Workspace, target, headline financials, and recent revenue/margin trend rows.",
         {"type": "object", "properties": {}, "additionalProperties": False},
         _tool_get_workspace_overview,
+        frozenset(),
     ),
     "search_filings": (
         "Ranked verbatim excerpts from the ingested SEC filings for a query.",
@@ -420,6 +443,7 @@ _TOOLS: dict[str, tuple[str, dict, callable]] = {
             "additionalProperties": False,
         },
         _tool_search_filings,
+        frozenset(),
     ),
     "ask_filings_qa": (
         "The workbench's extractive, abstaining Q&A over the filings (cited or abstained).",
@@ -430,11 +454,13 @@ _TOOLS: dict[str, tuple[str, dict, callable]] = {
             "additionalProperties": False,
         },
         _tool_ask_filings_qa,
+        frozenset(),
     ),
     "list_risk_findings": (
         "Current risk findings with severities and EV-### evidence references.",
         {"type": "object", "properties": {}, "additionalProperties": False},
         _tool_list_risk_findings,
+        frozenset(),
     ),
     "get_evidence": (
         "Resolve specific EV-### references to their underlying evidence rows.",
@@ -445,11 +471,13 @@ _TOOLS: dict[str, tuple[str, dict, callable]] = {
             "additionalProperties": False,
         },
         _tool_get_evidence,
+        frozenset({"unresolved"}),
     ),
     "list_underwriting_cases": (
         "Latest saved underwriting case versions with headline IRR/MoIC.",
         {"type": "object", "properties": {}, "additionalProperties": False},
         _tool_list_underwriting_cases,
+        frozenset(),
     ),
     "run_underwriting_scenario": (
         "Run the deterministic LBO/DCF engine on supplied assumptions IN MEMORY (nothing is "
@@ -461,6 +489,7 @@ _TOOLS: dict[str, tuple[str, dict, callable]] = {
             "additionalProperties": False,
         },
         _tool_run_underwriting_scenario,
+        frozenset(),
     ),
     "propose_qoe_adjustment": (
         "PROPOSE a QoE adjustment into the four-eyes review queue as agent:diligence (it lands "
@@ -484,6 +513,7 @@ _TOOLS: dict[str, tuple[str, dict, callable]] = {
             "additionalProperties": False,
         },
         _tool_propose_qoe_adjustment,
+        frozenset(),
     ),
     "propose_claim": (
         "PROPOSE one structured claim on the linked deal from a VERBATIM data-room quote. The "
@@ -518,6 +548,7 @@ _TOOLS: dict[str, tuple[str, dict, callable]] = {
             "additionalProperties": False,
         },
         _tool_propose_claim,
+        frozenset(),
     ),
 }
 
@@ -526,28 +557,55 @@ def tool_definitions() -> list[dict]:
     """Anthropic-format tool declarations for the loop (and the contract tests)."""
     return [
         {"name": name, "description": description, "input_schema": schema}
-        for name, (description, schema, _handler) in _TOOLS.items()
+        for name, (description, schema, _handler, _echo_fields) in _TOOLS.items()
     ]
 
 
-def _execute_tool(session, workspace_id: str, name: str, arguments: dict) -> tuple[bool, dict | str]:
-    """Run one governed tool; (ok, result-or-error). Errors go back to the model, never raise."""
+def grounding_projection(name: str, result: dict | str) -> dict | str:
+    """The grounding-safe view of one successful tool result.
+
+    Everything the tool PRODUCED, nothing that echoes what the model ASKED (per the registry's
+    per-tool echo-field declaration) — only this projection may feed the grounding gate's
+    source text.
+    """
+    spec = _TOOLS.get(name)
+    echoed = spec[3] if spec is not None else frozenset()
+    if not echoed or not isinstance(result, dict):
+        return result
+    return {key: value for key, value in result.items() if key not in echoed}
+
+
+def _execute_tool(
+    session, workspace_id: str, name: str, arguments: dict
+) -> tuple[bool, dict | str, str]:
+    """Run one governed tool; (ok, result-or-error, grounding_source_text).
+
+    Errors go back to the model, never raise, and contribute NOTHING to the grounding source.
+    ``grounding_source_text`` serializes the argument-echo-free projection, computed from the
+    UNtruncated result (so a truncated result's ``partial`` blob, echo fields included, never
+    reaches the gate) but capped at the same size the model sees — the gate must not treat
+    evidence the model could never have read as grounding for its prose.
+    """
     spec = _TOOLS.get(name)
     if spec is None:
-        return False, f"unknown tool: {name!r}"
-    _description, _schema, handler = spec
+        return False, f"unknown tool: {name!r}", ""
+    _description, _schema, handler, echo_fields = spec
     try:
         result = handler(session, workspace_id, arguments or {})
     except ValueError as exc:
-        return False, str(exc)
+        return False, str(exc), ""
     except Exception as exc:  # noqa: BLE001 - a tool crash must not kill the sealed run
         logger.warning("Agent tool '%s' failed: %s", name, exc)
-        return False, f"tool failed: {exc}"
+        return False, f"tool failed: {exc}", ""
     serialized = json.dumps(result, default=str)
+    projection = grounding_projection(name, result)
+    grounding_text = (
+        serialized if projection is result else json.dumps(projection, default=str)
+    )[:MAX_RESULT_CHARS]
     if len(serialized) > MAX_RESULT_CHARS:
         return True, {
             "truncated": True,
             "note": f"result truncated to {MAX_RESULT_CHARS} characters",
             "partial": serialized[:MAX_RESULT_CHARS],
-        }
-    return True, result
+        }, grounding_text
+    return True, result, grounding_text

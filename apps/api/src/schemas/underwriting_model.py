@@ -1192,10 +1192,13 @@ class FundDealOutcome(BaseModel):
 
 
 class FundCorrelationEffect(BaseModel):
-    """The SAME seed and draws re-run with every factor loading zeroed (independent deals).
+    """The SAME seed and draws re-run with every factor loading zeroed.
 
-    Negative p5 spreads (correlated minus independent) and positive p95 spreads show the shared
-    macro factors widening the fund outcome distribution versus independent deals.
+    The "independent" baseline removes ALL macro-factor variance (each deal keeps only its
+    idiosyncratic draws) — it is NOT "independent deals each drawing their own factor", which
+    would retain diversified factor variance. Negative p5 spreads (correlated minus baseline)
+    and positive p95 spreads show the shared macro factors widening the fund outcome
+    distribution versus that zero-loading baseline.
     """
 
     independent_converged: int

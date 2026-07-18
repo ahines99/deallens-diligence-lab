@@ -445,10 +445,14 @@ export const api = {
   crossCorpusQA: (id: string, question: string, grounded = false) =>
     request<CrossCorpusQA>(`/api/workspaces/${id}/cross-corpus-qa`, { method: "POST", body: { question, grounded } }),
   getModelQuality: () => request<ModelQuality>(`/api/model-ops/quality`),
-  runDiligenceAgent: (id: string, objective: string, maxSteps = 8) =>
+  runDiligenceAgent: (id: string, objective: string, maxSteps = 8, clientRequestId?: string) =>
     request<AgentRun>(`/api/workspaces/${id}/agent/run`, {
       method: "POST",
-      body: { objective, max_steps: maxSteps },
+      body: {
+        objective,
+        max_steps: maxSteps,
+        ...(clientRequestId ? { client_request_id: clientRequestId } : {}),
+      },
     }),
   listAgentRuns: (id: string, limit = 10) =>
     request<AgentRun[]>(`/api/workspaces/${id}/agent/runs?limit=${limit}`),

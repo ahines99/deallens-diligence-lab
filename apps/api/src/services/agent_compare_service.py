@@ -18,11 +18,14 @@ The comparative run is a thin, governed composition of G57 runs — deliberately
   A failed/rejected per-workspace run is recorded honestly and rendered as an explicit
   ``_withheld/failed: …_`` line — its (absent) answer contributes nothing to the merge.
 * **The union grounding gate still runs (belt-and-braces).** The merged markdown is audited
-  against the union of THIS run's sources only: the objective, every per-workspace tool result,
-  the grounded answers, and the harness-authored section scaffold (headers carry workspace
-  names/ids — harness provenance, not model output, but the auditor's tokenizer must see them).
-  For a correct deterministic merge this trivially passes; if a merge bug ever injected content
-  no workspace's tools produced, the run fails closed to ``rejected_ungrounded``.
+  against the union of THIS run's sources only: the objective, the grounded answers, and the
+  harness-authored section scaffold (headers carry workspace names/ids — harness provenance,
+  not model output, but the auditor's tokenizer must see them). Raw tool results are
+  deliberately NOT in the union source: the merge is built exclusively from answers and
+  scaffold, and sealed step results can embed model-argument echoes (H1) that would only
+  widen this gate. For a correct deterministic merge the union trivially passes; if a merge
+  bug ever injected content no grounded answer produced, the run fails closed to
+  ``rejected_ungrounded``.
 * **The comparative record is sealed.** An append-only ``ArtifactVersion``
   (``artifact_type="agent_comparative_run"``) on the PRIMARY workspace carries the full record;
   each per-workspace transcript was already sealed by its own G57 run and is referenced here by
@@ -30,7 +33,6 @@ The comparative run is a thin, governed composition of G57 runs — deliberately
 """
 from __future__ import annotations
 
-import json
 import logging
 from datetime import datetime, timezone
 
@@ -39,16 +41,13 @@ from sqlalchemy import select
 from src.config import settings
 from src.models.underwriting_data import ArtifactVersion
 from src.services import agent_service
-from src.services.common import get_workspace_or_404, insert_versioned
+from src.services.common import get_workspace_scoped_or_404, insert_versioned
 
 logger = logging.getLogger("deallens.agent")
 
 _ARTIFACT_TYPE = "agent_comparative_run"
 _MAX_COMP_WORKSPACES = 3
-# The per-workspace framing appended below must keep the framed objective inside the G57
-# objective cap, so the comparative objective cap is the G57 cap minus a framing budget.
-_FRAMING_BUDGET = 200
-_MAX_OBJECTIVE_CHARS = agent_service._MAX_OBJECTIVE_CHARS - _FRAMING_BUDGET
+_MAX_FRAMED_NAME_CHARS = 80
 _WITHHELD_STATUSES = frozenset(
     {"rejected_ungrounded", "budget_exhausted", "error", "not_run"}
 )
@@ -59,13 +58,23 @@ def _frame_objective(objective: str, workspace_name: str) -> str:
 
     Kept digit-free so the framing never adds quantity tokens to any grounding source.
     """
-    name = (workspace_name or "").strip()[:80]
+    name = (workspace_name or "").strip()[:_MAX_FRAMED_NAME_CHARS]
     return (
         f"{objective}\n\n"
         f'[Comparative-run context: you are analyzing the workspace "{name}" ONLY. '
         "Answer strictly from this workspace's own tool results; other workspaces are "
         "compared separately by the harness.]"
     )
+
+
+# The per-workspace framing must keep the framed objective inside the G57 objective cap, so the
+# comparative objective cap is the G57 cap minus the framing overhead. The budget is COMPUTED
+# from the framing template at its worst case (a maximum-length workspace name) — a
+# hand-maintained constant previously undercounted the overhead, letting a cap-accepted
+# comparative objective overflow the G57 cap and degrade every per-workspace run to an opaque
+# ``error (exception)``.
+_FRAMING_BUDGET = len(_frame_objective("", "x" * _MAX_FRAMED_NAME_CHARS))
+_MAX_OBJECTIVE_CHARS = agent_service._MAX_OBJECTIVE_CHARS - _FRAMING_BUDGET
 
 
 def _not_run(
@@ -97,10 +106,17 @@ def run_comparative_agent(
     objective: str,
     *,
     actor_id: str | None = None,
+    organization_id: str | None = None,
     max_steps_per_workspace: int = 6,
     provider_factory=None,
 ) -> dict:
-    """Run one objective across the primary plus 1..3 comp workspaces; seal the merged record."""
+    """Run one objective across the primary plus 1..3 comp workspaces; seal the merged record.
+
+    ``organization_id`` is the CALLER'S tenant (from the authenticated principal). Every
+    involved workspace — primary and comps alike — is resolved through the tenant-scoped
+    lookup, so naming another org's workspace as a comp returns the same 404 as a missing
+    one (H2): no existence oracle, no consent-config leak, no cross-tenant read or seal.
+    """
     objective = (objective or "").strip()
     if not objective:
         raise ValueError("An objective is required.")
@@ -116,9 +132,11 @@ def run_comparative_agent(
     if primary_workspace_id in comp_workspace_ids:
         raise ValueError("A comp workspace cannot be the primary workspace.")
 
-    # Existence first (NotFound -> 404), primary then comps in caller order.
+    # Existence within the caller's tenant first (NotFound -> 404), primary then comps in
+    # caller order. The scoped lookup is the H2 boundary: a cross-tenant workspace id is
+    # indistinguishable from a missing one, and it fails BEFORE any consent read or run.
     ordered = [
-        (ws_id, get_workspace_or_404(session, ws_id))
+        (ws_id, get_workspace_scoped_or_404(session, ws_id, organization_id))
         for ws_id in [primary_workspace_id, *comp_workspace_ids]
     ]
 
@@ -141,7 +159,6 @@ def run_comparative_agent(
     # --- Phase 1: one governed G57 run per workspace (primary first). Each run scopes its own
     # tool calls, applies its own grounding gate, and seals its own transcript.
     per_workspace: list[dict] = []
-    tool_source_parts: list[str] = []
     for index, (ws_id, ws) in enumerate(ordered):
         role = "primary" if index == 0 else "comp"
         try:
@@ -179,9 +196,6 @@ def run_comparative_agent(
                 "grounding": run["grounding"],
             }
         )
-        for step in run.get("steps", []):
-            if step.get("ok") and step.get("result") is not None:
-                tool_source_parts.append(json.dumps(step["result"], default=str))
 
     # --- Phase 2: deterministic merge with explicit per-workspace provenance. No LLM sees the
     # merged text before the user does, so no cross-workspace blending can occur.
@@ -201,10 +215,9 @@ def run_comparative_agent(
     merged_markdown: str | None = "\n\n".join(sections)
 
     # Union grounding (belt-and-braces): merged text vs the union of THIS run's sources only —
-    # objective + every per-workspace tool result + the grounded answers + the harness scaffold.
-    union_source = "\n".join(
-        [objective, *tool_source_parts, *answer_parts, *scaffold_parts]
-    )
+    # objective + the grounded answers + the harness scaffold. Tool results stay out: the merge
+    # never draws on them directly, and their argument-echo fields must not widen this gate.
+    union_source = "\n".join([objective, *answer_parts, *scaffold_parts])
     grounding = agent_service._grounding_verdict(merged_markdown, union_source)
     status, reason = "completed", "applied"
     if not grounding["grounded"]:  # pragma: no cover - unreachable for a correct merge

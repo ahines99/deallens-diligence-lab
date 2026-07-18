@@ -23,7 +23,7 @@ from sqlalchemy import (
     UniqueConstraint,
     event,
 )
-from sqlalchemy.orm import Mapped, attributes, mapped_column
+from sqlalchemy.orm import Mapped, Session, attributes, mapped_column
 
 from src.db.base import Base, UUIDMixin, now_utc
 
@@ -231,6 +231,15 @@ class RedactionProposal(UUIDMixin, Base):
             "status IN ('proposed','approved','rejected')",
             name="ck_redaction_proposal_status",
         ),
+        # Database-level backstop for the four-eyes decision invariants the service and ORM
+        # guard enforce: a terminal status must carry its decider stamp, and the decider can
+        # never be the proposer. Keeps the invariants true even for a writer that bypasses
+        # ``decide_redaction``.
+        CheckConstraint(
+            "status = 'proposed' OR (decided_by_actor_id IS NOT NULL AND decided_at IS NOT "
+            "NULL AND decided_by_actor_id <> proposed_by_actor_id)",
+            name="ck_redaction_proposal_decided_fields",
+        ),
         Index("ix_redaction_proposals_deal_status", "deal_id", "status"),
         Index("ix_redaction_proposals_deal_logical", "deal_id", "logical_document_id"),
     )
@@ -403,3 +412,34 @@ def _guard_redaction_proposal_update(mapper, connection, target) -> None:
 
 event.listen(RedactionProposal, "before_update", _guard_redaction_proposal_update)
 event.listen(RedactionProposal, "before_delete", _reject_immutable_mutation)
+
+
+# Mapper-level before_update/before_delete hooks only fire for ORM unit-of-work flushes; a Core
+# ``update()``/``delete()`` executed through the session would bypass them. Mirror the sibling
+# modules (evidence, underwriting_data, underwriting_model) with a session-level guard so bulk
+# statements against these tables are rejected too. RedactionProposal is included: its single
+# legitimate transition flows through instance flushes (guarded above), so ANY bulk statement
+# against it is illegitimate by construction.
+_BULK_GUARDED_TABLENAMES = frozenset(
+    model.__tablename__
+    for model in (
+        DataRoomDocument,
+        DataRoomChunk,
+        CitedQARun,
+        StructuredClaim,
+        ClaimReviewEvent,
+        DocumentComparison,
+        SecFilingComparison,
+        IntelligenceEvaluation,
+        RedactionProposal,
+    )
+)
+
+
+@event.listens_for(Session, "do_orm_execute")
+def _reject_bulk_immutable_mutation(execute_state) -> None:  # pragma: no cover - integration tested
+    if not (execute_state.is_update or execute_state.is_delete):
+        return
+    table = getattr(execute_state.statement, "table", None)
+    if table is not None and table.name in _BULK_GUARDED_TABLENAMES:
+        raise ValueError(f"{table.name} records are append-only; bulk statements are rejected")

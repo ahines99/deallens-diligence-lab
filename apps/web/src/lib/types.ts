@@ -1632,6 +1632,8 @@ export interface AgentRun {
   manifest: PromptManifest | null;
   grounding: AgentGrounding | null;
   generated_at: string;
+  // Absent on transcripts sealed before the idempotent-recovery seam.
+  client_request_id?: string | null;
 }
 
 // --- G69-G73 underwriting depth ----------------------------------------------------------------
@@ -1838,7 +1840,12 @@ export interface DilutionAnalysis {
   status: "available" | "partial" | "unavailable";
   years: string[];
   by_year: Record<string, DilutionYear>;
-  citations: Record<string, Record<string, { concept: string; end: string; accession: string; form: string }>>;
+  // Citation fields other than concept are nullable — a tagged point may miss accession/form
+  // metadata (mirrors the backend DilutionCitation schema).
+  citations: Record<
+    string,
+    Record<string, { concept: string; end: string | null; accession: string | null; form: string | null }>
+  >;
   sources: Record<string, string | null>;
   note: string | null;
   source_error: string | null;

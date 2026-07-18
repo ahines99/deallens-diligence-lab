@@ -123,6 +123,49 @@ def test_extract_legal_proceedings_absent_returns_empty():
     assert extract_legal_proceedings("") == ""
 
 
+def test_cross_reference_pointer_never_beats_the_real_item3_body():
+    """M5 regression: a Risk-Factors "see Item 3 ... below" pointer opens a LARGER span than
+    the real body (it swallows everything up to Item 4), so the largest-span rule used to
+    prefer it — labeling Risk-Factors prose as Legal Proceedings. Cross-reference lead-ins are
+    excluded as candidate starts."""
+    text = (
+        "TABLE OF CONTENTS Item 3. Legal Proceedings 45 Item 4. Mine Safety Disclosures 46 "
+        "Item 1A. Risk Factors An adverse outcome could hurt us; for a discussion of material "
+        "pending matters, see Item 3, Legal Proceedings, below. " + ("risk prose. " * 40)
+        + "Item 3. Legal Proceedings We are a defendant in a putative class action. "
+        + ("litigation prose. " * 10)
+        + "Item 4. Mine Safety Disclosures Not applicable."
+    )
+    section = extract_legal_proceedings(text)
+    assert "putative class action" in section
+    assert "litigation prose" in section
+    # None of the Risk-Factors prose (where the pointer lives) leaks into the section.
+    assert "risk prose" not in section
+    assert "adverse outcome" not in section
+
+    # Other cross-reference phrasings are filtered the same way.
+    for lead in ("refer to", "as described in", "discussed in Part I,"):
+        variant = text.replace("see Item 3,", f"{lead} Item 3,")
+        assert "risk prose" not in extract_legal_proceedings(variant), lead
+
+
+def test_cross_reference_inside_the_body_never_truncates_the_section():
+    """A pointer to another item INSIDE the real Item 3 body ("see Item 4") must not act as
+    the section's end boundary — the disclosure after the pointer stays in the section."""
+    text = (
+        "TABLE OF CONTENTS Item 3. Legal Proceedings 45 Item 4. Mine Safety Disclosures 46 "
+        "Item 1. Business We make widgets. " + ("business prose. " * 30)
+        + "Item 3. Legal Proceedings For mine safety matters, see Item 4 below. We are also "
+        "defendants in a putative class action alleging misrepresentation. "
+        + ("litigation prose. " * 10)
+        + "Item 4. Mine Safety Disclosures Not applicable."
+    )
+    section = extract_legal_proceedings(text)
+    assert "putative class action" in section
+    assert "litigation prose" in section
+    assert "Not applicable" not in section
+
+
 def test_extract_legal_proceedings_short_body_still_located():
     text = (
         "TABLE OF CONTENTS Item 3. Legal Proceedings 45 Item 4. Mine Safety 46 "

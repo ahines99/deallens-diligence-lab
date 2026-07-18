@@ -319,6 +319,74 @@ def test_rejected_per_workspace_run_is_withheld_from_the_merge(
     )
 
 
+def test_framing_budget_covers_the_worst_case_overhead():
+    """A cap-accepted comparative objective must NEVER overflow the G57 cap once framed — even
+    with a maximum-length workspace name (the budget is computed, not hand-counted)."""
+    from src.services import agent_service
+
+    worst_framed = agent_compare_service._frame_objective(
+        "x" * agent_compare_service._MAX_OBJECTIVE_CHARS,
+        "N" * 200,  # names longer than the framing's 80-char clamp are truncated by it
+    )
+    assert len(worst_framed) <= agent_service._MAX_OBJECTIVE_CHARS
+
+
+def test_schema_objective_cap_matches_the_service_cap():
+    """The Pydantic cap and the computed service cap must agree, or a schema-valid objective
+    (which OpenAPI advertises as acceptable) would 422 at the service instead."""
+    from src.schemas.agent_compare import AgentCompareRequest
+
+    field = AgentCompareRequest.model_fields["objective"]
+    schema_cap = next(
+        meta.max_length for meta in field.metadata if hasattr(meta, "max_length")
+    )
+    assert schema_cap == agent_compare_service._MAX_OBJECTIVE_CHARS
+
+
+def test_cross_tenant_comp_workspace_is_the_same_404_as_a_missing_one(
+    live_mode, alpha_workspace, beta_workspace
+):
+    """H2 regression: comp workspace ids are body-addressed, so the service must enforce the
+    caller's tenant boundary itself. Naming another org's workspace as a comp is a plain 404 —
+    no existence oracle, no consent-config leak, zero providers, nothing sealed anywhere."""
+    from src.models.deal_workflow import Organization
+    from src.services.common import NotFound
+
+    with SessionLocal() as session:
+        org_a = Organization(name="Org A", slug="org-a-h2")
+        org_b = Organization(name="Org B", slug="org-b-h2")
+        session.add_all([org_a, org_b])
+        session.flush()
+        session.get(Workspace, alpha_workspace).organization_id = org_a.id
+        victim = session.get(Workspace, beta_workspace)
+        victim.organization_id = org_b.id
+        # The victim consents to LLMs — the attacker must still see a 404, never a not_run
+        # naming it as blocking (that would leak its existence and consent config).
+        victim.external_llm_allowed = True
+        session.commit()
+        org_a_id = org_a.id
+
+    factory = _popping_factory([])
+    with pytest.raises(NotFound):
+        _run(alpha_workspace, [beta_workspace], factory, organization_id=org_a_id)
+    assert factory.constructed["count"] == 0
+    assert _sealed(beta_workspace, "agent_run") == []
+    assert _sealed(alpha_workspace, "agent_comparative_run") == []
+
+    # A cross-tenant PRIMARY is refused identically.
+    with pytest.raises(NotFound):
+        _run(beta_workspace, [alpha_workspace], factory, organization_id=org_a_id)
+
+    # Same-tenant comps still resolve: the scope is a boundary, not a lockout.
+    with SessionLocal() as session:
+        session.get(Workspace, beta_workspace).organization_id = org_a_id
+        session.commit()
+    record = _run(
+        alpha_workspace, [beta_workspace], _grounded_pair_factory(), organization_id=org_a_id
+    )
+    assert record["status"] == "completed"
+
+
 def test_comp_id_validation_fails_closed(live_mode, alpha_workspace, beta_workspace):
     factory = _popping_factory([])
     with pytest.raises(ValueError, match="distinct"):

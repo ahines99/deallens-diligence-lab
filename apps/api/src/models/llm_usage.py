@@ -30,6 +30,9 @@ class LlmUsageEvent(UUIDMixin, Base):
     model: Mapped[str] = mapped_column(String(120), nullable=False)
     input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Indexed: the windowed ``spend_summary`` rollups filter on created_at (the global view has
+    # no org filter at all), and this table only ever grows — an unindexed time filter would
+    # degrade into a full scan as history accumulates.
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=now_utc, nullable=False
+        DateTime(timezone=True), default=now_utc, nullable=False, index=True
     )

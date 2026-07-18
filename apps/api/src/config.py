@@ -24,6 +24,11 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     llm_base_url: str = "https://api.anthropic.com/v1"
     llm_model: str = "claude-opus-4-8"
+    # G81 — operator consent for LLM evaluations whose payload is ONLY committed golden-set
+    # fixtures (never tenant data), e.g. a workspace-unbound prompt A/B. Default OFF so every
+    # LLM path stays consent-gated and fail-closed; workspace-bound evals ignore this and
+    # inherit the workspace's own consent instead.
+    golden_eval_llm_allowed: bool = False
 
     # --- Embeddings (G55) ---------------------------------------------------
     # "feature_hashing" (default): deterministic, dependency-free, keyless.

@@ -244,3 +244,89 @@ def test_runs_listing_returns_sealed_records_newest_first(
 
     # An unknown workspace 404s rather than returning an empty list.
     assert client.get("/api/workspaces/does-not-exist/agent/runs").status_code == 404
+
+
+# --- G61 recovery seam: client_request_id idempotency across both run routes -------------------
+
+
+def _completed_script() -> list[dict]:
+    return [
+        _tool_use("search_filings", {"query": "customer concentration"}),
+        _final("The largest customer represents approximately 14 percent of revenue."),
+    ]
+
+
+def test_client_request_id_replays_the_sealed_run_instead_of_rerunning(
+    live_mode, consenting_workspace, client, monkeypatch
+):
+    """A retry with the same client_request_id (the console's recovery move after an ambiguous
+    network failure) replays the sealed record on BOTH routes — never a second run, a second
+    LLM spend, or a second sealed artifact."""
+    rid = "console-recovery-0001"
+    _install_provider(monkeypatch, _completed_script())
+    with client.stream(
+        "POST",
+        f"/api/workspaces/{consenting_workspace}/agent/run-stream",
+        json={"objective": "How concentrated is customer revenue?", "client_request_id": rid},
+    ) as resp:
+        body = "".join(resp.iter_text())
+    finished = _frames(body)[-1][1]
+    assert finished["status"] == "completed"
+    assert finished["client_request_id"] == rid
+    sealed_id = finished["artifact_version_id"]
+    assert len(_sealed_runs(consenting_workspace)) == 1
+
+    def _explode():
+        raise AssertionError("a replay must not construct a provider")
+
+    monkeypatch.setattr(agent_router, "_provider_factory_override", _explode)
+
+    # Streaming retry: one finished frame carrying the SAME sealed record.
+    with client.stream(
+        "POST",
+        f"/api/workspaces/{consenting_workspace}/agent/run-stream",
+        json={"objective": "How concentrated is customer revenue?", "client_request_id": rid},
+    ) as resp:
+        replay_body = "".join(resp.iter_text())
+    replay_frames = _frames(replay_body)
+    assert [event_type for event_type, _ in replay_frames] == ["finished"]
+    assert replay_frames[0][1]["artifact_version_id"] == sealed_id
+
+    # Non-streaming retry (the console's fallback POST): same sealed record again.
+    resp = client.post(
+        f"/api/workspaces/{consenting_workspace}/agent/run",
+        json={"objective": "How concentrated is customer revenue?", "client_request_id": rid},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["artifact_version_id"] == sealed_id
+
+    # Still exactly one sealed artifact after three POSTs of one logical action.
+    assert len(_sealed_runs(consenting_workspace)) == 1
+
+
+def test_in_flight_duplicate_request_id_is_refused_with_409(client, consenting_workspace):
+    """While the first POST's run is still executing, a duplicate is refused — the client
+    recovers from the sealed transcript instead of double-running."""
+    rid = "console-recovery-0002"
+    assert agent_router._claim_request_id(consenting_workspace, rid)
+    try:
+        resp = client.post(
+            f"/api/workspaces/{consenting_workspace}/agent/run",
+            json={"objective": "anything at all", "client_request_id": rid},
+        )
+        assert resp.status_code == 409
+        assert "duplicate_in_flight" in resp.json()["detail"]
+        resp = client.post(
+            f"/api/workspaces/{consenting_workspace}/agent/run-stream",
+            json={"objective": "anything at all", "client_request_id": rid},
+        )
+        assert resp.status_code == 409
+    finally:
+        agent_router._release_request_id(consenting_workspace, rid)
+
+    # Ill-shaped request ids are schema-rejected, not silently accepted.
+    resp = client.post(
+        f"/api/workspaces/{consenting_workspace}/agent/run",
+        json={"objective": "anything at all", "client_request_id": "no spaces allowed"},
+    )
+    assert resp.status_code == 422

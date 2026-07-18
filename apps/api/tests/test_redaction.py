@@ -387,6 +387,35 @@ def test_decided_proposals_are_append_only_at_the_orm_layer(db: Session):
     db.rollback()
 
 
+def test_bulk_core_statements_cannot_mutate_immutable_intelligence_tables(db: Session):
+    """LOW-1 regression: mapper-level guards only see unit-of-work flushes; a session-executed
+    Core update/delete must be rejected too (mirroring the sibling modules' guards)."""
+    from sqlalchemy import delete, update
+
+    from src.models.deal_intelligence import DataRoomChunk, RedactionProposal
+
+    proposer, _approver, deal = _setup(db, "bulkguard")
+    document = _ingest_two_paragraphs(db, deal.id, proposer)
+    proposal = service.propose_redaction(
+        db,
+        deal.id,
+        document.id,
+        RedactionProposalCreate(spans=[_secret_span(db, proposer, document.id)]),
+        proposer,
+    )
+    with pytest.raises(ValueError, match="append-only"):
+        db.execute(
+            update(RedactionProposal)
+            .where(RedactionProposal.id == proposal.id)
+            .values(status="approved")
+        )
+    db.rollback()
+    with pytest.raises(ValueError, match="append-only"):
+        db.execute(delete(DataRoomChunk).where(DataRoomChunk.document_id == document.id))
+    db.rollback()
+    assert db.get(RedactionProposal, proposal.id).status == "proposed"
+
+
 def test_list_redactions_filters_by_status(db: Session):
     proposer, approver, deal = _setup(db, "listing")
     document = _ingest_two_paragraphs(db, deal.id, proposer)

@@ -13,7 +13,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Header, HTTPException, Request
 
-from src.routers.deps import SessionDep
+from src.routers.deps import OptionalPrincipalDep, SessionDep
 from src.schemas.agent_compare import AgentCompareOut, AgentCompareRequest
 from src.services import agent_compare_service
 
@@ -32,15 +32,20 @@ def run_agent_compare(
     payload: AgentCompareRequest,
     session: SessionDep,
     request: Request,
+    principal: OptionalPrincipalDep,
     header_actor_id: Annotated[str | None, Header(alias="X-Actor-ID")] = None,
 ) -> AgentCompareOut:
     try:
+        # The comp workspace ids are body-addressed, so the URL-path tenant middleware never
+        # guards them — the caller's org id must travel into the service, which scopes EVERY
+        # involved workspace (primary + comps) exactly like the body-addressed sec/ingest route.
         record = agent_compare_service.run_comparative_agent(
             session,
             workspace_id,
             payload.comp_workspace_ids,
             payload.objective,
             actor_id=_actor_id(request, header_actor_id),
+            organization_id=principal.organization_id if principal else None,
             max_steps_per_workspace=payload.max_steps_per_workspace,
         )
     except ValueError as exc:

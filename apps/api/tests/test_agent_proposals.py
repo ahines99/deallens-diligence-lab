@@ -78,7 +78,8 @@ def _org_deal(db: Session, suffix: str):
 
 
 def _run_tool(db: Session, workspace_id: str, name: str, arguments: dict):
-    return agent_tools._execute_tool(db, workspace_id, name, arguments)
+    ok, result, _grounding_text = agent_tools._execute_tool(db, workspace_id, name, arguments)
+    return ok, result
 
 
 def _claim_ids(db: Session) -> set[str]:
@@ -296,6 +297,38 @@ def test_agent_proposed_claim_is_verified_minted_unreviewed_and_human_reviewable
     )
     assert ok and dedupe["proposed"] is False
     assert dedupe["claim_id"] == claim.id
+
+
+def test_value_number_must_bind_to_value_text_not_another_number_in_the_span(db: Session):
+    """M2 regression at the agent seam: a two-number quote cannot mint value_text="$200
+    million" bound to value_number=5 — the number must be the one value_text states."""
+    _org, lead, _reviewer, deal, workspace = _org_deal(db, "bind")
+    intelligence.ingest_text_document(
+        db,
+        deal.id,
+        DocumentTextCreate(
+            filename="contract.txt",
+            text="The customer committed to $200 million over 5 years.",
+        ),
+        lead,
+    )
+    before = _claim_ids(db)
+    arguments = {
+        "category": "contract",
+        "field_name": "total_value",
+        "value_text": "$200 million",
+        "value_number": 5,
+        "quote": "committed to $200 million over 5 years",
+    }
+    ok, error = _run_tool(db, workspace.id, "propose_claim", arguments)
+    assert ok is False and "value_number_not_in_value_text" in error
+    assert _claim_ids(db) == before
+
+    ok, result = _run_tool(
+        db, workspace.id, "propose_claim", {**arguments, "value_number": 200}
+    )
+    assert ok is True, result
+    assert result["proposed"] is True
 
 
 def test_unverifiable_claim_proposals_are_tool_errors_and_mint_nothing(db: Session):

@@ -66,6 +66,8 @@ def isolated_store(monkeypatch, tmp_path):
 def live_mode(monkeypatch):
     monkeypatch.setattr(settings, "llm_mode", "live")
     monkeypatch.setattr(settings, "llm_api_key", "test-key")
+    # Workspace-unbound A/B runs are golden-set-only and require the operator opt-in.
+    monkeypatch.setattr(settings, "golden_eval_llm_allowed", True)
 
 
 def _run(prompt_id: str = _PROMPT_ID, candidate: str = _CANDIDATE, provider=None, **kwargs):
@@ -165,6 +167,18 @@ def test_mock_mode_is_honest_and_persists_nothing(client):
     assert provider.calls == 0
     assert not storage_service.get_store().exists(_KEY)
     assert prompt_ab_service.latest_reports() == []
+
+
+def test_workspace_unbound_live_run_requires_operator_opt_in(monkeypatch):
+    """Every LLM path is consent-gated: without GOLDEN_EVAL_LLM_ALLOWED, a live workspace-unbound
+    A/B refuses before any provider is constructed and persists nothing."""
+    monkeypatch.setattr(settings, "llm_mode", "live")
+    monkeypatch.setattr(settings, "llm_api_key", "test-key")
+    monkeypatch.setattr(settings, "golden_eval_llm_allowed", False)
+    report, provider = _run()
+    assert report == {"status": "not_run", "reason": "no_consent", "prompt_id": _PROMPT_ID}
+    assert provider.calls == 0
+    assert not storage_service.get_store().exists(_KEY)
 
 
 def test_workspace_bound_run_requires_consent(client, live_mode):

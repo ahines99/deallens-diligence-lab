@@ -14,9 +14,12 @@ writes NOTHING to any governed record except its own sealed transcript. Delibera
   (``artifact_type="agent_run"``); when the workspace links a deal, an ``agent.run_completed``
   audit event lands in the org outbox with actor attribution.
 * **The final answer passes a fail-closed grounding gate.** Any quantity token or ``EV-###``
-  reference in the answer that never appeared in a tool result (or the objective itself) rejects
-  the answer — the transcript is still sealed, with the violations listed. The agent's prose
-  cannot smuggle numbers past the evidence discipline.
+  reference in the answer that never appeared in a tool result's evidence projection (or the
+  objective itself) rejects the answer — the transcript is still sealed, with the violations
+  listed. The gate's source is each result's ``grounding_projection``, never the raw result:
+  fields that echo the model's own arguments are excluded, so the agent cannot launder a
+  fabricated figure through a tool round-trip. The agent's prose cannot smuggle numbers past
+  the evidence discipline.
 * **Budgets fail closed.** At most ``max_steps`` tool rounds (hard cap 16) and a per-result size
   cap; exhaustion seals the transcript with ``status="budget_exhausted"`` and no answer.
 
@@ -69,7 +72,9 @@ def _grounding_verdict(answer: str, source_text: str) -> dict:
 # --- The loop ---------------------------------------------------------------------------------
 
 
-def _not_run(workspace_id: str, objective: str, reason: str) -> dict:
+def _not_run(
+    workspace_id: str, objective: str, reason: str, client_request_id: str | None = None
+) -> dict:
     return {
         "workspace_id": workspace_id,
         "objective": objective,
@@ -82,6 +87,7 @@ def _not_run(workspace_id: str, objective: str, reason: str) -> dict:
         "artifact_version_id": None,
         "manifest": None,
         "grounding": None,
+        "client_request_id": client_request_id,
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -95,12 +101,18 @@ def run_diligence_agent(
     max_steps: int = 8,
     provider_factory=None,
     on_event=None,
+    client_request_id: str | None = None,
 ) -> dict:
     """Run the tool loop for one objective; seal the transcript; return the full run record.
 
     ``on_event`` (G61 seam) receives ``{"type": "started"|"tool_step"|"finished", ...}`` dicts as
     the run progresses so an SSE route can stream the live timeline. Events are best-effort: a
     listener exception never affects the run, and the sealed artifact stays the source of truth.
+
+    ``client_request_id`` (G61 recovery seam) is the caller-supplied idempotency key; it is
+    recorded in the run record and the sealed artifact so a client recovering from an ambiguous
+    network failure can match the sealed transcript to ITS OWN submission (and the routes can
+    refuse or replay a duplicate) instead of re-running the agent.
     """
 
     def _emit(kind: str, payload: dict) -> None:
@@ -121,17 +133,17 @@ def run_diligence_agent(
 
     external_allowed = ws.external_llm_allowed and ws.data_classification != "restricted"
     if not external_allowed:
-        return _not_run(workspace_id, objective, "no_consent")
+        return _not_run(workspace_id, objective, "no_consent", client_request_id)
     if settings.is_mock:
-        return _not_run(workspace_id, objective, "mock")
+        return _not_run(workspace_id, objective, "mock", client_request_id)
     if not settings.llm_api_key:
-        return _not_run(workspace_id, objective, "no_api_key")
+        return _not_run(workspace_id, objective, "no_api_key", client_request_id)
 
     spec = prompt_registry.get("diligence_agent")
     try:
         provider = (provider_factory or LiveProvider)()
     except Exception:
-        return _not_run(workspace_id, objective, "error")
+        return _not_run(workspace_id, objective, "error", client_request_id)
     manifest = prompt_registry.manifest("diligence_agent", model=provider.model)
 
     messages: list[dict] = [{"role": "user", "content": objective}]
@@ -166,7 +178,7 @@ def run_diligence_agent(
         for block in tool_blocks:
             name = block.get("name", "")
             arguments = block.get("input") or {}
-            ok, result = _execute_tool(session, workspace_id, name, arguments)
+            ok, result, grounding_text = _execute_tool(session, workspace_id, name, arguments)
             steps.append(
                 {
                     "tool": name,
@@ -178,7 +190,10 @@ def run_diligence_agent(
             )
             _emit("tool_step", {"step": steps[-1], "index": len(steps) - 1})
             if ok:
-                source_parts.append(json.dumps(result, default=str))
+                # The gate's source is the curated evidence projection, never the raw result:
+                # fields that echo the model's own arguments (H1: get_evidence.unresolved)
+                # would let the answer launder fabricated figures through a tool round-trip.
+                source_parts.append(grounding_text)
             result_blocks.append(
                 {
                     "type": "tool_result",
@@ -209,6 +224,7 @@ def run_diligence_agent(
         "steps_used": len(steps),
         "manifest": manifest,
         "grounding": grounding,
+        "client_request_id": client_request_id,
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -238,7 +254,15 @@ def run_diligence_agent(
             content_json=run_record,
             content_text=None,
             file_uri=None,
-            artifact_metadata={"status": status, "steps_used": len(steps)},
+            artifact_metadata={
+                "status": status,
+                "steps_used": len(steps),
+                **(
+                    {"client_request_id": client_request_id}
+                    if client_request_id is not None
+                    else {}
+                ),
+            },
             created_by=actor_id or "diligence_agent",
         )
 

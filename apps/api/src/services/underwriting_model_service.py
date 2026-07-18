@@ -2145,7 +2145,10 @@ def solve_dividend_recap(payload: DividendRecapSolveRequest) -> DividendRecapSol
     period and every LATER period. Outcomes:
 
     - ``solved``: ``binding_constraint`` is the constraint violated just beyond the maximum (the
-      limit that becomes tight); ``constraints`` reports every constraint AT the maximum.
+      limit that becomes tight); ``constraints`` reports every constraint AT the maximum. When
+      several constraints cross within the solver tolerance of each other, the choice is
+      ambiguous at that resolution: the first in canonical order is named and the tie is
+      disclosed in ``note``.
     - ``infeasible``: a constraint is violated with zero distribution — it is named.
     - ``unbounded``: no constraint tightens up to a probed bound far beyond the enterprise value
       (e.g. leverage-only constraints once the revolver is exhausted) — reported explicitly,
@@ -2227,14 +2230,35 @@ def solve_dividend_recap(payload: DividendRecapSolveRequest) -> DividendRecapSol
             low, low_statuses = midpoint, statuses
         else:
             high, high_statuses = midpoint, statuses
-    binding = next(item["name"] for item in high_statuses if not item["satisfied"])
+    violated = [item["name"] for item in high_statuses if not item["satisfied"]]
+    # With a CONVERGED bracket, several violated names mean those constraints all cross within
+    # the solver tolerance of each other — "the" binding constraint is genuinely ambiguous at
+    # that resolution, so the tie is disclosed instead of silently naming the first in
+    # canonical order as if it were uniquely tightest. An UNconverged bracket (max_iterations
+    # exhausted with high - low still wide) supports no tie claim at all: constraints violated
+    # at `high` may simply sit far past the true maximum, so that is disclosed instead.
+    converged = high - low <= payload.tolerance
+    note = None
+    if not converged:
+        note = (
+            f"max_iterations exhausted with the bracket still {_money(high - low)} wide; "
+            "max_distribution is a LOWER bound and binding_constraint reflects the first "
+            "constraint violated at the probed upper edge, not a resolved crossing"
+        )
+    elif len(violated) > 1:
+        note = (
+            f"Constraints {', '.join(violated)} all become violated within the solver "
+            "tolerance just beyond the maximum; the first in canonical order is reported as "
+            "binding_constraint — see constraints for every headroom"
+        )
     return result(
         status="solved",
         max_distribution=_money(low),
         sponsor_share=_money(low * sources_uses["sponsor_ownership"]),
-        binding_constraint=binding,
+        binding_constraint=violated[0],
         constraints=low_statuses,
         iterations=iterations,
+        note=note,
     )
 
 
@@ -2679,9 +2703,11 @@ def run_fund_monte_carlo(
                     correlated["fund_moic"]["p95"] - independent["fund_moic"]["p95"]
                 ),
                 "note": (
-                    "Same seed and draws with every loading zeroed. Negative p5 spreads and "
-                    "positive p95 spreads show the shared macro factors widening the fund "
-                    "outcome distribution versus independent deals."
+                    "Same seed and draws with every loading zeroed — a baseline with no "
+                    "macro-factor variance at all (idiosyncratic draws only), not deals "
+                    "drawing factors independently. Negative p5 spreads and positive p95 "
+                    "spreads show the shared macro factors widening the fund outcome "
+                    "distribution versus that zero-loading baseline."
                 ),
             },
         }

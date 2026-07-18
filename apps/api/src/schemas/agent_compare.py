@@ -12,8 +12,11 @@ class AgentCompareRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     # The service appends per-workspace framing that must stay inside the G57 objective cap,
-    # hence the tighter bound than AgentRunRequest.
-    objective: str = Field(min_length=1, max_length=1_800)
+    # hence the tighter bound than AgentRunRequest. Must equal the service's computed
+    # ``agent_compare_service._MAX_OBJECTIVE_CHARS`` (2000 minus the worst-case framing
+    # overhead) — a lockstep test pins the two so a schema-valid objective can never be
+    # rejected by the service cap.
+    objective: str = Field(min_length=1, max_length=1_738)
     comp_workspace_ids: list[str] = Field(min_length=1, max_length=3)
     max_steps_per_workspace: int = Field(default=6, ge=1, le=16)
 

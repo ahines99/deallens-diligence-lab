@@ -278,6 +278,11 @@ _ORG_QUOTA_WINDOWS: dict[str, float] = {"requests": 60.0, "builds": 3600.0, "llm
 # G58 — routes that MAY trigger a live external LLM call (analysis build with polish/extraction,
 # grounded QA passes, deal-room extraction). Counted only when LLM_MODE=live: a mock deployment
 # never calls out, so metering it would throttle free deterministic work for nothing.
+# The bucket is deliberately a per-REQUEST rate limiter, not a per-provider-call meter: one
+# request may fan out into many provider calls (a single agent/run is a multi-call tool loop;
+# agent/compare runs up to four such loops) yet ticks the bucket once. Per-call accounting is
+# G80's job — every provider response is recorded in llm_usage_events and rolled up by
+# spend_summary — while this bucket only bounds how often LLM-capable work can be REQUESTED.
 _LLM_CAPABLE_PATHS = re.compile(
     r"^/api/(?:"
     r"workspaces/[a-zA-Z0-9_-]+/(?:risks/generate|qa|cross-corpus-qa|agent/(?:run(?:-stream)?|compare)|agent-memo/draft|extraction-comparison)"

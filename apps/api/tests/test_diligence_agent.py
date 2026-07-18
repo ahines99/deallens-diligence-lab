@@ -329,3 +329,53 @@ def test_route_contract_and_quota_classification(client, consenting_workspace):
 
     # The route is in the G58 LLM-capable quota set.
     assert _LLM_CAPABLE_PATHS.match(f"/api/workspaces/{consenting_workspace}/agent/run")
+
+
+# --- H1: the grounding source is a curated projection, never an argument echo ------------------
+
+
+def test_grounding_gate_is_not_launderable_through_get_evidence_echo(
+    live_mode, consenting_workspace
+):
+    """H1 regression: a fabricated EV-### ref passed as a get_evidence argument comes back in
+    the tool's ``unresolved`` echo, which the model sees — but the grounding gate must not.
+    An answer citing the fabricated ref and figures no tool produced is rejected."""
+    provider = _FakeToolLoopProvider(
+        [
+            _tool_use("get_evidence", {"refs": ["EV-999"]}),
+            _final("Per EV-999, revenue was $4.2 billion and grew 37 percent."),
+        ]
+    )
+    record = _run(consenting_workspace, provider)
+    # The tool call succeeded and echoed the unresolved ref to the MODEL (useful feedback)...
+    assert record["steps"][0]["ok"] is True
+    assert record["steps"][0]["result"]["unresolved"] == ["EV-999"]
+    # ...but the echo never reaches the grounding source, so the answer fails closed.
+    assert record["status"] == "rejected_ungrounded"
+    assert record["answer"] is None
+    assert record["grounding"]["grounded"] is False
+    assert "EV-999" in record["grounding"]["unknown_refs"]
+
+
+def test_get_evidence_refuses_refs_that_are_not_ev_shaped(live_mode, consenting_workspace):
+    """Free text cannot ride through the refs argument at all: anything that is not EV-### is a
+    tool error (fed back to the model, contributing nothing to the grounding source)."""
+    provider = _FakeToolLoopProvider(
+        [
+            _tool_use("get_evidence", {"refs": ["$4.2 billion FY25 revenue"]}),
+            _final("The filings do not support an answer to this question."),
+        ]
+    )
+    record = _run(consenting_workspace, provider)
+    assert record["status"] == "completed"
+    assert record["steps"][0]["ok"] is False
+    assert "EV-###" in record["steps"][0]["error"]
+
+
+def test_grounding_projection_strips_only_argument_echo_fields():
+    from src.services.agent_tools import grounding_projection
+
+    result = {"evidence": [{"ref": "EV-1"}], "unresolved": ["EV-999"]}
+    assert grounding_projection("get_evidence", result) == {"evidence": [{"ref": "EV-1"}]}
+    untouched = {"results": [{"quote": "14 percent"}]}
+    assert grounding_projection("search_filings", untouched) == untouched

@@ -24,13 +24,17 @@ the candidate hash in the report (``b.prompt_hash_candidate``) must match the ne
 template's hash, which is what makes the pairing checkable.
 
 Gating matches every other LLM path and fails closed: mock mode, a missing API key, a provider
-error, or (when the run is workspace-bound) missing consent all return an honest
-``{"status": "not_run", "reason": ...}`` and persist nothing — CI never reaches a provider.
+error, or missing consent all return an honest ``{"status": "not_run", "reason": ...}`` and
+persist nothing — CI never reaches a provider. Consent is two-track: a workspace-bound run
+inherits that workspace's ``external_llm_allowed``/classification, and a workspace-unbound run
+(whose payload is only the committed golden set) requires the operator-level
+``GOLDEN_EVAL_LLM_ALLOWED`` opt-in — no path constructs a provider ungated.
 """
 from __future__ import annotations
 
 import hashlib
 import json
+import threading
 from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
@@ -105,14 +109,22 @@ def _read_envelope(store: storage_service.BlobStore, prompt_id: str) -> dict | N
     return envelope
 
 
+# Serializes the read-modify-write below: two concurrent A/B runs for one prompt would
+# otherwise each read the same envelope and the second put() would silently drop the first
+# run's report. Process-local, which matches the single-process deployment; cross-process
+# writers would need a blob-store compare-and-swap this store does not offer.
+_history_lock = threading.Lock()
+
+
 def _append_history(prompt_id: str, report: dict) -> None:
     store = storage_service.get_store()
-    envelope = _read_envelope(store, prompt_id) or {"history": []}
-    history = [report, *envelope["history"]][:_HISTORY_CAP]
-    store.put(
-        _blob_key(prompt_id),
-        json.dumps({"history": history}, ensure_ascii=False).encode("utf-8"),
-    )
+    with _history_lock:
+        envelope = _read_envelope(store, prompt_id) or {"history": []}
+        history = [report, *envelope["history"]][:_HISTORY_CAP]
+        store.put(
+            _blob_key(prompt_id),
+            json.dumps({"history": history}, ensure_ascii=False).encode("utf-8"),
+        )
 
 
 def run_ab(
@@ -140,6 +152,12 @@ def run_ab(
             return {"status": "not_run", "reason": "no_consent", "prompt_id": prompt_id}
     if settings.is_mock:
         return {"status": "not_run", "reason": "mock", "prompt_id": prompt_id}
+    if workspace_id is None and not settings.golden_eval_llm_allowed:
+        # Workspace-unbound runs send only the committed golden set, but "every LLM path is
+        # consent-gated" admits no exception: the operator-level opt-in stands in for the
+        # workspace consent this run does not have. Fail closed without one. (After the mock
+        # check so hermetic CI keeps its honest "mock" reason.)
+        return {"status": "not_run", "reason": "no_consent", "prompt_id": prompt_id}
     if not settings.llm_api_key:
         return {"status": "not_run", "reason": "no_api_key", "prompt_id": prompt_id}
 

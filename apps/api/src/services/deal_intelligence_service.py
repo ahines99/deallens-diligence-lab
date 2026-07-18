@@ -1028,9 +1028,12 @@ def _number_in_quote(value: float, quote: str) -> bool:
     Matching rule (deliberately literal): the float repr ("38.25", "3.0") plus — for integral
     values — the plain ("3") and thousands-separated ("3,000,000") integer forms, required to
     sit on digit boundaries so a proposed 3 never verifies against the "3" inside "38.25".
-    The quote is also checked with digit-grouping commas removed, so "1,200" in the quote
-    matches a proposed 1200. No rounding and no scale-word inference: "$3 million" verifies
-    value_number=3, never 3000000.
+    A BARE decimal point directly before the match is a boundary too: the "3" inside the
+    bare-leading-decimal ".3 pts" is 0.3, so it must never verify a proposed 3 (a 10x error) —
+    but a dot that terminates an abbreviation ("Note No.3") is not a decimal point and still
+    verifies. The quote is also checked with digit-grouping commas removed, so "1,200" in the
+    quote matches a proposed 1200. No rounding and no scale-word inference: "$3 million"
+    verifies value_number=3, never 3000000.
     """
     forms = {f"{value}"}
     if value.is_integer():
@@ -1038,7 +1041,35 @@ def _number_in_quote(value: float, quote: str) -> bool:
         forms.add(f"{int(value):,}")
     alternatives = "|".join(re.escape(form) for form in sorted(forms, key=len, reverse=True))
     pattern = re.compile(rf"(?<!\d)(?<!\d[.,])(?:{alternatives})(?!\d)(?![.,]\d)")
-    return bool(pattern.search(quote) or pattern.search(quote.replace(",", "")))
+
+    def _matches(text: str) -> bool:
+        for match in pattern.finditer(text):
+            start = match.start()
+            if start >= 1 and text[start - 1] == ".":
+                # A dot right before the number is a bare leading decimal unless the character
+                # before the dot is a letter (an abbreviation like "No." — not a decimal).
+                if start < 2 or not text[start - 2].isalpha():
+                    continue
+            return True
+        return False
+
+    return _matches(quote) or _matches(quote.replace(",", ""))
+
+
+def _value_number_mismatch(value_number: float, value_text: str, quote: str) -> str | None:
+    """The machine-readable reason a claimed number fails verification, or None when it holds.
+
+    Both checks are load-bearing: the quote check keeps the digit-boundary discipline against
+    the real source span, and the value_text check binds the number to the value the claim
+    actually STATES — "$200 million" can never carry value_number=5 borrowed from an unrelated
+    token in the same span. Shared by G53 extraction and the agent's propose_claim so the two
+    verifiers can never drift.
+    """
+    if not _number_in_quote(value_number, quote):
+        return "value_number_not_in_quote"
+    if not _number_in_quote(value_number, value_text):
+        return "value_number_not_in_value_text"
+    return None
 
 
 def _bounded(value: str | None, limit: int) -> str | None:
@@ -1053,6 +1084,7 @@ def _bounded(value: str | None, limit: int) -> str | None:
 whitespace_collapsed = _whitespace_collapsed
 verbatim_span = _verbatim_span
 number_in_quote = _number_in_quote
+value_number_mismatch = _value_number_mismatch
 bounded_metadata = _bounded
 
 
@@ -1069,9 +1101,10 @@ def _llm_extracted_claims(
 
     Verification is the trust boundary: chunk_index must address a real excerpt from the
     prompt batch, the quote must appear verbatim in that chunk (whitespace-normalized only),
-    the claimed value_text/value_number must be visible inside the quote, and the category
-    must be one the request allowed. Anything else is rejected with a machine-readable
-    reason; nothing unverified is ever minted as a ``StructuredClaim``.
+    the claimed value_text/value_number must be visible inside the quote — with value_number
+    additionally bound to value_text itself, so the two cannot name different numbers from
+    one span — and the category must be one the request allowed. Anything else is rejected
+    with a machine-readable reason; nothing unverified is ever minted as a ``StructuredClaim``.
     """
     allowed = set(data.categories)
     results: list[StructuredClaim] = []
@@ -1098,11 +1131,11 @@ def _llm_extracted_claims(
         if _whitespace_collapsed(value_text) not in _whitespace_collapsed(quoted):
             reject(index, "value_text_not_in_quote")
             continue
-        if proposal.value_number is not None and not _number_in_quote(
-            proposal.value_number, quoted
-        ):
-            reject(index, "value_number_not_in_quote")
-            continue
+        if proposal.value_number is not None:
+            mismatch = _value_number_mismatch(proposal.value_number, value_text, quoted)
+            if mismatch is not None:
+                reject(index, mismatch)
+                continue
         if proposal.category not in allowed:
             reject(index, "category_not_allowed")
             continue
@@ -1867,7 +1900,16 @@ def decide_redaction(
     ``redacted_document_id`` link is stamped. Rejection mints nothing (and skips the stale
     check: rejecting a superseded-version proposal is always safe).
     """
-    proposal = session.get(RedactionProposal, proposal_id)
+    # Row-lock the proposal for the whole decision: without it, two concurrent approvals (or a
+    # double-clicked approve) each pass the status check and each mint a redacted version, the
+    # loser's becoming an orphan. Under Postgres the second decider blocks here and then 409s
+    # on the now-terminal status; SQLite compiles FOR UPDATE away but serializes writers at
+    # the database level, so the same re-read closes the remaining window.
+    proposal = session.scalars(
+        select(RedactionProposal)
+        .where(RedactionProposal.id == proposal_id)
+        .with_for_update()
+    ).one_or_none()
     if proposal is None:
         raise IntelligenceNotFound(f"Redaction proposal '{proposal_id}' not found")
     _deal(session, proposal.deal_id, actor)
