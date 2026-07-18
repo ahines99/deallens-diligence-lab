@@ -193,14 +193,15 @@ Authentication paths, resolved in `main.py` middleware:
 
 **State:** Waves 1–6 complete (`FEATURE_LEDGER.md` 65/65, `ROADMAP-WAVE4.md` 50/50,
 `ROADMAP-WAVE5.md` and `ROADMAP-WAVE6.md` shipped: G01–G83), 2026-07-18 audit fully
-remediated at `d63894a`. CI green.
+remediated at `d63894a`. CI green. **Publicly deployed and live at
+https://deallens.alexhines.dev** (single VPS + Caddy auto-HTTPS, `DEMO_MODE=true`, `LLM_MODE=mock`).
 
 Open items, roughly in priority order:
 
-1. **Hosted public demo** — `docs/deploy-vps.md` is the copy-paste runbook (single VPS + Caddy
-   auto-HTTPS, via `docker-compose.prod.yml` + `.env.prod.example`); `docs/deploy-demo.md` explains
-   the `DEMO_MODE` posture it configures. Deploy has not happened yet; repo pinning on the GitHub
-   profile is also pending.
+1. **Pin the repo on the GitHub profile** — the last manual portfolio step. (The hosted public demo
+   is now DONE and live at https://deallens.alexhines.dev; it was stood up per `docs/deploy-vps.md`
+   using `docker-compose.prod.yml` + `.env.prod.example`, with `docs/deploy-demo.md` covering the
+   `DEMO_MODE` posture.)
 2. **Documented security scope-cuts** (fine as portfolio caveats, must not silently regress):
    OIDC signature verification; in-process rate limiters/OIDC state and the agent
    `client_request_id` in-flight registry (single-process assumption — a multi-worker deployment

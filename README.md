@@ -1,5 +1,6 @@
 # DealLens Diligence Lab
 
+[![Live demo](https://img.shields.io/badge/Live_demo-deallens.alexhines.dev-2ea44f)](https://deallens.alexhines.dev)
 [![CI](https://github.com/ahines99/deallens-diligence-lab/actions/workflows/ci.yml/badge.svg)](https://github.com/ahines99/deallens-diligence-lab/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white)
@@ -7,6 +8,8 @@
 
 **A private-equity underwriting and diligence workbench with deterministic models, governed evidence,
 deal execution, and investment-committee controls.**
+
+**🔗 Live demo — [deallens.alexhines.dev](https://deallens.alexhines.dev):** click **"Try the demo"** for an instant, zero-signup guest session.
 
 Type a ticker and watch a diligence workspace build itself live from SEC EDGAR:
 
