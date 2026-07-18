@@ -37,6 +37,8 @@ import type {
   CrossCorpusQA,
   ModelQuality,
   AgentRun,
+  AgentMemoDraft,
+  AgentComparativeRun,
   WorkspaceSearchResult,
   QuotaUsage,
   SignalsOverview,
@@ -431,6 +433,40 @@ export const api = {
       method: "POST",
       body: { objective, max_steps: maxSteps },
     }),
+  listAgentRuns: (id: string, limit = 10) =>
+    request<AgentRun[]>(`/api/workspaces/${id}/agent/runs?limit=${limit}`),
+  runAgentMemoDraft: (id: string, maxStepsPerSection = 6) =>
+    request<AgentMemoDraft>(`/api/workspaces/${id}/agent-memo/draft`, {
+      method: "POST",
+      body: { max_steps_per_section: maxStepsPerSection },
+    }),
+  getAgentMemoDraft: (id: string) => requestOrNull<AgentMemoDraft>(`/api/workspaces/${id}/agent-memo`),
+  runComparativeAgent: (
+    id: string,
+    objective: string,
+    compWorkspaceIds: string[],
+    maxStepsPerWorkspace = 6,
+  ) =>
+    request<AgentComparativeRun>(`/api/workspaces/${id}/agent/compare`, {
+      method: "POST",
+      body: {
+        objective,
+        comp_workspace_ids: compWorkspaceIds,
+        max_steps_per_workspace: maxStepsPerWorkspace,
+      },
+    }),
+  decideAgentMemoSection: (
+    id: string,
+    draftId: string,
+    section: string,
+    decision: "accept" | "reject",
+    actor: WorkflowActor = {},
+  ) =>
+    workflowRequest<AgentMemoDraft>(
+      `/api/workspaces/${id}/agent-memo/${draftId}/sections/decide`,
+      { method: "POST", body: { section, decision } },
+      actor,
+    ),
   searchWorkspace: (id: string, q: string) =>
     request<WorkspaceSearchResult>(`/api/workspaces/${id}/search?q=${encodeURIComponent(q)}`),
   getQuotaUsage: (org: string) =>

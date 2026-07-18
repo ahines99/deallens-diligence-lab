@@ -30,6 +30,8 @@ from src.models.workspace import Workspace
 from src.routers import (
     activity,
     agent,
+    agent_compare,
+    agent_memo,
     api_keys,
     collaboration,
     comments,
@@ -276,7 +278,7 @@ _ORG_QUOTA_WINDOWS: dict[str, float] = {"requests": 60.0, "builds": 3600.0, "llm
 # never calls out, so metering it would throttle free deterministic work for nothing.
 _LLM_CAPABLE_PATHS = re.compile(
     r"^/api/(?:"
-    r"workspaces/[a-zA-Z0-9_-]+/(?:risks/generate|qa|cross-corpus-qa|agent/run|extraction-comparison)"
+    r"workspaces/[a-zA-Z0-9_-]+/(?:risks/generate|qa|cross-corpus-qa|agent/(?:run(?:-stream)?|compare)|agent-memo/draft|extraction-comparison)"
     r"|deals/[a-zA-Z0-9_-]+/intelligence/extractions"
     r"|model-ops/prompt-ab"
     r")$"
@@ -622,7 +624,8 @@ def health() -> dict:
 
 
 _ROUTER_MODULES = (
-    activity, agent, workspaces, targets, sec, filings, comps, financials, risks, questions,
+    activity, agent, agent_compare, agent_memo, workspaces, targets, sec, filings, comps, financials,
+    risks, questions,
     memos, red_team, evidence, examples, governance, govcon, portfolio, notifications,
     forensics, valuation, feeds, signals, ownership, search,
     underwriting_data, underwriting_model, deal_workflow, deal_intelligence,

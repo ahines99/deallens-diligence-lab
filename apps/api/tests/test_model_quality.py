@@ -12,7 +12,7 @@ from sqlalchemy import func, select
 
 from src.config import settings
 from src.db.session import SessionLocal
-from src.eval import calibration, harness
+from src.eval import agent_eval, calibration, harness
 from src.models.eval_run import JudgeEvalRun
 from src.models.underwriting_data import ArtifactVersion
 from src.routers import model_ops
@@ -21,6 +21,7 @@ from src.services import judge_service, storage_service
 _SECTIONS = (
     "judge_evals",
     "retrieval_metrics",
+    "agent_evals",
     "calibration",
     "prompts",
     "extraction_comparison",
@@ -112,6 +113,32 @@ def test_retrieval_metrics_read_unavailable_when_baseline_unreadable(client, mon
     assert section["status"] == "unavailable"
     assert "retrieval_metrics.json" in section["note"]
     assert "rankers" not in section
+
+
+def test_agent_evals_reflect_the_committed_baseline(client):
+    """G62: the section serves the committed scripted-provider baseline — metrics spread at the
+    top level plus the case count, without the per-case transcript."""
+    section = client.get("/api/model-ops/quality").json()["agent_evals"]
+    assert section["status"] == "available"
+    assert section["note"] is None
+    baseline = agent_eval.load_baseline()
+    assert section["cases"] == baseline["cases"]
+    for name in agent_eval.METRIC_NAMES:
+        assert section[name] == baseline["metrics"][name]
+    assert "per_case" not in section  # the dashboard shows the aggregate, not the transcript
+
+
+def test_agent_evals_read_unavailable_when_baseline_unreadable(client, monkeypatch):
+    def _missing() -> dict:
+        raise OSError("baseline missing")
+
+    monkeypatch.setattr(model_ops.agent_eval, "load_baseline", _missing)
+    section = client.get("/api/model-ops/quality").json()["agent_evals"]
+    assert section["status"] == "unavailable"
+    assert "agent_metrics.json" in section["note"]
+    # Honest absence: no fabricated metrics or counts alongside the unavailable status.
+    assert "cases" not in section
+    assert all(name not in section for name in agent_eval.METRIC_NAMES)
 
 
 def test_calibration_section_reports_the_active_threshold_and_study(client):

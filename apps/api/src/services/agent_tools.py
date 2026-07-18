@@ -2,14 +2,24 @@
 
 Split from ``agent_service`` so Theme-I features can evolve tools and loop independently.
 Every handler takes (session, workspace_id, arguments) and returns a JSON-safe dict. Handlers
-are read-only or pure compute by construction — a WRITE-capable tool may only PROPOSE into a
-four-eyes queue (never approve, never mutate governed records directly); see the module
-docstring in ``agent_service`` before adding one.
+are read-only, pure compute, or PROPOSE-only by construction. G60 adds the two proposal
+tools: the agent may place a QoE adjustment or a structured claim INTO an existing four-eyes
+queue under the distinguishable automation identity ``agent:diligence`` — it can never decide
+one, and neither can any other automation identity, because the queues' existing checks
+already reject automation as a decider: the proposer!=decider rule (``decide_qoe_adjustment``,
+``review_claim``), the trusted-service reviewer ban (``_require_human_reviewer``), and the
+router-level ``HumanDeciderDep``. A HUMAN deciding an agent proposal is possible and
+unchanged. Proposal tool calls and returned record ids flow into the loop transcript, so the
+sealed ``agent_run`` artifact (which binds the prompt/model manifest) remains the audit trail
+tying each proposal to the run that made it.
 """
 from __future__ import annotations
 
 import json
 import logging
+from copy import deepcopy
+from decimal import Decimal, InvalidOperation
+from typing import get_args
 
 from pydantic import ValidationError
 from sqlalchemy import select
@@ -24,6 +34,15 @@ logger = logging.getLogger("deallens.agent")
 # Serialized tool results larger than this are truncated with an explicit marker: the model sees
 # less, never something fabricated.
 MAX_RESULT_CHARS = 6_000
+
+# G60: the distinguishable proposer identity every agent proposal carries. It is deliberately a
+# value no human session can hold (actor ids come from verified principals), so the four-eyes
+# proposer!=decider checks make an agent proposal undecidable by the same identity, and the
+# human-reviewer requirements make it undecidable by ANY automation identity.
+AGENT_ACTOR_ID = "agent:diligence"
+# Engine provenance on agent-proposed claims, alongside G53's rules-/llm- extraction versions.
+AGENT_CLAIM_EXTRACTION_VERSION = "agent-proposed-v1"
+_QOE_BRIDGE_LAYERS = ("management", "sponsor")
 
 def _tool_get_workspace_overview(session, workspace_id: str, arguments: dict) -> dict:
     ws = get_workspace_or_404(session, workspace_id)
@@ -198,6 +217,191 @@ def _tool_run_underwriting_scenario(session, workspace_id: str, arguments: dict)
     }
 
 
+def _tool_propose_qoe_adjustment(session, workspace_id: str, arguments: dict) -> dict:
+    """PROPOSE a QoE adjustment into the existing four-eyes queue — never decide one.
+
+    The proposal runs through the same ``create_qoe_adjustment`` path a human proposer uses:
+    it lands with status "proposed" and ``created_by=AGENT_ACTOR_ID``, surfaces in the review
+    inbox for every human EXCEPT its proposer, and the proposer!=decider rule plus the
+    human-decider requirement on the decide route mean no automation can ever approve it.
+    """
+    from src.schemas.underwriting_data import QoEAdjustmentCreate
+    from src.services import underwriting_data_service
+
+    bridge_layer = arguments.get("bridge_layer")
+    if bridge_layer not in _QOE_BRIDGE_LAYERS:
+        raise ValueError(f"bridge_layer must be one of {list(_QOE_BRIDGE_LAYERS)}")
+    description = str(arguments.get("description") or "").strip()
+    if not description:
+        raise ValueError("description is required")
+    category = str(arguments.get("category") or "").strip()
+    if not category:
+        raise ValueError("category is required")
+    amount = arguments.get("amount")
+    if isinstance(amount, bool) or not isinstance(amount, (int, float)):
+        raise ValueError("amount must be a number")
+    try:
+        amount_decimal = Decimal(str(amount))
+    except InvalidOperation as exc:  # pragma: no cover - repr of a float always parses
+        raise ValueError("amount must be a number") from exc
+    source_note = str(arguments.get("source_note") or "").strip()
+    if source_note:
+        # The record itself carries the agent's source context; the sealed run transcript
+        # (with its prompt/model manifest) remains the full provenance trail.
+        description = f"{description}\n\nAgent source note: {source_note}"
+    try:
+        data = QoEAdjustmentCreate(
+            period_end=arguments.get("period_end"),
+            bridge_layer=bridge_layer,
+            title=" ".join(description.split())[:240],
+            description=description,
+            category=category,
+            amount=amount_decimal,
+            evidence_ref=arguments.get("evidence_ref") or None,
+            created_by=AGENT_ACTOR_ID,
+        )
+    except ValidationError as exc:
+        raise ValueError(f"invalid QoE proposal: {exc}") from exc
+    adjustment = underwriting_data_service.create_qoe_adjustment(session, workspace_id, data)
+    return {
+        "proposed": True,
+        "adjustment_id": adjustment.id,
+        "status": adjustment.status,
+        "created_by": adjustment.created_by,
+    }
+
+
+def _tool_propose_claim(session, workspace_id: str, arguments: dict) -> dict:
+    """PROPOSE one structured claim on the linked deal, gated by the G53 verifier.
+
+    Only deal-linked workspaces have a data room to claim against. The quote must appear
+    verbatim (whitespace-normalized only) in a latest-version data-room chunk, and the claimed
+    value_text/value_number must be visible inside that quote (digit-boundary rule for
+    numbers) — the same deterministic verification G53 applies to LLM extraction, reusing its
+    helpers. Anything unverifiable is a tool error and NOTHING is minted. A verified claim
+    lands "unreviewed" with ``created_by_actor_id=AGENT_ACTOR_ID`` for human four-eyes review.
+    """
+    from src.db.base import new_uuid
+    from src.models.deal_intelligence import StructuredClaim
+    from src.models.deal_workflow import Deal
+    from src.schemas.deal_intelligence import ClaimCategory
+    from src.services import deal_intelligence_service as intelligence
+
+    deal = session.scalar(select(Deal).where(Deal.workspace_id == workspace_id))
+    if deal is None:
+        raise ValueError(
+            "this workspace is not linked to a deal, so it has no data room to claim against; "
+            "propose_claim is only available on deal-linked workspaces"
+        )
+    allowed_categories = set(get_args(ClaimCategory))
+    category = str(arguments.get("category") or "").strip()
+    if category not in allowed_categories:
+        raise ValueError(f"category must be one of {sorted(allowed_categories)}")
+    field_name = str(arguments.get("field_name") or "").strip()
+    if not field_name or len(field_name) > 100:
+        raise ValueError("field_name must be 1-100 characters")
+    value_text = str(arguments.get("value_text") or "").strip()
+    if not value_text:
+        raise ValueError("value_text is required")
+    quote = str(arguments.get("quote") or "").strip()
+    if not quote:
+        raise ValueError("quote is required")
+    value_number = arguments.get("value_number")
+    if value_number is not None:
+        if isinstance(value_number, bool) or not isinstance(value_number, (int, float)):
+            raise ValueError("value_number must be a number")
+        value_number = float(value_number)
+
+    hint = str(arguments.get("chunk_hint") or "").strip().casefold()
+    documents = intelligence.list_documents(session, deal.id, latest_only=True)
+    if hint:
+        documents.sort(
+            key=lambda doc: hint not in f"{doc.id} {doc.filename} {doc.title}".casefold()
+        )
+    located = None
+    for document in documents:
+        for chunk in intelligence.list_chunks(session, document.id):
+            span = intelligence.verbatim_span(chunk.text, quote)
+            if span is not None:
+                located = (document, chunk, span)
+                break
+        if located:
+            break
+    if located is None:
+        raise ValueError(
+            "quote_not_verbatim: the quote does not appear verbatim (whitespace-normalized) in "
+            "any current data-room chunk; only text present in the deal's documents can back a "
+            "proposed claim"
+        )
+    document, chunk, (start, end) = located
+    quoted = chunk.text[start:end]
+    collapse = intelligence.whitespace_collapsed
+    if collapse(value_text) not in collapse(quoted):
+        raise ValueError("value_text_not_in_quote: value_text must appear inside the quote")
+    if value_number is not None and not intelligence.number_in_quote(value_number, quoted):
+        raise ValueError(
+            "value_number_not_in_quote: value_number must appear inside the quote on digit "
+            "boundaries"
+        )
+
+    # Same-span dedupe mirrors G53's signature reuse: an identical revision-1 claim is
+    # returned, never re-minted into a second queue item.
+    for candidate in session.scalars(
+        select(StructuredClaim).where(
+            StructuredClaim.chunk_id == chunk.id,
+            StructuredClaim.category == category,
+            StructuredClaim.field_name == field_name,
+            StructuredClaim.revision == 1,
+        )
+    ):
+        span_json = candidate.source_span or {}
+        if span_json.get("start") == start and span_json.get("end") == end:
+            return {
+                "proposed": False,
+                "claim_id": candidate.id,
+                "review_status": candidate.review_status,
+                "note": "an identical claim already exists for this exact span",
+            }
+
+    unit = arguments.get("unit")
+    period = arguments.get("period")
+    claim = StructuredClaim(
+        deal_id=deal.id,
+        logical_claim_id=new_uuid(),
+        revision=1,
+        document_id=document.id,
+        chunk_id=chunk.id,
+        category=category,
+        field_name=field_name,
+        value_text=value_text,
+        value_number=value_number,
+        unit=intelligence.bounded_metadata(str(unit), 40) if unit is not None else None,
+        period=intelligence.bounded_metadata(str(period), 40) if period is not None else None,
+        currency=None,
+        # Same fixed confidence rationale as G53: a deterministic verifier bound the quote and
+        # value to a real chunk; the score is not a model-reported probability.
+        confidence=intelligence.LLM_CLAIM_CONFIDENCE,
+        source_locator=deepcopy(chunk.locator),
+        source_span={"start": start, "end": end, "text": quoted},
+        review_status="unreviewed",
+        extraction_version=AGENT_CLAIM_EXTRACTION_VERSION,
+        created_by_actor_id=AGENT_ACTOR_ID,
+    )
+    session.add(claim)
+    session.commit()
+    return {
+        "proposed": True,
+        "claim_id": claim.id,
+        "logical_claim_id": claim.logical_claim_id,
+        "review_status": claim.review_status,
+        "document_id": document.id,
+        "chunk_id": chunk.id,
+        "locator": claim.source_locator,
+        "created_by": AGENT_ACTOR_ID,
+        "extraction_version": AGENT_CLAIM_EXTRACTION_VERSION,
+    }
+
+
 _TOOLS: dict[str, tuple[str, dict, callable]] = {
     "get_workspace_overview": (
         "Workspace, target, headline financials, and recent revenue/margin trend rows.",
@@ -257,6 +461,63 @@ _TOOLS: dict[str, tuple[str, dict, callable]] = {
             "additionalProperties": False,
         },
         _tool_run_underwriting_scenario,
+    ),
+    "propose_qoe_adjustment": (
+        "PROPOSE a QoE adjustment into the four-eyes review queue as agent:diligence (it lands "
+        "with status 'proposed'). You can never approve or reject one — a distinct HUMAN "
+        "reviewer decides it in the review inbox.",
+        {
+            "type": "object",
+            "properties": {
+                "category": {"type": "string"},
+                "description": {"type": "string"},
+                "amount": {"type": "number"},
+                "period_end": {
+                    "type": "string",
+                    "description": "ISO date the adjustment period ends, e.g. 2025-12-31",
+                },
+                "bridge_layer": {"type": "string", "enum": ["management", "sponsor"]},
+                "evidence_ref": {"type": "string"},
+                "source_note": {"type": "string"},
+            },
+            "required": ["category", "description", "amount", "period_end", "bridge_layer"],
+            "additionalProperties": False,
+        },
+        _tool_propose_qoe_adjustment,
+    ),
+    "propose_claim": (
+        "PROPOSE one structured claim on the linked deal from a VERBATIM data-room quote. The "
+        "quote and value are verified deterministically against the real chunks; a verified "
+        "claim is minted 'unreviewed' as agent:diligence for human four-eyes review. "
+        "Deal-linked workspaces only; you can never approve a claim.",
+        {
+            "type": "object",
+            "properties": {
+                "category": {
+                    "type": "string",
+                    "enum": ["debt_term", "customer", "contract", "kpi", "qoe_candidate"],
+                },
+                "field_name": {"type": "string"},
+                "value_text": {
+                    "type": "string",
+                    "description": "the claimed value, copied verbatim from inside the quote",
+                },
+                "value_number": {"type": "number"},
+                "unit": {"type": "string"},
+                "period": {"type": "string"},
+                "quote": {
+                    "type": "string",
+                    "description": "verbatim supporting text from a data-room document chunk",
+                },
+                "chunk_hint": {
+                    "type": "string",
+                    "description": "optional document filename/title/id fragment to search first",
+                },
+            },
+            "required": ["category", "field_name", "value_text", "quote"],
+            "additionalProperties": False,
+        },
+        _tool_propose_claim,
     ),
 }
 

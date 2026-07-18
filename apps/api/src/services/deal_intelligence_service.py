@@ -1041,6 +1041,15 @@ def _bounded(value: str | None, limit: int) -> str | None:
     return cleaned if cleaned and len(cleaned) <= limit else None
 
 
+# G60: the agent's ``propose_claim`` tool mints through the exact verifier discipline G53
+# established. Shared under public names so the proposal path can never drift from the
+# extraction-time verification logic.
+whitespace_collapsed = _whitespace_collapsed
+verbatim_span = _verbatim_span
+number_in_quote = _number_in_quote
+bounded_metadata = _bounded
+
+
 def _llm_extracted_claims(
     session: Session,
     deal_id: str,

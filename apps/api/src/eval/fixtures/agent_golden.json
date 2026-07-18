@@ -1,0 +1,351 @@
+{
+  "description": "G62 agent-eval golden set. Each case is one canonical objective run through the REAL G57 harness (tool execution, grounding gate, budgets, sealing) with a SCRIPTED provider: `script` holds the provider's Anthropic-format responses verbatim, `workspace_fixture` is materialized into an ephemeral workspace before the run, and `expectations` is what the committed baseline defends. Scripts and fixtures are authored so every quantity token and EV-ref in a final answer either does or deliberately does not appear in a tool result.",
+  "cases": [
+    {
+      "id": "grounded_completion",
+      "objective": "How concentrated is customer revenue?",
+      "workspace_fixture": {
+        "chunks": [
+          {
+            "section": "Item 1A Risk Factors",
+            "text": "Customer concentration remains a material risk. Our largest customer represented approximately 14 percent of consolidated revenue during the fiscal year."
+          }
+        ]
+      },
+      "script": [
+        {
+          "stop_reason": "tool_use",
+          "content": [
+            {
+              "type": "tool_use",
+              "id": "tu_1",
+              "name": "search_filings",
+              "input": {"query": "customer concentration"}
+            }
+          ]
+        },
+        {
+          "stop_reason": "end_turn",
+          "content": [
+            {
+              "type": "text",
+              "text": "The largest customer represents approximately 14 percent of consolidated revenue, which management flags as a material concentration risk."
+            }
+          ]
+        }
+      ],
+      "expectations": {
+        "expected_tools": ["search_filings"],
+        "expected_status": "completed",
+        "must_ground": true
+      }
+    },
+    {
+      "id": "fabricated_number_rejected",
+      "objective": "How concentrated is customer revenue?",
+      "workspace_fixture": {
+        "chunks": [
+          {
+            "section": "Item 1A Risk Factors",
+            "text": "Customer concentration remains a material risk. Our largest customer represented approximately 14 percent of consolidated revenue during the fiscal year."
+          }
+        ]
+      },
+      "script": [
+        {
+          "stop_reason": "tool_use",
+          "content": [
+            {
+              "type": "tool_use",
+              "id": "tu_1",
+              "name": "search_filings",
+              "input": {"query": "customer concentration"}
+            }
+          ]
+        },
+        {
+          "stop_reason": "end_turn",
+          "content": [
+            {
+              "type": "text",
+              "text": "Churn is roughly 23% and the largest customer represents 14 percent of consolidated revenue."
+            }
+          ]
+        }
+      ],
+      "expectations": {
+        "expected_tools": ["search_filings"],
+        "expected_status": "rejected_ungrounded",
+        "must_ground": false
+      }
+    },
+    {
+      "id": "abstention_completion",
+      "objective": "What does the company disclose about customer churn?",
+      "workspace_fixture": {
+        "chunks": [
+          {
+            "section": "Item 7 Management Discussion",
+            "text": "The company maintains a revolving credit facility and reported healthy liquidity at fiscal year end, supported by cash generated from operating activities."
+          }
+        ]
+      },
+      "script": [
+        {
+          "stop_reason": "tool_use",
+          "content": [
+            {
+              "type": "tool_use",
+              "id": "tu_1",
+              "name": "search_filings",
+              "input": {"query": "customer churn rate"}
+            }
+          ]
+        },
+        {
+          "stop_reason": "end_turn",
+          "content": [
+            {
+              "type": "text",
+              "text": "The filings reviewed do not disclose a customer churn rate, so the agent cannot support a quantified churn figure."
+            }
+          ]
+        }
+      ],
+      "expectations": {
+        "expected_tools": ["search_filings"],
+        "expected_status": "completed",
+        "must_ground": true
+      }
+    },
+    {
+      "id": "unknown_tool_recovery",
+      "objective": "Summarize the disclosed risk factors.",
+      "workspace_fixture": {
+        "chunks": [
+          {
+            "section": "Item 1A Risk Factors",
+            "text": "Customer concentration remains a material risk. Our largest customer represented approximately 14 percent of consolidated revenue during the fiscal year."
+          }
+        ]
+      },
+      "script": [
+        {
+          "stop_reason": "tool_use",
+          "content": [
+            {
+              "type": "tool_use",
+              "id": "tu_1",
+              "name": "summarize_workspace",
+              "input": {}
+            }
+          ]
+        },
+        {
+          "stop_reason": "tool_use",
+          "content": [
+            {
+              "type": "tool_use",
+              "id": "tu_2",
+              "name": "search_filings",
+              "input": {"query": "risk factors"}
+            }
+          ]
+        },
+        {
+          "stop_reason": "end_turn",
+          "content": [
+            {
+              "type": "text",
+              "text": "The risk factor disclosure centers on customer concentration, which management describes as a material risk."
+            }
+          ]
+        }
+      ],
+      "expectations": {
+        "expected_tools": ["search_filings"],
+        "expected_status": "completed",
+        "must_ground": true
+      }
+    },
+    {
+      "id": "budget_exhaustion",
+      "objective": "Inventory every disclosed risk in depth.",
+      "max_steps": 1,
+      "workspace_fixture": {
+        "chunks": [
+          {
+            "section": "Item 1A Risk Factors",
+            "text": "Customer concentration remains a material risk. Our largest customer represented approximately 14 percent of consolidated revenue during the fiscal year."
+          }
+        ]
+      },
+      "script": [
+        {
+          "stop_reason": "tool_use",
+          "content": [
+            {
+              "type": "tool_use",
+              "id": "tu_1",
+              "name": "search_filings",
+              "input": {"query": "customer concentration"}
+            }
+          ]
+        },
+        {
+          "stop_reason": "tool_use",
+          "content": [
+            {
+              "type": "tool_use",
+              "id": "tu_2",
+              "name": "search_filings",
+              "input": {"query": "supplier concentration"}
+            }
+          ]
+        }
+      ],
+      "expectations": {
+        "expected_tools": ["search_filings"],
+        "expected_status": "budget_exhausted",
+        "must_ground": false
+      }
+    },
+    {
+      "id": "multi_tool_sequence",
+      "objective": "What share of revenue comes from the largest customer?",
+      "workspace_fixture": {
+        "chunks": [
+          {
+            "section": "Item 1A Risk Factors",
+            "text": "Customer concentration remains a material risk. Our largest customer represented approximately 14 percent of consolidated revenue during the fiscal year."
+          },
+          {
+            "section": "Item 7 Management Discussion",
+            "text": "Consolidated revenue grew during the fiscal year, driven by continued expansion within existing enterprise customer accounts."
+          }
+        ]
+      },
+      "script": [
+        {
+          "stop_reason": "tool_use",
+          "content": [
+            {
+              "type": "tool_use",
+              "id": "tu_1",
+              "name": "search_filings",
+              "input": {"query": "largest customer revenue"}
+            }
+          ]
+        },
+        {
+          "stop_reason": "tool_use",
+          "content": [
+            {
+              "type": "tool_use",
+              "id": "tu_2",
+              "name": "ask_filings_qa",
+              "input": {"question": "What share of consolidated revenue does the largest customer represent?"}
+            }
+          ]
+        },
+        {
+          "stop_reason": "end_turn",
+          "content": [
+            {
+              "type": "text",
+              "text": "Approximately 14 percent of consolidated revenue is attributable to the largest customer, and the filings flag this concentration as a material risk."
+            }
+          ]
+        }
+      ],
+      "expectations": {
+        "expected_tools": ["search_filings", "ask_filings_qa"],
+        "expected_status": "completed",
+        "must_ground": true
+      }
+    },
+    {
+      "id": "evidence_ref_grounded",
+      "objective": "Which governed risk finding matters most and what evidence backs it?",
+      "workspace_fixture": {
+        "risks": [
+          {
+            "title": "Customer concentration",
+            "category": "customer_concentration",
+            "category_label": "Customer concentration",
+            "severity": "high",
+            "severity_score": 8,
+            "finding": "The largest customer accounts for 14 percent of consolidated revenue.",
+            "evidence_ref": "EV-001"
+          }
+        ]
+      },
+      "script": [
+        {
+          "stop_reason": "tool_use",
+          "content": [
+            {
+              "type": "tool_use",
+              "id": "tu_1",
+              "name": "list_risk_findings",
+              "input": {}
+            }
+          ]
+        },
+        {
+          "stop_reason": "end_turn",
+          "content": [
+            {
+              "type": "text",
+              "text": "The highest-severity governed finding is customer concentration [EV-001]: the largest customer accounts for 14 percent of consolidated revenue."
+            }
+          ]
+        }
+      ],
+      "expectations": {
+        "expected_tools": ["list_risk_findings"],
+        "expected_status": "completed",
+        "must_ground": true
+      }
+    },
+    {
+      "id": "ungrounded_evidence_ref_rejected",
+      "objective": "How concentrated is customer revenue?",
+      "workspace_fixture": {
+        "chunks": [
+          {
+            "section": "Item 1A Risk Factors",
+            "text": "Customer concentration remains a material risk. Our largest customer represented approximately 14 percent of consolidated revenue during the fiscal year."
+          }
+        ]
+      },
+      "script": [
+        {
+          "stop_reason": "tool_use",
+          "content": [
+            {
+              "type": "tool_use",
+              "id": "tu_1",
+              "name": "search_filings",
+              "input": {"query": "customer concentration"}
+            }
+          ]
+        },
+        {
+          "stop_reason": "end_turn",
+          "content": [
+            {
+              "type": "text",
+              "text": "Customer concentration is a documented material risk [EV-999]."
+            }
+          ]
+        }
+      ],
+      "expectations": {
+        "expected_tools": ["search_filings"],
+        "expected_status": "rejected_ungrounded",
+        "must_ground": false
+      }
+    }
+  ]
+}

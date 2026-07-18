@@ -1629,6 +1629,55 @@ export interface AgentRun {
   generated_at: string;
 }
 
+// --- G63 comparative agent runs ----------------------------------------------------------------
+export interface AgentCompareWorkspace {
+  workspace_id: string;
+  workspace_name: string;
+  role: "primary" | "comp";
+  status: string;
+  reason: string | null;
+  answer: string | null;
+  artifact_version_id: string | null;
+  tools_used: string[];
+  steps_used: number;
+  grounding: AgentGrounding | null;
+}
+export interface AgentComparativeRun {
+  primary_workspace_id: string;
+  comp_workspace_ids: string[];
+  objective: string;
+  status: "completed" | "rejected_ungrounded" | "not_run";
+  reason: string | null;
+  blocking_workspace_id: string | null;
+  per_workspace: AgentCompareWorkspace[];
+  merged_markdown: string | null;
+  grounding: AgentGrounding | null;
+  artifact_version_id: string | null;
+  generated_at: string;
+}
+
+// --- G59 agent memo drafts ---------------------------------------------------------------------
+export interface AgentMemoSection {
+  section: string;
+  status: "drafted" | "withheld" | "error";
+  answer: string | null;
+  grounding: AgentGrounding | null;
+  artifact_version_id: string | null;
+  decision: "pending" | "accept" | "reject";
+  decided_by: string | null;
+  decided_at: string | null;
+}
+export interface AgentMemoDraft {
+  workspace_id: string;
+  status: "in_review" | "decided" | "not_run";
+  reason: string | null;
+  sections: AgentMemoSection[];
+  generated_at: string | null;
+  draft_artifact_id: string | null;
+  version: number | null;
+  assembled_markdown: string | null;
+}
+
 // --- G56 model-quality dashboard ---------------------------------------------------------------
 export interface QualitySection {
   status: "available" | "unavailable";

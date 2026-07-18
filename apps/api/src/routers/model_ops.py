@@ -1,6 +1,7 @@
 """Reproducible-LLM-ops endpoints: the hashed prompt registry (G10), the persisted
 faithfulness-judge quality view (G05), the aggregated model-quality dashboard (G56), the
-persisted extraction comparison (G79), and prompt A/B evaluation (G81).
+persisted extraction comparison (G79), prompt A/B evaluation (G81), and the committed
+agent-eval baseline (G62).
 
 The GET surface is read-only and deterministic. The two POST routes run consent-gated LLM
 evaluations that fail closed: in mock/no-consent/no-key environments they return an honest
@@ -13,7 +14,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from src.eval import calibration, harness
+from src.eval import agent_eval, calibration, harness
 from src.routers.deps import SessionDep
 from src.services import (
     extraction_comparison_service,
@@ -97,6 +98,29 @@ def _retrieval_metrics_section() -> dict:
     return {"status": "available", "note": None, **baseline}
 
 
+def _agent_evals_section() -> dict:
+    """The committed agent-eval baseline (G62) — scripted-provider substrate metrics.
+
+    The numbers measure the G57 harness pipeline (tool execution, grounding gate, budgets,
+    sealing) over the committed golden objectives, never live model intelligence — providers
+    in that eval are scripted by construction (see ``src/eval/agent_eval.py``).
+    """
+    try:
+        baseline = agent_eval.load_baseline()
+    except (OSError, ValueError):
+        return {
+            "status": "unavailable",
+            "note": "committed agent eval baseline (src/eval/agent_metrics.json) is missing "
+            "or unreadable",
+        }
+    return {
+        "status": "available",
+        "note": None,
+        **baseline.get("metrics", {}),
+        "cases": baseline.get("cases"),
+    }
+
+
 def _calibration_section() -> dict:
     """The shipped abstention/partial thresholds and the committed study behind them (G06)."""
     return {
@@ -130,6 +154,7 @@ def model_quality(session: SessionDep) -> dict:
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "judge_evals": _judge_evals_section(session),
         "retrieval_metrics": _retrieval_metrics_section(),
+        "agent_evals": _agent_evals_section(),
         "calibration": _calibration_section(),
         "prompts": {
             "status": "available",

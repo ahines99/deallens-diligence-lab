@@ -1,0 +1,67 @@
+{
+  "cases": 8,
+  "metrics": {
+    "tool_selection_accuracy": 1.0,
+    "grounding_pass_rate": 1.0,
+    "rejection_correctness": 1.0,
+    "status_accuracy": 1.0
+  },
+  "per_case": [
+    {
+      "id": "grounded_completion",
+      "passed": true,
+      "expected_status": "completed",
+      "actual_status": "completed",
+      "failures": []
+    },
+    {
+      "id": "fabricated_number_rejected",
+      "passed": true,
+      "expected_status": "rejected_ungrounded",
+      "actual_status": "rejected_ungrounded",
+      "failures": []
+    },
+    {
+      "id": "abstention_completion",
+      "passed": true,
+      "expected_status": "completed",
+      "actual_status": "completed",
+      "failures": []
+    },
+    {
+      "id": "unknown_tool_recovery",
+      "passed": true,
+      "expected_status": "completed",
+      "actual_status": "completed",
+      "failures": []
+    },
+    {
+      "id": "budget_exhaustion",
+      "passed": true,
+      "expected_status": "budget_exhausted",
+      "actual_status": "budget_exhausted",
+      "failures": []
+    },
+    {
+      "id": "multi_tool_sequence",
+      "passed": true,
+      "expected_status": "completed",
+      "actual_status": "completed",
+      "failures": []
+    },
+    {
+      "id": "evidence_ref_grounded",
+      "passed": true,
+      "expected_status": "completed",
+      "actual_status": "completed",
+      "failures": []
+    },
+    {
+      "id": "ungrounded_evidence_ref_rejected",
+      "passed": true,
+      "expected_status": "rejected_ungrounded",
+      "actual_status": "rejected_ungrounded",
+      "failures": []
+    }
+  ]
+}
