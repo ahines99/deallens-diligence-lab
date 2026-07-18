@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import type { FormEvent } from "react";
-import { api, ApiError } from "@/lib/api";
+import { api, API_BASE, ApiError } from "@/lib/api";
 import { useInvalidatedResult } from "@/lib/useInvalidatedResult";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
@@ -146,6 +146,167 @@ function SensitivityPanel({ workspaceId, model }: { workspaceId: string; model: 
             <thead><tr><th className="border border-line bg-panel2 px-3 py-2 text-left text-muted">{result.row_variable} ↓ / {result.column_variable} →</th>{result.column_values.map((value, columnIndex) => <th key={`${value}-${columnIndex}`} className="border border-line bg-panel2 px-3 py-2 text-right text-muted">{result.column_variable.includes("shift") ? pct(value) : value.toFixed(1)}</th>)}</tr></thead>
             <tbody>{result.row_values.map((row, rowIndex) => <tr key={`${row}-${rowIndex}`}><th className="border border-line bg-panel2 px-3 py-2 text-left text-muted">{result.row_variable.includes("shift") ? pct(row) : row.toFixed(1)}</th>{result.grid[rowIndex].map((value, columnIndex) => <td key={columnIndex} className="border border-line px-3 py-2 text-right tabular-nums">{displayMetric(value, result.metric)}</td>)}</tr>)}</tbody>
           </table>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+// G69 tornado — local contract types and client. The shared api.ts/types.ts are owned by the
+// integrator; when the client gains runSensitivityTornado these move there.
+type TornadoRow = {
+  variable: SensitivityVariable;
+  convention: "relative" | "absolute";
+  base_value: number;
+  low_value: number;
+  high_value: number;
+  metric_low: number | null;
+  metric_high: number | null;
+  delta_low: number | null;
+  delta_high: number | null;
+  max_abs_delta: number | null;
+  evaluable: boolean;
+  reason: string | null;
+};
+
+type SensitivityTornadoResult = {
+  metric: "irr" | "moic";
+  base_metric: number;
+  relative_shift: number;
+  absolute_shift: number;
+  rows: TornadoRow[];
+};
+
+async function postSensitivityTornado(
+  workspaceId: string,
+  body: unknown,
+): Promise<SensitivityTornadoResult> {
+  let res: Response;
+  try {
+    res = await fetch(
+      `${API_BASE}/api/workspaces/${workspaceId}/underwriting/sensitivity-tornado`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        cache: "no-store",
+      },
+    );
+  } catch {
+    throw new ApiError(0, "Cannot reach the API service. Is the backend running?");
+  }
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const data = await res.json();
+      detail = (data && (data.detail || data.message)) || detail;
+    } catch {
+      /* ignore */
+    }
+    throw new ApiError(res.status, detail);
+  }
+  return (await res.json()) as SensitivityTornadoResult;
+}
+
+function TornadoAxis({ row, scale }: { row: TornadoRow; scale: number }) {
+  // One shared axis per driver: each extreme's delta extends from the base-case center line
+  // in the direction of its sign, scaled to the largest delta across all drivers.
+  const bar = (delta: number | null, tone: "low" | "high") => {
+    if (delta === null) return null;
+    const width = scale > 0 ? Math.min(50, (Math.abs(delta) / scale) * 50) : 0;
+    return (
+      <div
+        className={`absolute inset-y-0 rounded-sm ${tone === "low" ? "bg-negative" : "bg-positive"}`}
+        style={delta >= 0 ? { left: "50%", width: `${width}%` } : { right: "50%", width: `${width}%` }}
+        title={`${tone} extreme delta`}
+      />
+    );
+  };
+  return (
+    <div className="relative h-3 w-full overflow-hidden rounded-sm bg-panel2">
+      {bar(row.delta_low, "low")}
+      {bar(row.delta_high, "high")}
+      <div className="absolute inset-y-0 left-1/2 w-px bg-line" />
+    </div>
+  );
+}
+
+function TornadoPanel({ workspaceId, model }: { workspaceId: string; model: UnderwritingCaseVersion }) {
+  const { result, setFreshResult, invalidateResult, resultWasInvalidated } =
+    useInvalidatedResult<SensitivityTornadoResult>();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    setBusy(true);
+    setError(null);
+    try {
+      setFreshResult(
+        await postSensitivityTornado(workspaceId, {
+          assumptions: model.assumptions,
+          metric: String(data.get("metric")) as "irr" | "moic",
+          relative_shift: Number(data.get("relative_shift")) / 100,
+          absolute_shift: Number(data.get("absolute_shift")) / 100,
+        }),
+      );
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Tornado could not run.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const scale = result
+    ? Math.max(0, ...result.rows.map((row) => row.max_abs_delta ?? 0))
+    : 0;
+  const label = (variable: SensitivityVariable) =>
+    variables.find((item) => item.value === variable)?.label ?? variable;
+  return (
+    <Card
+      eyebrow="One-way tornado"
+      title="Driver impact ranking"
+      subtitle="Multiples move ± the relative shift; shift drivers move ± the absolute shift in percentage points. Inevaluable extremes are reported, never dropped."
+    >
+      <form onSubmit={submit} onChange={invalidateResult} className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4 xl:items-end">
+        <Field label="Metric"><SelectInput name="metric"><option value="irr">IRR</option><option value="moic">MOIC</option></SelectInput></Field>
+        <Field label="Relative shift %" hint="Entry / exit multiple"><TextInput name="relative_shift" type="number" step="1" min="1" max="90" defaultValue="10" /></Field>
+        <Field label="Absolute shift pp" hint="Rate / growth / margin"><TextInput name="absolute_shift" type="number" step="0.25" min="0.25" max="50" defaultValue="1" /></Field>
+        <Button type="submit" disabled={busy}>{busy ? "Running…" : "Run tornado"}</Button>
+        <div className="sm:col-span-2 xl:col-span-4"><InlineError message={error} /></div>
+      </form>
+      <StaleResultNotice show={resultWasInvalidated && !result} />
+      {result && (
+        <div className="mt-5 space-y-3">
+          <MetricStrip columns={3}>
+            <Metric label="Base metric" value={displayMetric(result.base_metric, result.metric)} />
+            <Metric label="Top driver" value={result.rows[0] ? label(result.rows[0].variable) : "—"} />
+            <Metric
+              label="Shifts applied"
+              value={`±${(result.relative_shift * 100).toFixed(0)}% / ±${(result.absolute_shift * 100).toFixed(2)}pp`}
+            />
+          </MetricStrip>
+          <div className="space-y-2">
+            {result.rows.map((row) => (
+              <div key={row.variable} className="grid grid-cols-[10rem_1fr_10rem] items-center gap-3 text-xs">
+                <div className="text-muted">{label(row.variable)}</div>
+                {row.evaluable ? (
+                  <>
+                    <TornadoAxis row={row} scale={scale} />
+                    <div className="text-right tabular-nums text-muted">
+                      {displayMetric(row.metric_low, result.metric)} / {displayMetric(row.metric_high, result.metric)}
+                    </div>
+                  </>
+                ) : (
+                  <div className="col-span-2">
+                    <Badge tone="amber">not evaluable</Badge>
+                    <span className="ml-2 text-muted">{row.reason}</span>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
         </div>
       )}
     </Card>
@@ -313,6 +474,7 @@ export function StressWorkbench({ workspaceId, cases }: { workspaceId: string; c
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-line bg-panel px-4 py-3"><div><div className="eyebrow">Active case</div><p className="mt-0.5 text-xs text-muted">Every analysis below is tied to this exact saved case version. Switching cases clears unsaved outputs.</p></div><div className="flex gap-1">{cases.map((item) => <button key={item.id} onClick={() => setCaseKey(item.case_key)} className={`rounded px-3 py-1.5 text-xs font-semibold capitalize ${model.id === item.id ? "bg-accent text-white" : "bg-panel2 text-muted hover:text-ink"}`}>{item.case_key} · v{item.version}</button>)}</div></div>
       <ValuationPanel key={`valuation-${model.id}`} workspaceId={workspaceId} model={model} />
       <SensitivityPanel key={`sensitivity-${model.id}`} workspaceId={workspaceId} model={model} />
+      <TornadoPanel key={`tornado-${model.id}`} workspaceId={workspaceId} model={model} />
       <ReverseStressPanel key={`reverse-${model.id}`} workspaceId={workspaceId} model={model} />
       <WorkingCapitalPanel key={`working-capital-${model.id}`} workspaceId={workspaceId} />
     </div>

@@ -11,6 +11,7 @@ from src.schemas.common import ORMModel
 ClaimCategory = Literal["debt_term", "customer", "contract", "kpi", "qoe_candidate"]
 ReviewAction = Literal["approve", "reject", "edit"]
 ReviewStatus = Literal["unreviewed", "approved", "rejected"]
+RedactionStatus = Literal["proposed", "approved", "rejected"]
 
 
 class StrictModel(BaseModel):
@@ -215,6 +216,60 @@ class ClaimHistoryOut(StrictModel):
     logical_claim_id: str
     revisions: list[StructuredClaimOut]
     reviews: list[ClaimReviewOut]
+
+
+class RedactionSpanIn(StrictModel):
+    """One span to redact: character offsets into the addressed chunk's immutable text."""
+
+    chunk_id: str = Field(min_length=1, max_length=32)
+    start: int = Field(ge=0)
+    end: int = Field(gt=0)
+    reason: str = Field(default="", max_length=500)
+
+    @model_validator(mode="after")
+    def ordered_span(self) -> "RedactionSpanIn":
+        if self.end <= self.start:
+            raise ValueError("span end must be greater than span start")
+        return self
+
+
+class RedactionProposalCreate(StrictModel):
+    spans: list[RedactionSpanIn] = Field(min_length=1, max_length=200)
+    note: str = Field(default="", max_length=4_000)
+
+
+class RedactionDecisionRequest(StrictModel):
+    decision: Literal["approve", "reject"]
+    note: str = Field(default="", max_length=4_000)
+
+
+class RedactionSpanOut(StrictModel):
+    chunk_id: str
+    start: int
+    end: int
+    reason: str = ""
+
+
+class RedactionProposalOut(ORMModel):
+    id: str
+    deal_id: str
+    document_id: str
+    logical_document_id: str
+    document_version: int
+    spans: list[RedactionSpanOut]
+    status: RedactionStatus
+    note: str
+    decision_note: str
+    proposed_by_actor_id: str
+    decided_by_actor_id: str | None
+    decided_at: datetime | None
+    redacted_document_id: str | None
+    created_at: datetime
+
+
+class RedactionDecisionResult(StrictModel):
+    proposal: RedactionProposalOut
+    redacted_document: DataRoomDocumentOut | None = None
 
 
 class ComparisonRequest(StrictModel):

@@ -39,6 +39,18 @@ import type {
   AgentRun,
   AgentMemoDraft,
   AgentComparativeRun,
+  NotificationDigest,
+  InboxAging,
+  PeerBenchmark,
+  DilutionAnalysis,
+  SotpResult,
+  LitigationProfile,
+  MacroMcPresets,
+  SensitivityTornadoResult,
+  DividendRecapResult,
+  FacilitySizingResult,
+  FundMonteCarloResult,
+  AnnualValueCreationResult,
   WorkspaceSearchResult,
   QuotaUsage,
   SignalsOverview,
@@ -50,6 +62,7 @@ import type {
   MemoRedline,
   ShareLink,
   ShareLinkCreated,
+  SharedWorkspaceSnapshot,
   MembershipPermissions,
   CovenantHeadroomResult,
   CaseVarianceResult,
@@ -108,6 +121,10 @@ import type {
   ClaimCollection,
   DocumentComparison,
   IntelligenceEvaluation,
+  RedactionDecisionResult,
+  RedactionProposal,
+  RedactionSpan,
+  RedactionStatus,
   PortfolioDashboard,
   PortfolioQuery,
   AuthSessionToken,
@@ -441,6 +458,32 @@ export const api = {
       body: { max_steps_per_section: maxStepsPerSection },
     }),
   getAgentMemoDraft: (id: string) => requestOrNull<AgentMemoDraft>(`/api/workspaces/${id}/agent-memo`),
+  getPeerBenchmark: (id: string) => requestOrNull<PeerBenchmark>(`/api/workspaces/${id}/peer-benchmark`),
+  runSotp: (id: string, body: { multiples: Record<string, number>; default_multiple?: number; residual_multiple?: number }) =>
+    request<SotpResult>(`/api/workspaces/${id}/sotp`, { method: "POST", body }),
+  runSensitivityTornado: (id: string, body: Record<string, unknown>) =>
+    request<SensitivityTornadoResult>(`/api/workspaces/${id}/underwriting/sensitivity-tornado`, { method: "POST", body }),
+  solveDividendRecap: (id: string, body: Record<string, unknown>) =>
+    request<DividendRecapResult>(`/api/workspaces/${id}/underwriting/dividend-recap-solve`, { method: "POST", body }),
+  calculateFacilitySizing: (id: string, body: Record<string, unknown>) =>
+    request<FacilitySizingResult>(`/api/workspaces/${id}/underwriting/facility-sizing`, { method: "POST", body }),
+  runFundMonteCarlo: (id: string, body: Record<string, unknown>) =>
+    request<FundMonteCarloResult>(`/api/workspaces/${id}/underwriting/fund-monte-carlo`, { method: "POST", body }),
+  calculateAnnualValueCreation: (id: string, body: Record<string, unknown>) =>
+    request<AnnualValueCreationResult>(`/api/workspaces/${id}/underwriting/annual-value-creation`, { method: "POST", body }),
+  getLitigation: (id: string) => requestOrNull<LitigationProfile>(`/api/workspaces/${id}/litigation`),
+  getMacroMcPresets: (id: string) => requestOrNull<MacroMcPresets>(`/api/workspaces/${id}/macro-mc-presets`),
+  getDilution: (id: string) => requestOrNull<DilutionAnalysis>(`/api/workspaces/${id}/dilution`),
+  getNotificationDigest: (organizationId: string, window: "daily" | "weekly" = "daily") =>
+    request<NotificationDigest>(
+      `/api/organizations/${organizationId}/notifications/digest?window=${window}`,
+    ),
+  getReviewAging: (organizationId: string, actor: WorkflowActor = {}) =>
+    workflowRequest<InboxAging>(
+      `/api/organizations/${organizationId}/my-reviews/aging`,
+      {},
+      actor,
+    ),
   runComparativeAgent: (
     id: string,
     objective: string,
@@ -501,6 +544,9 @@ export const api = {
     request<ShareLink[]>(`/api/workspaces/${id}/share-links`),
   revokeShareLink: (id: string) =>
     request<ShareLink>(`/api/share-links/${id}/revoke`, { method: "POST" }),
+  // Public, session-less (the dsh_ token IS the authorization) — never send credentials.
+  getSharedSnapshot: (token: string) =>
+    request<SharedWorkspaceSnapshot>(`/api/shared/${encodeURIComponent(token)}`, { auth: "omit" }),
 
   // Identity extensions (Wave 4 Batch 9)
   oidcLogin: () => request<{ authorize_url: string; state: string }>(`/api/auth/oidc/login`, { auth: "omit" }),
@@ -686,4 +732,10 @@ export const api = {
   compareIntelligenceDocuments: (dealId: string, fromDocumentId: string, toDocumentId: string, comparisonType: "change" | "contradiction", actor: WorkflowActor = {}) => workflowRequest<DocumentComparison>(`/api/deals/${dealId}/intelligence/comparisons`, { method: "POST", body: { from_document_id: fromDocumentId, to_document_id: toDocumentId, comparison_type: comparisonType } }, actor),
   listIntelligenceComparisons: (dealId: string, actor: WorkflowActor = {}) => workflowRequest<DocumentComparison[]>(`/api/deals/${dealId}/intelligence/comparisons`, {}, actor),
   listIntelligenceEvaluations: (dealId: string, actor: WorkflowActor = {}) => workflowRequest<IntelligenceEvaluation[]>(`/api/deals/${dealId}/intelligence/evaluations`, {}, actor),
+
+  // G75 four-eyes redaction workflow: propose spans against the LATEST document version;
+  // a distinct human approves, minting the redacted next version (originals untouched).
+  proposeRedaction: (dealId: string, documentId: string, spans: RedactionSpan[], note = "", actor: WorkflowActor = {}) => workflowRequest<RedactionProposal>(`/api/deals/${dealId}/intelligence/documents/${documentId}/redactions`, { method: "POST", body: { spans, note } }, actor),
+  decideRedaction: (proposalId: string, decision: "approve" | "reject", note = "", actor: WorkflowActor = {}) => workflowRequest<RedactionDecisionResult>(`/api/intelligence/redactions/${proposalId}/decide`, { method: "POST", body: { decision, note } }, actor),
+  listRedactions: (dealId: string, status?: RedactionStatus, actor: WorkflowActor = {}) => workflowRequest<RedactionProposal[]>(`/api/deals/${dealId}/intelligence/redactions${status ? `?status=${status}` : ""}`, {}, actor),
 };

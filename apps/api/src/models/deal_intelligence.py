@@ -23,7 +23,7 @@ from sqlalchemy import (
     UniqueConstraint,
     event,
 )
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, attributes, mapped_column
 
 from src.db.base import Base, UUIDMixin, now_utc
 
@@ -207,6 +207,62 @@ class ClaimReviewEvent(UUIDMixin, Base):
     )
 
 
+class RedactionProposal(UUIDMixin, Base):
+    """A four-eyes, span-level redaction proposal against ONE immutable document version (G75).
+
+    ``document_id`` pins the SPECIFIC version the spans were authored against; ``spans`` is a
+    JSON list of ``{chunk_id, start, end, reason}`` where ``start``/``end`` are character
+    offsets into that chunk's immutable ``DataRoomChunk.text``. Per-chunk addressing is
+    deliberate: chunk text is the canonical serveable surface (QA citations, claim
+    ``source_span``s, and locators all address it), so redaction spans reuse the same exact
+    coordinate system instead of inventing a synthetic whole-document offset space that no
+    read surface serves.
+
+    Decisions follow the append-only discipline of this module in spirit: the row is written
+    once as ``proposed`` and permits exactly ONE ``proposed -> approved|rejected`` transition
+    (which stamps the decision fields), plus the set-once ``redacted_document_id`` link written
+    by the approval transaction. Everything else — including re-deciding or editing spans — is
+    rejected at flush time by :func:`_guard_redaction_proposal_update`.
+    """
+
+    __tablename__ = "redaction_proposals"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('proposed','approved','rejected')",
+            name="ck_redaction_proposal_status",
+        ),
+        Index("ix_redaction_proposals_deal_status", "deal_id", "status"),
+        Index("ix_redaction_proposals_deal_logical", "deal_id", "logical_document_id"),
+    )
+
+    deal_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("deals.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    document_id: Mapped[str] = mapped_column(
+        String(32),
+        ForeignKey("data_room_documents.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    logical_document_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    document_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    spans: Mapped[list] = mapped_column(JSON, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="proposed")
+    note: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    decision_note: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    proposed_by_actor_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    decided_by_actor_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    decided_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    redacted_document_id: Mapped[str | None] = mapped_column(
+        String(32), ForeignKey("data_room_documents.id", ondelete="RESTRICT"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=now_utc, nullable=False
+    )
+
+
 class DocumentComparison(UUIDMixin, Base):
     """Persisted change/contradiction analysis between two immutable document versions."""
 
@@ -300,3 +356,50 @@ for _immutable_model in (
 ):
     event.listen(_immutable_model, "before_update", _reject_immutable_mutation)
     event.listen(_immutable_model, "before_delete", _reject_immutable_mutation)
+
+
+_REDACTION_DECISION_FIELDS = frozenset(
+    {"status", "decision_note", "decided_by_actor_id", "decided_at"}
+)
+
+
+def _guard_redaction_proposal_update(mapper, connection, target) -> None:
+    """Permit exactly one ``proposed -> approved|rejected`` decision; reject every other UPDATE.
+
+    Two flushes are legitimate: (1) the decision itself — status leaves ``proposed`` for a
+    terminal value together with the decision fields (the approval transaction may include the
+    ``redacted_document_id`` link); (2) the approval path's set-once ``redacted_document_id``
+    fill from NULL after the version was minted. Editing spans/provenance, re-deciding a
+    decided proposal, or rewriting an existing link all raise, keeping decided proposals final.
+    """
+    del connection
+    changed: set[str] = set()
+    prior_status = target.status
+    for attribute in mapper.column_attrs:
+        history = attributes.get_history(target, attribute.key)
+        if not history.has_changes():
+            continue
+        changed.add(attribute.key)
+        if attribute.key == "status" and history.deleted:
+            prior_status = history.deleted[0]
+    if not changed:
+        return
+    if changed == {"redacted_document_id"} and target.status == "approved":
+        link_history = attributes.get_history(target, "redacted_document_id")
+        if not link_history.deleted or link_history.deleted[0] is None:
+            return
+    if (
+        "status" in changed
+        and changed <= (_REDACTION_DECISION_FIELDS | {"redacted_document_id"})
+        and prior_status == "proposed"
+        and target.status in {"approved", "rejected"}
+    ):
+        return
+    raise ValueError(
+        "RedactionProposal decisions are final: only one proposed -> approved/rejected "
+        "transition (and its set-once redacted-version link) is permitted"
+    )
+
+
+event.listen(RedactionProposal, "before_update", _guard_redaction_proposal_update)
+event.listen(RedactionProposal, "before_delete", _reject_immutable_mutation)

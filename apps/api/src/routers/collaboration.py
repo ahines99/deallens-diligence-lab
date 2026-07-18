@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException, Query, Response
 
 from src.routers.deps import OptionalPrincipalDep, SessionDep
 from src.schemas.deal_workflow import WorkflowAuditOut
-from src.schemas.review_inbox import ReviewInboxOut
+from src.schemas.review_inbox import ReviewAgingOut, ReviewInboxOut
 from src.services import audit_explorer_service
 from src.services import review_inbox_service
 
@@ -35,6 +35,43 @@ def get_my_reviews(
     except review_inbox_service.ReviewInboxError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
     return ReviewInboxOut.model_validate(result)
+
+
+@router.get("/{organization_id}/my-reviews/aging", response_model=ReviewAgingOut)
+def get_my_reviews_aging(
+    organization_id: str,
+    session: SessionDep,
+    principal: OptionalPrincipalDep,
+    actor_id: str | None = Query(default=None, max_length=200),
+    qoe_sla_hours: float | None = Query(default=None, gt=0),
+    claim_sla_hours: float | None = Query(default=None, gt=0),
+    diligence_sla_hours: float | None = Query(default=None, gt=0),
+    ic_comment_sla_hours: float | None = Query(default=None, gt=0),
+) -> ReviewAgingOut:
+    """G78 — per-plane aging + SLA breaches over the same queue as ``my-reviews``.
+
+    Thresholds default to ``review_inbox_service.DEFAULT_SLA_HOURS`` and may be overridden per
+    plane via the ``*_sla_hours`` query params (hours, > 0).
+    """
+    _authorize(organization_id, principal)
+    resolved_actor = actor_id or (principal.user_id if principal is not None else None)
+    overrides = {
+        plane: value
+        for plane, value in (
+            ("qoe", qoe_sla_hours),
+            ("claim", claim_sla_hours),
+            ("diligence", diligence_sla_hours),
+            ("ic_comment", ic_comment_sla_hours),
+        )
+        if value is not None
+    }
+    try:
+        result = review_inbox_service.aging_report(
+            session, organization_id, resolved_actor, sla_hours=overrides or None
+        )
+    except review_inbox_service.ReviewInboxError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+    return ReviewAgingOut.model_validate(result)
 
 
 @router.get("/{organization_id}/audit-events", response_model=list[WorkflowAuditOut])

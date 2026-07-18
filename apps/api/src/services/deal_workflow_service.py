@@ -70,6 +70,7 @@ from src.schemas.deal_workflow import (
     WorkstreamCreate,
     WorkstreamPatch,
 )
+from src.services import export_signing_service
 from src.services.common import NotFound
 
 
@@ -2169,7 +2170,11 @@ def verify_export_manifest(
         raise WorkflowConflict("The export's packet no longer resolves")
     deal = _deal(session, packet.deal_id, actor)
     manifest = export.manifest or {}
-    recomputed_manifest_hash = _sha256(manifest)
+    # G74: manifest_hash covers the canonical manifest EXCLUDING any attestation block (the
+    # signature cannot cover bytes containing itself). Legacy manifests have no attestation key,
+    # so stripping it is the identity for them and the recompute is unchanged.
+    manifest_core = {key: value for key, value in manifest.items() if key != "attestation"}
+    recomputed_manifest_hash = _sha256(manifest_core)
     checks: list[dict[str, Any]] = []
 
     def add_check(
@@ -2198,6 +2203,27 @@ def verify_export_manifest(
         else "Canonical manifest hash does not match the stored digest",
         [] if manifest_hash_ok else [export.id],
     )
+
+    # G74: when the manifest carries a signed attestation, verify the Ed25519 signature over the
+    # SAME canonical core bytes manifest_hash covers. A tampered manifest — even with a rewritten
+    # manifest_hash — fails here, named as a signature failure. Unsigned manifests (status
+    # "unsigned", or legacy rows with no block) stay hash-verified only, exactly as before.
+    attestation = manifest.get("attestation")
+    if isinstance(attestation, dict) and attestation.get("status") == "signed":
+        signature_ok = export_signing_service.verify(
+            export_signing_service.canonical_manifest_bytes(manifest),
+            str(attestation.get("signature_b64") or ""),
+            str(attestation.get("public_key_b64") or ""),
+        )
+        add_check(
+            "attestation_signature",
+            signature_ok,
+            "Ed25519 attestation signature verifies over the canonical manifest"
+            if signature_ok
+            else "Ed25519 attestation signature does not verify — "
+            "the manifest does not match the signed bytes",
+            [] if signature_ok else [export.id],
+        )
 
     packet_data = manifest.get("packet") if isinstance(manifest.get("packet"), dict) else {}
     bound_packet_id = packet_data.get("id") or manifest.get("packet_id")

@@ -24,6 +24,7 @@ from src.services.storage_service import BlobNotFound, get_store
 SEC_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik10}.json"
 COMPANY_FACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik10}.json"
+FRAMES_URL = "https://data.sec.gov/api/xbrl/frames/us-gaap/{concept}/{unit}/CY{year}.json"
 ARCHIVES = "https://www.sec.gov/Archives/edgar/data/{cik}/{acc}/{doc}"
 
 _MAX_DOC_BYTES = 8_000_000
@@ -194,6 +195,20 @@ def company_name(cik10: str) -> str:
 # --- XBRL company facts ---------------------------------------------------
 def get_company_facts(cik10: str) -> dict:
     return _get_json(COMPANY_FACTS_URL.format(cik10=cik10))
+
+
+# --- XBRL frames (cross-company annual universe) ---------------------------
+def frames_annual(concept: str, year: int, unit: str = "USD") -> dict:
+    """One annual XBRL frame: every filer's reported value for ``concept`` covering CY``year``.
+
+    The frames API aggregates ONE fact per reporting entity for the calendar-period frame; the
+    payload's ``data`` list carries ``{cik, entityName, val, accn, ...}`` rows. Same JSON caching
+    and ``EdgarError`` discipline as the other fetchers. Two honesty notes for consumers: frame
+    rows carry no SIC classification (the frame is the whole reporting universe for that
+    concept-year, nothing narrower), and the universe skews to filers whose fiscal periods align
+    with the calendar frame — non-calendar issuers may be absent from it.
+    """
+    return _get_json(FRAMES_URL.format(concept=concept, unit=unit, year=int(year)))
 
 
 _ANNUAL_DURATION = re.compile(r"^CY\d{4}$")

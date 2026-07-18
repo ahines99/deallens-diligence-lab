@@ -17,12 +17,14 @@ import hashlib
 import secrets
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from src.db.base import now_utc
+from src.models.deal_workflow import Organization
 from src.models.risk import RiskFinding
 from src.models.share_link import ShareLink
+from src.models.share_link_view import ShareLinkView
 from src.models.target import Target
 from src.models.workspace import Workspace
 from src.schemas.identity import PrincipalContext
@@ -31,6 +33,11 @@ from src.services.common import NotFound
 from src.services.identity_service import IdentityError
 
 _TOKEN_PREFIX = "dsh_"
+# G76 analytics contract: `recent` is capped at the newest 20 events.
+_RECENT_VIEWS_CAP = 20
+# Mirrors the coarse session context (`AuthSession.user_agent` truncation discipline).
+_VIEW_USER_AGENT_MAX = 200
+_VIEW_CLIENT_HOST_MAX = 64
 
 
 class ShareLinkGone(NotFound):
@@ -129,6 +136,90 @@ def revoke_share_link(
     return record
 
 
+def record_view(
+    session: Session,
+    share_link: ShareLink,
+    *,
+    user_agent: str | None = None,
+    client_host: str | None = None,
+) -> None:
+    """Append one view event for a successfully served public snapshot (G76). Best-effort.
+
+    Called only AFTER resolution and snapshot assembly both succeeded — invalid, revoked, or
+    expired tokens never reach this point, so they never record a view. The insert runs inside
+    a SAVEPOINT and every failure (including the commit) is swallowed: analytics must never
+    break the public read. Context stored is deliberately coarse — see
+    ``src.models.share_link_view`` for the privacy rationale.
+    """
+    try:
+        with session.begin_nested():
+            session.add(
+                ShareLinkView(
+                    share_link_id=share_link.id,
+                    user_agent=(user_agent or "")[:_VIEW_USER_AGENT_MAX] or None,
+                    client_host=(client_host or "")[:_VIEW_CLIENT_HOST_MAX] or None,
+                )
+            )
+        session.commit()
+    except Exception:  # noqa: BLE001 — best-effort by contract; the share view must survive.
+        try:
+            session.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def get_share_link_analytics(
+    session: Session, share_link_id: str, principal: PrincipalContext
+) -> dict:
+    """Owner analytics for one link: view count, first/last seen, newest-first recent events.
+
+    Org-scoped exactly like ``revoke_share_link`` — a foreign-tenant or unknown id is a
+    non-enumerable 404. The returned ``share_link`` carries the existing revocation state so
+    the UI surfaces views and one-click revoke together.
+    """
+    record = session.get(ShareLink, share_link_id)
+    if record is None or record.organization_id != principal.organization_id:
+        raise NotFound(f"Share link '{share_link_id}' not found")
+
+    scoped = ShareLinkView.share_link_id == share_link_id
+    view_count = session.scalar(select(func.count()).select_from(ShareLinkView).where(scoped)) or 0
+    first_viewed_at = session.scalar(select(func.min(ShareLinkView.viewed_at)).where(scoped))
+    last_viewed_at = session.scalar(select(func.max(ShareLinkView.viewed_at)).where(scoped))
+    recent = list(
+        session.scalars(
+            select(ShareLinkView)
+            .where(scoped)
+            .order_by(ShareLinkView.viewed_at.desc(), ShareLinkView.id.desc())
+            .limit(_RECENT_VIEWS_CAP)
+        )
+    )
+    return {
+        "share_link": record,
+        "view_count": int(view_count),
+        "first_viewed_at": first_viewed_at,
+        "last_viewed_at": last_viewed_at,
+        "recent": [{"viewed_at": v.viewed_at, "user_agent": v.user_agent} for v in recent],
+    }
+
+
+def compose_watermark(session: Session, share_link: ShareLink) -> str:
+    """Server-composed watermark line for the shared render (G76).
+
+    Composed on the server so a client cannot omit it by ignoring a boolean flag — the text IS
+    the payload field. This is a provenance deterrent (who shared, which link, when), not DRM:
+    a determined viewer can always screenshot around any client-side overlay. The link is
+    identified by a digest prefix — the plaintext token is never persisted (G44), and eight hex
+    chars of SHA-256 identify the row without weakening the secret.
+    """
+    organization = session.get(Organization, share_link.organization_id)
+    org_name = organization.name if organization is not None else "DealLens"
+    created = share_link.created_at.date().isoformat() if share_link.created_at else "n/a"
+    return (
+        f"Shared read-only · {org_name} · link {share_link.token_digest[:8]}"
+        f" · {created}"
+    )
+
+
 def build_snapshot(session: Session, share_link: ShareLink) -> dict:
     """Assemble the non-confidential read-only snapshot the token unlocks (safe default).
 
@@ -185,4 +276,5 @@ def build_snapshot(session: Session, share_link: ShareLink) -> dict:
             "Read-only shared snapshot. Confidential financials, valuation detail, and data-room "
             "content are excluded. Not investment advice."
         ),
+        "watermark": compose_watermark(session, share_link),
     }

@@ -14,11 +14,12 @@ The queue is therefore *actionable* — every item is one the actor is actually 
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from src.db.base import now_utc
 from src.models.deal_intelligence import StructuredClaim
 from src.models.deal_workflow import (
     Deal,
@@ -32,6 +33,19 @@ from src.models.workspace import Workspace
 
 PLANES = ("qoe", "claim", "diligence", "ic_comment")
 
+# G78 — default per-plane SLA thresholds (hours an item may wait before it counts as a breach).
+# Deliberately NOT settings: thresholds are a per-request query-param concern with these
+# documented defaults, so different reviewers/reports can probe different tolerances without a
+# deployment change. Rationale: blocking IC comments gate a live packet (tightest); QoE
+# adjustments and extracted claims are internal four-eyes reviews (a standard three business
+# days); diligence responses involve an external counterparty round-trip (loosest).
+DEFAULT_SLA_HOURS: dict[str, float] = {
+    "qoe": 72.0,
+    "claim": 72.0,
+    "diligence": 120.0,
+    "ic_comment": 48.0,
+}
+
 
 class ReviewInboxError(ValueError):
     """A user-correctable review-inbox request error (mapped to HTTP 4xx)."""
@@ -40,6 +54,14 @@ class ReviewInboxError(ValueError):
         super().__init__(message)
         self.message = message
         self.status_code = status_code
+
+
+def _as_utc(value: datetime) -> datetime:
+    """Normalize DB datetimes (SQLite rows are naive UTC, Postgres aware) so sorting and age
+    arithmetic never mix naive and aware values."""
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 def _item(
@@ -55,7 +77,7 @@ def _item(
         "id": entity_id,
         "title": title,
         "deal_or_workspace": deal_or_workspace,
-        "created_at": created_at,
+        "created_at": _as_utc(created_at),
         "url_hint": url_hint,
     }
 
@@ -195,6 +217,18 @@ def _ic_comment_items(session: Session, organization_id: str, actor_id: str) -> 
     return items
 
 
+def _plane_items(session: Session, organization_id: str, actor_id: str) -> dict[str, list[dict]]:
+    """The four planes' pending items for one actor — shared by ``my_reviews`` and
+    ``aging_report`` so the aging view can never diverge from the inbox (same tenant scoping,
+    same four-eyes exclusions, same item builders)."""
+    return {
+        "qoe": _qoe_items(session, organization_id, actor_id),
+        "claim": _claim_items(session, organization_id, actor_id),
+        "diligence": _diligence_items(session, organization_id, actor_id),
+        "ic_comment": _ic_comment_items(session, organization_id, actor_id),
+    }
+
+
 def my_reviews(session: Session, organization_id: str, actor_id: str | None) -> dict:
     """Return every pending item across the four review planes awaiting ``actor_id``.
 
@@ -205,12 +239,7 @@ def my_reviews(session: Session, organization_id: str, actor_id: str | None) -> 
         raise ReviewInboxError(
             "actor_id is required to resolve a review inbox", status_code=422
         )
-    by_plane = {
-        "qoe": _qoe_items(session, organization_id, actor_id),
-        "claim": _claim_items(session, organization_id, actor_id),
-        "diligence": _diligence_items(session, organization_id, actor_id),
-        "ic_comment": _ic_comment_items(session, organization_id, actor_id),
-    }
+    by_plane = _plane_items(session, organization_id, actor_id)
     items = [entry for plane in PLANES for entry in by_plane[plane]]
     items.sort(key=lambda entry: (entry["created_at"], entry["id"]), reverse=True)
     return {
@@ -222,4 +251,81 @@ def my_reviews(session: Session, organization_id: str, actor_id: str | None) -> 
     }
 
 
-__all__ = ["ReviewInboxError", "my_reviews", "PLANES"]
+def aging_report(
+    session: Session,
+    organization_id: str,
+    actor_id: str | None,
+    *,
+    now: datetime | None = None,
+    sla_hours: dict[str, float] | None = None,
+) -> dict:
+    """G78 — per-plane aging over the SAME queue ``my_reviews`` serves, with SLA breaches.
+
+    Ages are measured against each item's inbox timestamp (for diligence that is the latest
+    response time — the moment the item began waiting on a reviewer). An item breaches when its
+    age strictly exceeds its plane's threshold. ``sla_hours`` overrides individual plane
+    thresholds per request (documented defaults in :data:`DEFAULT_SLA_HOURS`); unknown planes or
+    non-positive thresholds are rejected. Deterministic given an injected ``now``. Because the
+    items come from the shared four-eyes builders, an item the actor proposed is never counted
+    as THEIR breach.
+    """
+    if not actor_id:
+        raise ReviewInboxError(
+            "actor_id is required to resolve a review inbox", status_code=422
+        )
+    thresholds = dict(DEFAULT_SLA_HOURS)
+    for plane, value in (sla_hours or {}).items():
+        if plane not in DEFAULT_SLA_HOURS:
+            raise ReviewInboxError(
+                f"Unknown review plane '{plane}' (expected one of {', '.join(PLANES)})"
+            )
+        if not isinstance(value, (int, float)) or value <= 0:
+            raise ReviewInboxError(f"sla_hours for plane '{plane}' must be a positive number")
+        thresholds[plane] = float(value)
+
+    as_of = _as_utc(now) if now is not None else now_utc()
+    by_plane = _plane_items(session, organization_id, actor_id)
+
+    planes: dict[str, dict] = {}
+    total = 0
+    total_breaches = 0
+    for plane in PLANES:
+        limit = thresholds[plane]
+        ages: list[float] = []
+        breaches: list[dict] = []
+        for item in by_plane[plane]:
+            age = round(
+                max(0.0, (as_of - _as_utc(item["created_at"])).total_seconds()) / 3600.0, 2
+            )
+            ages.append(age)
+            if age > limit:
+                breaches.append(
+                    {
+                        "id": item["id"],
+                        "title": item["title"],
+                        "age_hours": age,
+                        "sla_hours": limit,
+                    }
+                )
+        breaches.sort(key=lambda entry: (-entry["age_hours"], entry["id"]))
+        planes[plane] = {
+            "count": len(ages),
+            "oldest_age_hours": max(ages) if ages else None,
+            "sla_hours": limit,
+            "breaches": breaches,
+        }
+        total += len(ages)
+        total_breaches += len(breaches)
+
+    return {
+        "organization_id": organization_id,
+        "actor_id": actor_id,
+        "as_of": as_of,
+        "sla_hours": thresholds,
+        "planes": planes,
+        "total": total,
+        "total_breaches": total_breaches,
+    }
+
+
+__all__ = ["DEFAULT_SLA_HOURS", "ReviewInboxError", "aging_report", "my_reviews", "PLANES"]

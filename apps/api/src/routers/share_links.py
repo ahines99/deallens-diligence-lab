@@ -8,10 +8,11 @@ lets it through, and the token is resolved here. A revoked or expired token is 4
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
 from src.routers.deps import OptionalPrincipalDep, PrincipalDep, SessionDep
 from src.schemas.share_link import (
+    ShareLinkAnalyticsOut,
     ShareLinkCreate,
     ShareLinkCreatedOut,
     ShareLinkOut,
@@ -73,9 +74,24 @@ def revoke_share_link(
     return ShareLinkOut.model_validate(record)
 
 
+@router.get("/share-links/{share_link_id}/analytics", response_model=ShareLinkAnalyticsOut)
+def share_link_analytics(
+    share_link_id: str,
+    session: SessionDep,
+    principal: PrincipalDep,
+) -> ShareLinkAnalyticsOut:
+    """Owner-only view analytics + revocation state for one link (G76). Org-scoped like revoke."""
+    try:
+        payload = service.get_share_link_analytics(session, share_link_id, principal)
+    except NotFound as exc:
+        raise HTTPException(status_code=404, detail=exc.message) from exc
+    return ShareLinkAnalyticsOut.model_validate(payload)
+
+
 @router.get("/shared/{token}", response_model=SharedWorkspaceSnapshot)
 def read_shared_snapshot(
     token: str,
+    request: Request,
     session: SessionDep,
     principal: OptionalPrincipalDep,
 ) -> SharedWorkspaceSnapshot:
@@ -86,6 +102,14 @@ def read_shared_snapshot(
     except NotFound as exc:
         # ShareLinkGone (revoked/expired) carries status_code=410; plain NotFound stays 404.
         raise HTTPException(status_code=getattr(exc, "status_code", 404), detail=exc.message) from exc
+    # G76: append a coarse view event only for a successfully served snapshot. Best-effort by
+    # contract — record_view swallows every failure, so analytics can never break the read.
+    service.record_view(
+        session,
+        share_link,
+        user_agent=request.headers.get("User-Agent"),
+        client_host=request.client.host if request.client else None,
+    )
     return SharedWorkspaceSnapshot.model_validate(snapshot)
 
 

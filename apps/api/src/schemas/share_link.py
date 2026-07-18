@@ -1,4 +1,4 @@
-"""API contracts for read-only tokenized workspace share links (G44)."""
+"""API contracts for read-only tokenized workspace share links (G44) + analytics (G76)."""
 from __future__ import annotations
 
 from datetime import datetime
@@ -42,6 +42,28 @@ class ShareLinkCreatedOut(StrictModel):
     token: str
 
 
+class ShareLinkViewOut(StrictModel):
+    """One recorded public read of the link — coarse context only (G76)."""
+
+    viewed_at: datetime
+    user_agent: str | None = None
+
+
+class ShareLinkAnalyticsOut(StrictModel):
+    """Owner-facing view analytics for one share link (G76).
+
+    ``share_link`` carries the existing revocation/expiry state (``revoked_at``,
+    ``expires_at``) so the UI can present views and one-click revoke together. Served only
+    through the org-scoped management surface — the public token route never exposes this.
+    """
+
+    share_link: ShareLinkOut
+    view_count: int
+    first_viewed_at: datetime | None = None
+    last_viewed_at: datetime | None = None
+    recent: list[ShareLinkViewOut]
+
+
 class SharedWorkspaceSnapshot(BaseModel):
     """The public, read-only, non-confidential snapshot a share token unlocks."""
 
@@ -51,3 +73,5 @@ class SharedWorkspaceSnapshot(BaseModel):
     risks: list[dict[str, Any]]
     counts: dict[str, int]
     disclaimer: str
+    # Server-composed provenance line rendered as a visible overlay by the shared view (G76).
+    watermark: str

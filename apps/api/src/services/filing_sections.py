@@ -19,6 +19,13 @@ _P_ITEM2 = r"item\s*2(?![0-9])"
 _P_ITEM7 = r"item\s*7(?![0-9a])"
 _P_ITEM7A = r"item\s*7a\b"
 _P_ITEM8 = r"item\s*8(?![0-9])"
+# G67: Item 3 (Legal Proceedings) is bounded by the Item 4 (Mine Safety Disclosures) header.
+# The same trailing-character lookahead discipline as _P_ITEM1 applies: excluding every trailing
+# digit/letter keeps "Item 3" from matching "Item 30" or a future "Item 3A", and keeps "Item 4"
+# from matching "Item 401 of Regulation S-K" cross-references.
+_P_ITEM3 = r"item\s*3(?![0-9a-z])"
+_P_ITEM4 = r"item\s*4(?![0-9a-z])"
+_P_ITEM5 = r"item\s*5(?![0-9a-z])"
 
 
 def _starts(text: str, pat: str) -> list[int]:
@@ -58,6 +65,24 @@ def extract_sections(text: str) -> dict[str, str]:
     if len(mdna) > 400:
         out["Management's Discussion & Analysis (Item 7)"] = mdna
     return out
+
+
+def extract_legal_proceedings(text: str) -> str:
+    """Item 3 (Legal Proceedings) body from 10-K text, or ``""`` when it cannot be located.
+
+    Same largest-span heuristic as ``extract_sections`` (the real body beats the short TOC
+    entry). Deliberately NOT gated on a minimum length: a terse Item 3 ("None.") is still a
+    located section. Callers must treat a non-located section honestly — the heuristic failing
+    to find Item 3 is NOT evidence that the company has no legal proceedings.
+
+    Kept out of ``extract_sections`` so ingestion-time chunking (and every surface derived from
+    it) is unchanged; litigation extraction (G67) calls this directly.
+    """
+    if not text:
+        return ""
+    # Item 5 is a fallback boundary (mirrors Risk Factors' Item 1B + Item 2 bounds) so a filing
+    # with an unusual Item 4 header can never make Item 3 swallow the rest of the document.
+    return _largest_span(text, _P_ITEM3, [_P_ITEM4, _P_ITEM5])
 
 
 def split_paragraphs(section_text: str, min_len: int = 200, max_len: int = 1600) -> list[str]:

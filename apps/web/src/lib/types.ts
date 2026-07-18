@@ -1147,6 +1147,11 @@ export interface ClaimCollection { approved: StructuredClaim[]; pending: Structu
 export interface ComparisonFinding { finding_type: string; summary: string; before: Record<string, unknown> | null; after: Record<string, unknown> | null; shared_terms: string[] }
 export interface DocumentComparison { id: string; deal_id: string; from_document_id: string; to_document_id: string; comparison_type: "change" | "contradiction"; findings: ComparisonFinding[]; finding_count: number; algorithm_version: string; created_by_actor_id: string | null; created_at: string }
 export interface IntelligenceEvaluation { id: string; deal_id: string; cases: Record<string, unknown>[]; qa_run_ids: string[]; metrics: Record<string, unknown>; passed: boolean; algorithm_version: string; created_by_actor_id: string | null; created_at: string }
+// G75 four-eyes redaction workflow: spans address character offsets into one chunk's immutable text.
+export interface RedactionSpan { chunk_id: string; start: number; end: number; reason: string }
+export type RedactionStatus = "proposed" | "approved" | "rejected";
+export interface RedactionProposal { id: string; deal_id: string; document_id: string; logical_document_id: string; document_version: number; spans: RedactionSpan[]; status: RedactionStatus; note: string; decision_note: string; proposed_by_actor_id: string; decided_by_actor_id: string | null; decided_at: string | null; redacted_document_id: string | null; created_at: string }
+export interface RedactionDecisionResult { proposal: RedactionProposal; redacted_document: DataRoomDocument | null }
 
 // --- Portfolio command center -------------------------------------------------
 
@@ -1629,6 +1634,250 @@ export interface AgentRun {
   generated_at: string;
 }
 
+// --- G69-G73 underwriting depth ----------------------------------------------------------------
+export interface TornadoRow {
+  variable: SensitivityVariable;
+  convention: "relative" | "absolute";
+  base_value: number;
+  low_value: number;
+  high_value: number;
+  metric_low: number | null;
+  metric_high: number | null;
+  delta_low: number | null;
+  delta_high: number | null;
+  max_abs_delta: number | null;
+  evaluable: boolean;
+  reason: string | null;
+}
+export interface SensitivityTornadoResult {
+  metric: "irr" | "moic";
+  base_metric: number | null;
+  relative_shift: number;
+  absolute_shift: number;
+  rows: TornadoRow[];
+}
+export interface RecapConstraintOut {
+  name: string;
+  threshold: number;
+  actual: number | null;
+  binding_period: string | null;
+  headroom: number | null;
+  satisfied: boolean;
+  note: string | null;
+}
+export interface DividendRecapResult {
+  status: "solved" | "infeasible" | "unbounded";
+  period: string;
+  max_distribution: number | null;
+  sponsor_share: number | null;
+  binding_constraint: string | null;
+  constraints: RecapConstraintOut[];
+  iterations: number;
+  note: string | null;
+}
+export interface FacilitySizingYear {
+  year_label: string;
+  period_label: string;
+  months: number;
+  annual_nwc: number | null;
+  evaluable: boolean;
+  reason: string | null;
+  peak_month: string | null;
+  peak_monthly_nwc: number | null;
+  peak_draw: number | null;
+  existing_revolver_draw: number | null;
+  commitment: number;
+  headroom: number | null;
+}
+export interface FacilitySizingResult {
+  status: "complete" | "partial" | "unavailable";
+  reason: string | null;
+  seasonality_missing_months: number;
+  seasonal_annual_average: number | null;
+  seasonal_peak_month: string | null;
+  commitment: number;
+  commitment_source: "modeled_revolvers" | "override";
+  years: FacilitySizingYear[];
+  peak_year_label: string | null;
+  peak_draw: number | null;
+}
+export interface MetricBand {
+  p5: number;
+  p25: number;
+  p50: number;
+  p75: number;
+  p95: number;
+  mean: number;
+}
+export interface FundMonteCarloResult {
+  iterations: number;
+  seed: number;
+  converged: number;
+  failed: number;
+  source: "request" | "fund_construction";
+  fund_id: string | null;
+  excluded_deals: { code: string; reason: string }[];
+  total_commitment: number;
+  fund_irr: MetricBand;
+  fund_moic: MetricBand;
+  probability_fund_moic_below_1: number;
+  deals: {
+    name: string;
+    commitment: number;
+    base_invested: number;
+    irr: MetricBand;
+    moic: MetricBand;
+    probability_moic_below_1: number;
+  }[];
+  factor_summaries: Record<string, unknown>[];
+  correlation_effect: Record<string, unknown>;
+}
+export interface AnnualValueCreationYear {
+  year_label: string;
+  period_label: string;
+  end_date: string;
+  months: number;
+  applied_multiple: number;
+  ebitda: number;
+  net_debt: number;
+  equity_value: number;
+  equity_change: number;
+  ebitda_growth: number;
+  multiple_change: number;
+  deleveraging: number;
+  cross_term: number;
+  reconciles: boolean;
+}
+export interface AnnualValueCreationResult {
+  entry_multiple: number;
+  exit_multiple: number;
+  entry_ebitda: number;
+  entry_net_debt: number;
+  entry_equity: number;
+  exit_equity: number;
+  total_value_creation: number;
+  years: AnnualValueCreationYear[];
+  totals: Record<string, number>;
+  matches_attribution_total: boolean;
+  reconciles: boolean;
+}
+
+// --- G65/G67/G68 SOTP, litigation, macro MC presets --------------------------------------------
+export interface SotpSegment {
+  segment_name: string;
+  revenue: number | null;
+  multiple: number | null;
+  implied_ev: number | null;
+  source: Record<string, unknown>;
+}
+export interface SotpResult {
+  workspace_id: string;
+  status: "available" | "partial" | "unavailable";
+  as_of_period: string | null;
+  segments: SotpSegment[];
+  unallocated: { revenue: number | null; multiple: number | null; implied_ev: number | null };
+  total_implied_ev: number | null;
+  consolidated_revenue: number | null;
+  reconciliation_note: string | null;
+  generated_at: string;
+}
+export interface LitigationProfile {
+  workspace_id: string;
+  status: "available" | "partial" | "unavailable";
+  item3: {
+    present: boolean;
+    excerpt_chunks: { chunk_index: number; section: string; text: string; source_url: string | null }[];
+    filing: Record<string, unknown> | null;
+    note: string | null;
+  };
+  events: { date: string; form: string; items: { code: string; label: string }[]; accession: string; url: string | null }[];
+  note: string | null;
+  generated_at: string;
+}
+export interface MacroMcPresets {
+  workspace_id: string;
+  status: "available" | "partial" | "unavailable";
+  preset_version: string;
+  generated_at: string;
+  series: { series_id: string; label: string; last_value: number | null; as_of: string | null; note: string | null }[];
+  distributions: Record<string, unknown>[];
+  mapping_notes: string[];
+}
+
+// --- G64/G66 peer benchmarking & dilution ------------------------------------------------------
+export interface PeerBenchmarkMetric {
+  metric: string;
+  target_value: number | null;
+  percentile: number | null;
+  coverage: number;
+  concepts: string[];
+  note: string | null;
+}
+export interface PeerBenchmark {
+  workspace_id: string;
+  target_name: string;
+  status: "available" | "partial" | "unavailable";
+  as_of_year: number | null;
+  target_sic: string | null;
+  sic_description: string | null;
+  peer_scope: string | null;
+  metrics: PeerBenchmarkMetric[];
+  note: string | null;
+  source_error: string | null;
+  generated_at: string;
+}
+export interface DilutionYear {
+  shares_out: number | null;
+  sbc: number | null;
+  repurchases: number | null;
+  net_dilution_pct: number | null;
+}
+export interface DilutionAnalysis {
+  workspace_id: string;
+  target_name: string;
+  status: "available" | "partial" | "unavailable";
+  years: string[];
+  by_year: Record<string, DilutionYear>;
+  citations: Record<string, Record<string, { concept: string; end: string; accession: string; form: string }>>;
+  sources: Record<string, string | null>;
+  note: string | null;
+  source_error: string | null;
+  generated_at: string;
+}
+
+// --- G77/G78 digests & inbox SLAs --------------------------------------------------------------
+export interface NotificationDigest {
+  organization_id: string;
+  user_id: string | null;
+  window: "daily" | "weekly";
+  since: string;
+  until: string;
+  total: number;
+  by_event_type: { event_type: string; count: number; latest_title: string }[];
+  directed_count: number;
+  inbox: {
+    total: number;
+    counts_by_plane: Record<string, number>;
+    oldest_age_hours: number | null;
+    sla: { total_breaches: number; breaches_by_plane: Record<string, number> };
+  };
+}
+export interface InboxAgingPlane {
+  count: number;
+  oldest_age_hours: number | null;
+  sla_hours: number;
+  breaches: { id: string; title: string; age_hours: number; sla_hours: number }[];
+}
+export interface InboxAging {
+  organization_id: string;
+  actor_id: string;
+  as_of: string;
+  sla_hours: Record<string, number>;
+  planes: Record<string, InboxAgingPlane>;
+  total: number;
+  total_breaches: number;
+}
+
 // --- G63 comparative agent runs ----------------------------------------------------------------
 export interface AgentCompareWorkspace {
   workspace_id: string;
@@ -1822,6 +2071,35 @@ export interface ShareLink {
   label: string | null; last_accessed_at: string | null; created_at: string;
 }
 export interface ShareLinkCreated extends ShareLink { token: string; }
+
+/** G44/G76 — the public, non-confidential snapshot a `dsh_` share token unlocks. */
+export interface SharedWorkspaceSnapshot {
+  scope: string;
+  workspace: {
+    name: string;
+    deal_type: string | null;
+    status: string | null;
+    investment_question: string | null;
+  };
+  target: {
+    name: string;
+    ticker: string | null;
+    sector: string | null;
+    description: string | null;
+    target_type: string | null;
+  } | null;
+  risks: {
+    title: string;
+    category: string;
+    category_label: string;
+    severity: string;
+    severity_score: number;
+  }[];
+  counts: Record<string, number>;
+  disclaimer: string;
+  /** Server-composed watermark line (G76) — rendered as a persistent visible overlay. */
+  watermark: string;
+}
 
 export interface MembershipPermissions {
   membership_id: string;

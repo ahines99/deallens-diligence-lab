@@ -8,6 +8,8 @@ sync never duplicates a row.
 """
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -15,6 +17,7 @@ from sqlalchemy.orm import Session
 from src.db.base import now_utc
 from src.models.deal_workflow import WorkflowAuditEvent
 from src.models.notification import Notification
+from src.services import review_inbox_service
 from src.services.common import NotFound
 
 # Human-facing title/body for each audit action. Unmapped actions fall back to a humanized
@@ -176,6 +179,119 @@ def unread_count(session: Session, organization_id: str, *, user_id: str | None 
         )
         or 0
     )
+
+
+# --- G77: per-user digests (computed on read; no schema, no delivery state) -------------------
+
+DIGEST_WINDOWS: dict[str, timedelta] = {
+    "daily": timedelta(days=1),
+    "weekly": timedelta(days=7),
+}
+
+
+def _as_utc(value: datetime) -> datetime:
+    """Normalize DB datetimes for arithmetic: SQLite returns naive (UTC) rows, Postgres aware."""
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def build_digest(
+    session: Session,
+    organization_id: str,
+    *,
+    user_id: str | None,
+    window: str = "daily",
+    now: datetime | None = None,
+) -> dict:
+    """Roll the window's notifications + review-inbox aging into one per-user summary.
+
+    Computed entirely on read: nothing is delivered, persisted, or marked read — the digest is a
+    summary OVER the live notification list, never a re-delivery, so building it twice is
+    idempotent and ``read_at`` is untouched. Deterministic given an injected ``now``; the window
+    is the half-open interval ``(now - window, now]`` (a row created exactly one window ago has
+    aged out).
+
+    Privacy: rows are filtered through the same ``_recipient_filter`` as the live list, so a
+    user's digest may include their OWN directed rows (mentions) but never another member's.
+    """
+    if window not in DIGEST_WINDOWS:
+        raise ValueError(f"window must be one of {sorted(DIGEST_WINDOWS)} (got '{window}')")
+    until = _as_utc(now) if now is not None else now_utc()
+    since = until - DIGEST_WINDOWS[window]
+
+    # Window bounds are applied in Python over normalized datetimes rather than in SQL so the
+    # comparison semantics are identical on SQLite (naive storage) and Postgres (aware).
+    rows = [
+        row
+        for row in session.scalars(
+            select(Notification)
+            .where(
+                Notification.organization_id == organization_id,
+                _recipient_filter(user_id),
+            )
+            .order_by(Notification.created_at.desc(), Notification.id)
+        )
+        if since < _as_utc(row.created_at) <= until
+    ]
+
+    groups: dict[str, dict] = {}
+    for row in rows:  # newest-first, so the first row seen per type carries the latest title
+        group = groups.setdefault(
+            row.event_type, {"event_type": row.event_type, "count": 0, "latest_title": row.title}
+        )
+        group["count"] += 1
+    by_event_type = sorted(groups.values(), key=lambda item: (-item["count"], item["event_type"]))
+
+    directed_count = (
+        sum(1 for row in rows if row.recipient_user_id == user_id) if user_id else 0
+    )
+
+    planes = review_inbox_service.PLANES
+    if user_id:
+        aging = review_inbox_service.aging_report(session, organization_id, user_id, now=until)
+        inbox = {
+            "total": aging["total"],
+            "counts_by_plane": {plane: aging["planes"][plane]["count"] for plane in planes},
+            "oldest_age_hours": max(
+                (
+                    aging["planes"][plane]["oldest_age_hours"]
+                    for plane in planes
+                    if aging["planes"][plane]["oldest_age_hours"] is not None
+                ),
+                default=None,
+            ),
+            "sla": {
+                "total_breaches": aging["total_breaches"],
+                "breaches_by_plane": {
+                    plane: len(aging["planes"][plane]["breaches"]) for plane in planes
+                },
+            },
+        }
+    else:
+        # No signed-in user => no actionable review queue to summarize (my_reviews requires an
+        # actor); an explicit all-zero block keeps the digest shape stable.
+        inbox = {
+            "total": 0,
+            "counts_by_plane": {plane: 0 for plane in planes},
+            "oldest_age_hours": None,
+            "sla": {
+                "total_breaches": 0,
+                "breaches_by_plane": {plane: 0 for plane in planes},
+            },
+        }
+
+    return {
+        "organization_id": organization_id,
+        "user_id": user_id,
+        "window": window,
+        "since": since,
+        "until": until,
+        "total": len(rows),
+        "by_event_type": by_event_type,
+        "directed_count": directed_count,
+        "inbox": inbox,
+    }
 
 
 def mark_read(

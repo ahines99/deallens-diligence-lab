@@ -30,6 +30,7 @@ from src.models.deal_intelligence import (
     DataRoomDocument,
     DocumentComparison,
     IntelligenceEvaluation,
+    RedactionProposal,
     SecFilingComparison,
     StructuredClaim,
 )
@@ -46,6 +47,8 @@ from src.schemas.deal_intelligence import (
     EvaluationRequest,
     ExtractionRequest,
     QAFilters,
+    RedactionDecisionRequest,
+    RedactionProposalCreate,
     SecFilingComparisonRequest,
 )
 from src.schemas.deal_workflow import ActorContext
@@ -64,6 +67,9 @@ LLM_CLAIM_CONFIDENCE = 0.85
 COMPARISON_VERSION = "locator-diff-v1"
 EVALUATION_VERSION = "evidence-eval-v1"
 ABSTENTION = "I could not find a supported answer in the selected documents."
+# G75: the fixed marker spliced over every approved redaction span. A constant (never the
+# original text, never a hash of it) so a redacted version cannot leak length or content.
+REDACTION_MARKER = "[REDACTED]"
 
 CONTENT_TYPES = {
     ".pdf": "application/pdf",
@@ -1642,6 +1648,299 @@ def claim_history(
         )
     )
     return revisions, reviews
+
+
+# --- G75: four-eyes data-room redaction workflow -------------------------------------------
+#
+# Design notes (load-bearing):
+#
+# * Originals are NEVER touched. An approved redaction mints a NEW immutable document version
+#   through the standard supersession path (``ingest_document`` with the same
+#   ``logical_document_id``), so every non-privileged read surface — data-room QA
+#   (``answer_question`` with the default ``latest_only`` filter), cross-corpus QA
+#   (``_latest_documents``), workspace/agent search, and share surfaces — serves the redacted
+#   content by the EXISTING latest-version-wins rule with zero special-casing. Privileged
+#   deal-team access to the unredacted prior versions remains exactly what it always was: the
+#   append-only version history (``list_document_versions`` / download by version id).
+#   ``agent_tools`` reads chunk text only through these same governed surfaces, so agents
+#   inherit redacted-latest automatically. Governed records minted BEFORE the redaction
+#   (approved claims, promoted Evidence quotes) retain their original quotes as append-only
+#   privileged history — consistent with prior versions remaining privileged, never a leak in
+#   the non-privileged serving path.
+#
+# * Span addressing is PER CHUNK: ``{chunk_id, start, end, reason}`` with character offsets
+#   into ``DataRoomChunk.text``. Chunk text is the canonical addressable surface of this module
+#   (chunk locators, claim ``source_span``s, and QA citations all address it), so spans reuse
+#   that exact coordinate system rather than a synthetic whole-document offset space that no
+#   read surface serves and that would shift under re-chunking.
+#
+# * Binary originals (pdf/docx/xlsx — v1 boundary, stated honestly): the redaction is applied
+#   to the EXTRACTED TEXT representation — the searchable/serveable surface every QA/search
+#   consumer reads — and the minted version is a plaintext ``.redacted.txt`` document. The
+#   original binary bytes remain untouched, privileged version history; v1 does not rewrite
+#   PDF/DOCX/XLSX internals.
+#
+# * Proposals are human-too in v1: both ``propose_redaction`` and ``decide_redaction`` demand a
+#   server-verified human session via ``_require_human_reviewer`` (trusted-service automation
+#   banned on BOTH sides), and the approver must differ from the proposer. Agent-originated
+#   proposals could later reuse G60's propose-only pattern (agent proposes flagged, human-only
+#   approval); the decision plane would be unchanged.
+
+
+def _latest_document_version(
+    session: Session, deal_id: str, logical_document_id: str
+) -> DataRoomDocument | None:
+    return session.scalar(
+        select(DataRoomDocument)
+        .where(
+            DataRoomDocument.deal_id == deal_id,
+            DataRoomDocument.logical_document_id == logical_document_id,
+        )
+        .order_by(DataRoomDocument.version.desc())
+    )
+
+
+def _require_latest_version(session: Session, document: DataRoomDocument) -> None:
+    """409 when ``document`` has been superseded: redactions target the LATEST version only.
+
+    Proposing against a superseded version would author offsets into text the data room no
+    longer serves; approving one would splice into the wrong version and mint a regression on
+    top of the newer content. Both paths refuse with a stale-version conflict instead.
+    """
+    latest = _latest_document_version(session, document.deal_id, document.logical_document_id)
+    if latest is None or latest.id != document.id:
+        latest_version = latest.version if latest else "unknown"
+        raise IntelligenceConflict(
+            f"Document version {document.version} is stale; the latest version of logical "
+            f"document '{document.logical_document_id}' is {latest_version}"
+        )
+
+
+def _validated_redaction_spans(
+    session: Session, document: DataRoomDocument, data: RedactionProposalCreate
+) -> list[dict[str, Any]]:
+    """Validate every span against the document's real immutable chunks.
+
+    A span must address a chunk OF THIS DOCUMENT VERSION, sit fully inside that chunk's text
+    (``0 <= start < end <= len(text)``), and never overlap another span of the same chunk
+    (overlap would make the splice order ambiguous). Violations are 422s naming the span.
+    """
+    chunks = {
+        chunk.id: chunk
+        for chunk in session.scalars(
+            select(DataRoomChunk).where(DataRoomChunk.document_id == document.id)
+        )
+    }
+    normalized: list[dict[str, Any]] = []
+    ranges_by_chunk: dict[str, list[tuple[int, int]]] = {}
+    for index, span in enumerate(data.spans):
+        chunk = chunks.get(span.chunk_id)
+        if chunk is None:
+            raise IntelligenceError(
+                f"Span {index} addresses chunk '{span.chunk_id}', which is not a chunk of "
+                f"document '{document.id}'",
+                status_code=422,
+            )
+        if span.end > len(chunk.text):
+            raise IntelligenceError(
+                f"Span {index} [{span.start}, {span.end}) exceeds the {len(chunk.text)}-char "
+                f"text of chunk '{chunk.id}'",
+                status_code=422,
+            )
+        ranges_by_chunk.setdefault(chunk.id, []).append((span.start, span.end))
+        normalized.append(
+            {
+                "chunk_id": span.chunk_id,
+                "start": span.start,
+                "end": span.end,
+                "reason": span.reason,
+            }
+        )
+    for chunk_id, ranges in ranges_by_chunk.items():
+        ranges.sort()
+        for (_, first_end), (second_start, _) in zip(ranges, ranges[1:]):
+            if second_start < first_end:
+                raise IntelligenceError(
+                    f"Spans overlap within chunk '{chunk_id}'; redaction spans must be disjoint",
+                    status_code=422,
+                )
+    return normalized
+
+
+def propose_redaction(
+    session: Session,
+    deal_id: str,
+    document_id: str,
+    data: RedactionProposalCreate,
+    actor: ActorContext | None = None,
+) -> RedactionProposal:
+    """Propose span-level redactions against the LATEST version of a data-room document."""
+    _deal(session, deal_id, actor)
+    document = _document(session, document_id, actor)
+    if document.deal_id != deal_id:
+        raise IntelligenceError(
+            "The document does not belong to the deal", status_code=422
+        )
+    proposer_id = _require_human_reviewer(actor, "Redaction proposal")
+    _require_latest_version(session, document)
+    proposal = RedactionProposal(
+        deal_id=deal_id,
+        document_id=document.id,
+        logical_document_id=document.logical_document_id,
+        document_version=document.version,
+        spans=_validated_redaction_spans(session, document, data),
+        status="proposed",
+        note=data.note,
+        proposed_by_actor_id=proposer_id,
+    )
+    session.add(proposal)
+    return _commit(session, proposal)
+
+
+def _redacted_chunk_text(text: str, ranges: list[tuple[int, int]]) -> str:
+    """Splice the fixed marker over each disjoint ``[start, end)`` range of one chunk."""
+    parts: list[str] = []
+    cursor = 0
+    for start, end in sorted(ranges):
+        parts.append(text[cursor:start])
+        parts.append(REDACTION_MARKER)
+        cursor = end
+    parts.append(text[cursor:])
+    return "".join(parts)
+
+
+def _redacted_document_text(
+    session: Session, document: DataRoomDocument, spans: list[dict[str, Any]]
+) -> str:
+    """Assemble the redacted plaintext representation of the whole document.
+
+    Every chunk of the proposed-against version is emitted in ordinal order — spliced where a
+    span addresses it, verbatim otherwise — and joined with blank lines so the ``.txt`` ingest
+    path re-chunks each unit as its own paragraph with normal locators, hashing, and dedup.
+    Chunks and spans were validated at proposal time and chunks are immutable; the re-checks
+    here are belt-and-braces provenance guards mirroring ``_resolved_claim_source``.
+    """
+    ranges_by_chunk: dict[str, list[tuple[int, int]]] = {}
+    for span in spans:
+        ranges_by_chunk.setdefault(span["chunk_id"], []).append((span["start"], span["end"]))
+    chunks = list(
+        session.scalars(
+            select(DataRoomChunk)
+            .where(DataRoomChunk.document_id == document.id)
+            .order_by(DataRoomChunk.ordinal)
+        )
+    )
+    resolved: set[str] = set()
+    pieces: list[str] = []
+    for chunk in chunks:
+        ranges = ranges_by_chunk.get(chunk.id)
+        if not ranges:
+            pieces.append(chunk.text)
+            continue
+        if any(not 0 <= start < end <= len(chunk.text) for start, end in ranges):
+            raise IntelligenceConflict(
+                f"Redaction spans no longer resolve inside chunk '{chunk.id}'"
+            )
+        resolved.add(chunk.id)
+        pieces.append(_redacted_chunk_text(chunk.text, ranges))
+    if resolved != set(ranges_by_chunk):
+        raise IntelligenceConflict(
+            "Redaction spans no longer resolve to the document's chunks"
+        )
+    return "\n\n".join(pieces)
+
+
+def decide_redaction(
+    session: Session,
+    proposal_id: str,
+    data: RedactionDecisionRequest,
+    actor: ActorContext | None = None,
+) -> tuple[RedactionProposal, DataRoomDocument | None]:
+    """Four-eyes decision on a redaction proposal; approval mints the redacted next version.
+
+    The approver must be a distinct HUMAN (``_require_human_reviewer``: trusted-service
+    automation is banned, and the proposer cannot decide their own proposal). A decided
+    proposal is final — re-deciding is a 409. Approval re-checks that the proposed-against
+    version is still the latest (409 otherwise), builds the redacted plaintext, and mints
+    version N+1 through the EXISTING ``ingest_document`` path; that call's commit persists the
+    decision transition and the minted version in one transaction, after which the set-once
+    ``redacted_document_id`` link is stamped. Rejection mints nothing (and skips the stale
+    check: rejecting a superseded-version proposal is always safe).
+    """
+    proposal = session.get(RedactionProposal, proposal_id)
+    if proposal is None:
+        raise IntelligenceNotFound(f"Redaction proposal '{proposal_id}' not found")
+    _deal(session, proposal.deal_id, actor)
+    reviewer_id = _require_human_reviewer(actor, "Redaction decision")
+    if proposal.status != "proposed":
+        raise IntelligenceConflict(
+            f"Redaction proposal is already {proposal.status}; decisions are final"
+        )
+    if proposal.proposed_by_actor_id == reviewer_id:
+        raise IntelligenceConflict(
+            "A distinct reviewer must approve or reject a redaction proposal"
+        )
+    decided_at = datetime.now(timezone.utc)
+    if data.decision == "reject":
+        proposal.status = "rejected"
+        proposal.decided_by_actor_id = reviewer_id
+        proposal.decided_at = decided_at
+        proposal.decision_note = data.note
+        return _commit(session, proposal), None
+
+    document = _document(session, proposal.document_id, actor)
+    _require_latest_version(session, document)
+    redacted_text = _redacted_document_text(session, document, proposal.spans)
+    proposal.status = "approved"
+    proposal.decided_by_actor_id = reviewer_id
+    proposal.decided_at = decided_at
+    proposal.decision_note = data.note
+    # ``ingest_document`` commits: the decision transition above and the minted version land
+    # in ONE transaction (a minting failure rolls the decision back with it). The original
+    # metadata is carried over so metadata-filtered QA keeps matching the logical document.
+    redacted_document = ingest_document(
+        session,
+        proposal.deal_id,
+        filename=f"{document.filename}.redacted.txt",
+        content=redacted_text.encode("utf-8"),
+        content_type="text/plain",
+        title=document.title,
+        logical_document_id=document.logical_document_id,
+        document_metadata={
+            **document.document_metadata,
+            "redaction_of": document.id,
+            "proposal_id": proposal.id,
+            "spans_count": len(proposal.spans),
+        },
+        actor=actor,
+    )
+    proposal.redacted_document_id = redacted_document.id
+    return _commit(session, proposal), redacted_document
+
+
+def list_redactions(
+    session: Session,
+    deal_id: str,
+    actor: ActorContext | None = None,
+    *,
+    status: str | None = None,
+    limit: int = 100,
+) -> list[RedactionProposal]:
+    _deal(session, deal_id, actor)
+    statement = select(RedactionProposal).where(RedactionProposal.deal_id == deal_id)
+    if status is not None:
+        if status not in {"proposed", "approved", "rejected"}:
+            raise IntelligenceError(
+                "status must be one of proposed, approved, rejected", status_code=422
+            )
+        statement = statement.where(RedactionProposal.status == status)
+    return list(
+        session.scalars(
+            statement.order_by(RedactionProposal.created_at.desc()).limit(
+                min(max(limit, 1), 1_000)
+            )
+        )
+    )
 
 
 def _locator_key(chunk: DataRoomChunk) -> str:

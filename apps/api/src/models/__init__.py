@@ -32,6 +32,7 @@ from src.models.deal_intelligence import (
     DataRoomDocument,
     DocumentComparison,
     IntelligenceEvaluation,
+    RedactionProposal,
     SecFilingComparison,
     StructuredClaim,
 )
@@ -52,6 +53,7 @@ from src.models.question import DiligenceQuestion
 from src.models.red_team import RedTeamReport
 from src.models.risk import RiskFinding
 from src.models.share_link import ShareLink
+from src.models.share_link_view import ShareLinkView
 from src.models.target import Target
 from src.models.underwriting_data import (
     AccountMapping,
@@ -115,9 +117,11 @@ __all__ = [
     "OrganizationMembership",
     "QoEAdjustment",
     "RedTeamReport",
+    "RedactionProposal",
     "RiskFinding",
     "SecFilingComparison",
     "ShareLink",
+    "ShareLinkView",
     "Target",
     "AccountMapping",
     "AnalysisRun",

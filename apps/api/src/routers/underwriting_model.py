@@ -14,14 +14,21 @@ from src.routers.deps import (
 )
 from src.schemas.deal_workflow import ActorContext
 from src.schemas.underwriting_model import (
+    AnnualValueCreationResult,
     CaseKey,
     CaseVarianceRequest,
     CaseVarianceResult,
     CovenantHeadroomResult,
+    DividendRecapSolveRequest,
+    DividendRecapSolveResult,
     DriverModelRequest,
     DriverModelResult,
     ExitReadinessResult,
+    FacilitySizingRequest,
+    FacilitySizingResult,
     FootballFieldResult,
+    FundMonteCarloRequest,
+    FundMonteCarloResult,
     MonteCarloRequest,
     MonteCarloResult,
     RecapBoltOnRequest,
@@ -32,6 +39,8 @@ from src.schemas.underwriting_model import (
     ReverseStressResult,
     SensitivityRequest,
     SensitivityResult,
+    SensitivityTornadoRequest,
+    SensitivityTornadoResult,
     UnderwritingAssumptions,
     UnderwritingCalculateRequest,
     UnderwritingCaseCreate,
@@ -416,5 +425,75 @@ def football_field(
     get_workspace_or_404(session, workspace_id)
     try:
         return service.calculate_football_field(payload)
+    except service.UnderwritingCalculationError as exc:
+        raise _calculation_error(exc) from exc
+
+
+@router.post(
+    "/{workspace_id}/underwriting/sensitivity-tornado",
+    response_model=SensitivityTornadoResult,
+)
+def sensitivity_tornado(
+    workspace_id: str, payload: SensitivityTornadoRequest, session: SessionDep
+) -> SensitivityTornadoResult:
+    get_workspace_or_404(session, workspace_id)
+    try:
+        return service.calculate_sensitivity_tornado(payload)
+    except service.UnderwritingCalculationError as exc:
+        raise _calculation_error(exc) from exc
+
+
+@router.post(
+    "/{workspace_id}/underwriting/dividend-recap-solve",
+    response_model=DividendRecapSolveResult,
+)
+def dividend_recap_solve(
+    workspace_id: str, payload: DividendRecapSolveRequest, session: SessionDep
+) -> DividendRecapSolveResult:
+    get_workspace_or_404(session, workspace_id)
+    try:
+        return service.solve_dividend_recap(payload)
+    except service.UnderwritingCalculationError as exc:
+        raise _calculation_error(exc) from exc
+
+
+@router.post(
+    "/{workspace_id}/underwriting/facility-sizing",
+    response_model=FacilitySizingResult,
+)
+def facility_sizing(
+    workspace_id: str, payload: FacilitySizingRequest, session: SessionDep
+) -> FacilitySizingResult:
+    get_workspace_or_404(session, workspace_id)
+    try:
+        return service.calculate_facility_sizing(payload)
+    except service.UnderwritingCalculationError as exc:
+        raise _calculation_error(exc) from exc
+
+
+@router.post(
+    "/{workspace_id}/underwriting/fund-monte-carlo",
+    response_model=FundMonteCarloResult,
+)
+def fund_monte_carlo(
+    workspace_id: str, payload: FundMonteCarloRequest, session: SessionDep
+) -> FundMonteCarloResult:
+    get_workspace_or_404(session, workspace_id)
+    try:
+        return service.run_fund_monte_carlo(payload, session)
+    except service.UnderwritingCalculationError as exc:
+        raise _calculation_error(exc) from exc
+
+
+@router.post(
+    "/{workspace_id}/underwriting/annual-value-creation",
+    response_model=AnnualValueCreationResult,
+)
+def annual_value_creation(
+    workspace_id: str, payload: ReturnsAttributionRequest, session: SessionDep
+) -> AnnualValueCreationResult:
+    get_workspace_or_404(session, workspace_id)
+    try:
+        return service.calculate_annual_value_creation(payload.assumptions)
     except service.UnderwritingCalculationError as exc:
         raise _calculation_error(exc) from exc

@@ -33,6 +33,8 @@ from src.routers import (
     agent_compare,
     agent_memo,
     api_keys,
+    peer_benchmark,
+    research_wave6,
     collaboration,
     comments,
     comps,
@@ -624,8 +626,8 @@ def health() -> dict:
 
 
 _ROUTER_MODULES = (
-    activity, agent, agent_compare, agent_memo, workspaces, targets, sec, filings, comps, financials,
-    risks, questions,
+    activity, agent, agent_compare, agent_memo, peer_benchmark, research_wave6, workspaces, targets,
+    sec, filings, comps, financials, risks, questions,
     memos, red_team, evidence, examples, governance, govcon, portfolio, notifications,
     forensics, valuation, feeds, signals, ownership, search,
     underwriting_data, underwriting_model, deal_workflow, deal_intelligence,

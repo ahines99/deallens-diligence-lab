@@ -29,6 +29,7 @@ from src.models.deal_workflow import (
 )
 from src.schemas.deal_workflow import ActorContext, ExportRequest
 from src.services import deal_workflow_service as workflow
+from src.services import export_signing_service
 
 
 @dataclass(frozen=True)
@@ -50,10 +51,6 @@ _MEDIA_TYPES = {
 
 def _safe_json(value: Any) -> Any:
     return json.loads(json.dumps(value, default=lambda item: item.isoformat()))
-
-
-def _canonical(value: Any) -> bytes:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
 
 
 def _file_stem(value: str) -> str:
@@ -287,11 +284,23 @@ def render_and_record_export(
         "generated_at": payload["export_metadata"]["generated_at"],
         "sections": list(payload),
     }
+    # G74: manifest_hash is the SHA-256 of the canonical manifest bytes EXCLUDING the attestation
+    # block (identical to the pre-attestation canonicalization), and the Ed25519 signature —
+    # when a key is configured — covers those exact same bytes, so hash and signature attest the
+    # same thing and the signature is never self-referential. No key => honest "unsigned" block.
+    core_bytes = export_signing_service.canonical_manifest_bytes(manifest)
+    manifest["attestation"] = export_signing_service.build_attestation(
+        core_bytes,
+        signed_payload=(
+            "canonical manifest JSON excluding the attestation block "
+            "(sort_keys=True, separators=(',', ':')); its SHA-256 is manifest_hash"
+        ),
+    )
     record = ICPacketExport(
         packet_id=packet.id,
         format=request.format,
         manifest=manifest,
-        manifest_hash=hashlib.sha256(_canonical(manifest)).hexdigest(),
+        manifest_hash=hashlib.sha256(core_bytes).hexdigest(),
         requested_by_actor_id=actor.actor_id if actor else None,
     )
     session.add(record)

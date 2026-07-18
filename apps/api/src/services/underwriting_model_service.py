@@ -23,13 +23,21 @@ from src.models.deal_workflow import Deal
 from src.models.underwriting_model import UnderwritingCaseDecision, UnderwritingCaseVersion
 from src.schemas.deal_workflow import ActorContext
 from src.schemas.underwriting_model import (
+    AnnualValueCreationResult,
     CaseVarianceResult,
     CovenantHeadroomResult,
-    DriverDistribution,
+    DistributionParameters,
+    DividendRecapSolveRequest,
+    DividendRecapSolveResult,
     DriverModelRequest,
     DriverModelResult,
     ExitReadinessResult,
+    FacilitySizingRequest,
+    FacilitySizingResult,
     FootballFieldResult,
+    FundDealSpec,
+    FundMonteCarloRequest,
+    FundMonteCarloResult,
     MonteCarloRequest,
     MonteCarloResult,
     OperatingPeriodAssumption,
@@ -41,6 +49,8 @@ from src.schemas.underwriting_model import (
     ReverseStressResult,
     SensitivityRequest,
     SensitivityResult,
+    SensitivityTornadoRequest,
+    SensitivityTornadoResult,
     UnderwritingAssumptions,
     UnderwritingCaseCreate,
     UnderwritingDecisionCreate,
@@ -503,8 +513,28 @@ def _covenant_results(
     return results, metrics
 
 
-def calculate_projection(assumptions: UnderwritingAssumptions) -> list[dict]:
+def calculate_projection(
+    assumptions: UnderwritingAssumptions,
+    special_distributions: dict[str, float] | None = None,
+) -> list[dict]:
+    """Project operations, debt service, and covenants period by period.
+
+    ``special_distributions`` (G70 seam) maps a period label to an equity distribution paid
+    through that period's cash waterfall: it reduces cash before debt service, so the committed
+    revolver may fund it and the period's covenants, liquidity, and every later period reflect
+    it. Unknown labels and negative amounts fail closed rather than being silently dropped.
+    """
     periods = _projection_periods(assumptions)
+    distributions = dict(special_distributions or {})
+    if distributions:
+        unknown = sorted(set(distributions) - {period.label for period in periods})
+        if unknown:
+            raise UnderwritingCalculationError(
+                "Special distribution periods are absent from the projection: "
+                + ", ".join(unknown)
+            )
+        if any(amount < 0 for amount in distributions.values()):
+            raise UnderwritingCalculationError("Special distributions cannot be negative")
     annualized_revenue = assumptions.historical.ltm_revenue
     beginning_nwc = assumptions.historical.starting_net_working_capital
     beginning_cash = assumptions.transaction.minimum_cash
@@ -551,7 +581,16 @@ def calculate_projection(assumptions: UnderwritingAssumptions) -> list[dict]:
         net_income = ebt - cash_taxes
         unlevered_cash_taxes = max(0.0, ebit) * drivers["cash_tax_rate"]
         fcff = ebit - unlevered_cash_taxes + da - capex - change_nwc
-        cash_before_debt = beginning_cash + ebitda - cash_taxes - capex - change_nwc - cash_interest
+        special_distribution = distributions.get(period.label, 0.0)
+        cash_before_debt = (
+            beginning_cash
+            + ebitda
+            - cash_taxes
+            - capex
+            - change_nwc
+            - cash_interest
+            - special_distribution
+        )
         ending_cash, draw, paid_amort, sweep, liquidity_shortfall = _apply_debt_service(
             assumptions, debt_rows, cash_before_debt
         )
@@ -617,6 +656,7 @@ def calculate_projection(assumptions: UnderwritingAssumptions) -> list[dict]:
                 "revolver_draw": _money(draw),
                 "mandatory_amortization": _money(paid_amort),
                 "cash_sweep": _money(sweep),
+                "special_distribution": _money(special_distribution),
                 "ending_cash": _money(ending_cash),
                 "liquidity_shortfall": _money(liquidity_shortfall),
                 "total_debt": _money(total_debt),
@@ -1019,7 +1059,7 @@ def calculate_reverse_stress(payload: ReverseStressRequest) -> ReverseStressResu
 _MONTE_CARLO_PERCENTILES = (5.0, 25.0, 50.0, 75.0, 95.0)
 
 
-def _sample_driver(rng: random.Random, distribution: DriverDistribution) -> float:
+def _sample_driver(rng: random.Random, distribution: DistributionParameters) -> float:
     if distribution.kind == "normal":
         return rng.gauss(distribution.mean, distribution.std_dev)
     if distribution.kind == "uniform":
@@ -1867,6 +1907,894 @@ def calculate_recap_boltons(request: RecapBoltOnRequest) -> RecapBoltOnResult:
             "leverage_delta": _delta(adjusted_leverage, base_leverage),
             "sources_uses_balanced": all_balanced,
             "generated_at": now_utc(),
+        }
+    )
+
+
+# --- G69 One-way sensitivity tornado ----------------------------------------------------------
+#
+# Shift conventions per variable (documented on the request schema as well):
+#   entry_multiple / exit_multiple  -> "relative": low/high = base x (1 -/+ relative_shift)
+#   *_shift variables               -> "absolute": low/high = -/+ absolute_shift around a base
+#                                      of zero, where a relative shift is meaningless.
+
+_TORNADO_VARIABLES: tuple[str, ...] = (
+    "entry_multiple",
+    "exit_multiple",
+    "base_rate_shift",
+    "revenue_growth_shift",
+    "ebitda_margin_shift",
+)
+_TORNADO_CONVENTIONS: dict[str, str] = {
+    "entry_multiple": "relative",
+    "exit_multiple": "relative",
+    "base_rate_shift": "absolute",
+    "revenue_growth_shift": "absolute",
+    "ebitda_margin_shift": "absolute",
+}
+
+
+def _returns_metric_with_wipeout(returns: dict, metric: str) -> float | None:
+    """IRR or MoIC from a returns dict, applying the G21 wipeout discipline.
+
+    When sponsor exit proceeds are <= 0 no IRR solves, but the outcome is a total loss: it reads
+    as -100%, never as a silently missing value.
+    """
+    irr, moic = returns["xirr"], returns["moic"]
+    if irr is None and moic is not None and returns["sponsor_exit_proceeds"] <= 0:
+        irr = -1.0
+    return irr if metric == "irr" else moic
+
+
+def _tornado_point(
+    assumptions: UnderwritingAssumptions, variable: str, value: float, metric: str
+) -> tuple[float | None, str | None]:
+    """Evaluate one tornado extreme; returns (metric value, failure reason)."""
+    try:
+        scenario = _apply_variable(assumptions, variable, value)
+        sources_uses = calculate_sources_uses(scenario)
+        projection = calculate_projection(scenario)
+        returns = calculate_returns(scenario, sources_uses, projection)
+    except UnderwritingCalculationError as exc:
+        return None, str(exc)
+    result = _returns_metric_with_wipeout(returns, metric)
+    if result is None:
+        return None, f"{metric} did not converge at {variable}={value:g}"
+    return result, None
+
+
+def calculate_sensitivity_tornado(payload: SensitivityTornadoRequest) -> SensitivityTornadoResult:
+    """Rank every sensitivity driver's one-way impact on IRR/MoIC around the base case.
+
+    Rows are ranked by max(|delta_low|, |delta_high|) descending. An extreme whose evaluation
+    raises ``UnderwritingCalculationError`` (or whose metric does not converge) makes the row
+    ``evaluable=False`` with the named reason — rows are NEVER dropped silently. Inevaluable rows
+    sort after every evaluable row, in vocabulary order.
+    """
+    assumptions = payload.assumptions
+    base_sources_uses = calculate_sources_uses(assumptions)
+    base_projection = calculate_projection(assumptions)
+    base_returns = calculate_returns(assumptions, base_sources_uses, base_projection)
+    base_metric = _returns_metric_with_wipeout(base_returns, payload.metric)
+    if base_metric is None:
+        raise UnderwritingCalculationError(
+            f"The base case does not produce a convergent {payload.metric}"
+        )
+
+    variables = payload.variables or list(_TORNADO_VARIABLES)
+    rows: list[dict] = []
+    for variable in variables:
+        convention = _TORNADO_CONVENTIONS[variable]
+        if convention == "relative":
+            base_value = getattr(assumptions.transaction, variable)
+            low_value = base_value * (1.0 - payload.relative_shift)
+            high_value = base_value * (1.0 + payload.relative_shift)
+        else:
+            base_value = 0.0
+            low_value = -payload.absolute_shift
+            high_value = payload.absolute_shift
+        metric_low, low_reason = _tornado_point(assumptions, variable, low_value, payload.metric)
+        metric_high, high_reason = _tornado_point(assumptions, variable, high_value, payload.metric)
+        delta_low = _ratio(metric_low - base_metric) if metric_low is not None else None
+        delta_high = _ratio(metric_high - base_metric) if metric_high is not None else None
+        evaluable = low_reason is None and high_reason is None
+        reasons = [
+            f"{side} extreme ({value:g}): {reason}"
+            for side, value, reason in (
+                ("low", low_value, low_reason),
+                ("high", high_value, high_reason),
+            )
+            if reason is not None
+        ]
+        rows.append(
+            {
+                "variable": variable,
+                "convention": convention,
+                "base_value": _ratio(base_value),
+                "low_value": _ratio(low_value),
+                "high_value": _ratio(high_value),
+                "metric_low": metric_low,
+                "metric_high": metric_high,
+                "delta_low": delta_low,
+                "delta_high": delta_high,
+                "max_abs_delta": (
+                    _ratio(max(abs(delta_low), abs(delta_high))) if evaluable else None
+                ),
+                "evaluable": evaluable,
+                "reason": "; ".join(reasons) if reasons else None,
+            }
+        )
+
+    order = {variable: index for index, variable in enumerate(variables)}
+    ranked = sorted(
+        rows,
+        key=lambda row: (
+            (0, -row["max_abs_delta"], order[row["variable"]])
+            if row["evaluable"]
+            else (1, 0.0, order[row["variable"]])
+        ),
+    )
+    return SensitivityTornadoResult.model_validate(
+        {
+            "metric": payload.metric,
+            "base_metric": base_metric,
+            "relative_shift": payload.relative_shift,
+            "absolute_shift": payload.absolute_shift,
+            "rows": ranked,
+        }
+    )
+
+
+# --- G70 Dividend recap solver ----------------------------------------------------------------
+
+_RECAP_CONSTRAINT_ORDER: tuple[str, ...] = (
+    "max_total_leverage",
+    "min_interest_coverage",
+    "min_fixed_charge_coverage",
+    "min_liquidity",
+)
+
+
+def _recap_constraint_statuses(payload: DividendRecapSolveRequest, rows: list[dict]) -> list[dict]:
+    """Evaluate the requested constraints over the affected projection rows.
+
+    Coverage constraints treat a period with no cash interest / fixed charges as trivially
+    satisfied (there is nothing to cover — the exit-readiness debt-free discipline). A period
+    where total leverage is UNDEFINED (non-positive EBITDA) fails the leverage constraint
+    closed: compliance that cannot be computed is never presumed.
+    """
+    statuses: list[dict] = []
+
+    def status(name, threshold, actual, binding_period, headroom, satisfied, note=None):
+        statuses.append(
+            {
+                "name": name,
+                "threshold": _ratio(threshold),
+                "actual": _ratio(actual) if actual is not None else None,
+                "binding_period": binding_period,
+                "headroom": _ratio(headroom) if headroom is not None else None,
+                "satisfied": satisfied,
+                "note": note,
+            }
+        )
+
+    if payload.max_total_leverage is not None:
+        threshold = payload.max_total_leverage
+        worst = worst_period = missing = None
+        for row in rows:
+            value = row["total_leverage"]
+            if value is None:
+                if missing is None:
+                    missing = row["label"]
+            elif worst is None or value > worst:
+                worst, worst_period = value, row["label"]
+        if missing is not None:
+            status(
+                "max_total_leverage", threshold, worst, missing, None, False,
+                f"total leverage is undefined in {missing} (non-positive EBITDA); "
+                "compliance cannot be verified",
+            )
+        else:
+            status(
+                "max_total_leverage", threshold, worst, worst_period,
+                threshold - worst, worst <= threshold + _EPSILON,
+            )
+
+    for name, key, charge in (
+        ("min_interest_coverage", "interest_coverage", "cash interest"),
+        ("min_fixed_charge_coverage", "fixed_charge_coverage", "fixed charges"),
+    ):
+        threshold = getattr(payload, name)
+        if threshold is None:
+            continue
+        worst = worst_period = None
+        for row in rows:
+            value = row[key]
+            if value is not None and (worst is None or value < worst):
+                worst, worst_period = value, row["label"]
+        if worst is None:
+            status(
+                name, threshold, None, None, None, True,
+                f"no {charge} in any evaluated period; coverage is trivially satisfied",
+            )
+        else:
+            status(
+                name, threshold, worst, worst_period,
+                worst - threshold, worst + _EPSILON >= threshold,
+            )
+
+    if payload.min_liquidity is not None:
+        threshold = payload.min_liquidity
+        worst = worst_period = None
+        for row in rows:
+            value = row["liquidity"]
+            if worst is None or value < worst:
+                worst, worst_period = value, row["label"]
+        status(
+            "min_liquidity", threshold, worst, worst_period,
+            worst - threshold, worst + _EPSILON >= threshold,
+        )
+    return statuses
+
+
+def solve_dividend_recap(payload: DividendRecapSolveRequest) -> DividendRecapSolveResult:
+    """Maximum special distribution at the end of ``payload.period``, solved by bisection.
+
+    The distribution flows through the period's cash waterfall via the ``special_distributions``
+    seam (the committed revolver may fund it), and constraints are evaluated at the distribution
+    period and every LATER period. Outcomes:
+
+    - ``solved``: ``binding_constraint`` is the constraint violated just beyond the maximum (the
+      limit that becomes tight); ``constraints`` reports every constraint AT the maximum.
+    - ``infeasible``: a constraint is violated with zero distribution — it is named.
+    - ``unbounded``: no constraint tightens up to a probed bound far beyond the enterprise value
+      (e.g. leverage-only constraints once the revolver is exhausted) — reported explicitly,
+      never returned as a fabricated large number.
+    """
+    assumptions = payload.assumptions
+    sources_uses = calculate_sources_uses(assumptions)
+    base_projection = calculate_projection(assumptions)
+    labels = [row["label"] for row in base_projection]
+    if payload.period not in labels:
+        raise UnderwritingCalculationError(
+            f"Distribution period '{payload.period}' is not a projection period"
+        )
+    start_index = labels.index(payload.period)
+
+    def evaluate(amount: float) -> tuple[list[dict], bool]:
+        projection = (
+            base_projection
+            if amount == 0.0
+            else calculate_projection(
+                assumptions, special_distributions={payload.period: amount}
+            )
+        )
+        statuses = _recap_constraint_statuses(payload, projection[start_index:])
+        return statuses, all(item["satisfied"] for item in statuses)
+
+    def result(**overrides) -> DividendRecapSolveResult:
+        base = {
+            "period": payload.period,
+            "max_distribution": None,
+            "sponsor_share": None,
+            "binding_constraint": None,
+            "iterations": 0,
+            "note": None,
+        }
+        base.update(overrides)
+        return DividendRecapSolveResult.model_validate(base)
+
+    zero_statuses, zero_feasible = evaluate(0.0)
+    if not zero_feasible:
+        violated = next(item for item in zero_statuses if not item["satisfied"])
+        return result(
+            status="infeasible",
+            binding_constraint=violated["name"],
+            constraints=zero_statuses,
+            note=(
+                f"Constraint {violated['name']} is already violated with no distribution; "
+                "no recap is possible"
+            ),
+        )
+
+    upper = max(payload.tolerance * 10.0, sources_uses["entry_enterprise_value"])
+    upper_statuses, upper_feasible = evaluate(upper)
+    doublings = 0
+    while upper_feasible and doublings < 40:
+        upper *= 2.0
+        doublings += 1
+        upper_statuses, upper_feasible = evaluate(upper)
+    if upper_feasible:
+        return result(
+            status="unbounded",
+            constraints=upper_statuses,
+            note=(
+                "No requested constraint becomes binding for distributions up to "
+                f"{_money(upper)}; the maximum is unbounded under these constraints"
+            ),
+        )
+
+    low, low_statuses = 0.0, zero_statuses
+    high, high_statuses = upper, upper_statuses
+    iterations = 0
+    for iteration in range(1, payload.max_iterations + 1):
+        if high - low <= payload.tolerance:
+            break
+        midpoint = (low + high) / 2.0
+        statuses, feasible = evaluate(midpoint)
+        iterations = iteration
+        if feasible:
+            low, low_statuses = midpoint, statuses
+        else:
+            high, high_statuses = midpoint, statuses
+    binding = next(item["name"] for item in high_statuses if not item["satisfied"])
+    return result(
+        status="solved",
+        max_distribution=_money(low),
+        sponsor_share=_money(low * sources_uses["sponsor_ownership"]),
+        binding_constraint=binding,
+        constraints=low_statuses,
+        iterations=iterations,
+    )
+
+
+# --- G71 Working-capital facility sizing ------------------------------------------------------
+
+
+def _annual_groups(projection: list[dict]) -> list[list[dict]]:
+    """Group projection rows into consecutive 12-month hold years.
+
+    A trailing partial year (a hold that is not a whole number of years) is kept as a shorter
+    final group. A single period that straddles a 12-month boundary cannot be assigned to a
+    year and fails closed.
+    """
+    groups: list[list[dict]] = []
+    current: list[dict] = []
+    months = 0
+    for row in projection:
+        if months + row["months"] > 12:
+            raise UnderwritingCalculationError(
+                f"Projection period '{row['label']}' straddles a 12-month year boundary; "
+                "annual analyses require year-aligned periods"
+            )
+        current.append(row)
+        months += row["months"]
+        if months == 12:
+            groups.append(current)
+            current, months = [], 0
+    if current:
+        groups.append(current)
+    return groups
+
+
+def calculate_facility_sizing(payload: FacilitySizingRequest) -> FacilitySizingResult:
+    """Size the revolver against peak intra-year working-capital needs per projection year.
+
+    The G25 seasonality model supplies the monthly shape; each projection year's month-m working
+    capital is the seasonal peg SCALED PROPORTIONALLY to that year's modeled annual level
+    (``peg_m x annual_nwc / seasonal_annual_average``). The peak draw is the excess of the peak
+    month over the annual level already funded by the projection; headroom nets the revolver
+    balance the annual model has already drawn. Negative headroom = the facility is undersized.
+
+    No monthly observations -> explicit ``unavailable`` (a flat profile is never fabricated).
+    A year whose annual working capital is not positive cannot be proportionally scaled and is
+    reported ``evaluable=False`` with the reason, never imputed.
+    """
+    assumptions = payload.assumptions
+    modeled_commitment = sum(
+        tranche.commitment or 0.0
+        for tranche in assumptions.debt_tranches
+        if tranche.tranche_type == "revolver"
+    )
+    override = payload.commitment_override
+    commitment = modeled_commitment if override is None else override
+    commitment_source = "modeled_revolvers" if override is None else "override"
+
+    if not payload.monthly_working_capital:
+        return FacilitySizingResult.model_validate(
+            {
+                "status": "unavailable",
+                "reason": (
+                    "No monthly working-capital observations were provided; intra-year "
+                    "facility needs cannot be sized from a fabricated flat profile"
+                ),
+                "seasonality_missing_months": list(range(1, 13)),
+                "seasonal_annual_average": None,
+                "seasonal_peak_month": None,
+                "commitment": _money(commitment),
+                "commitment_source": commitment_source,
+                "years": [],
+                "peak_year_label": None,
+                "peak_draw": None,
+            }
+        )
+
+    seasonality = calculate_working_capital_seasonality(
+        WorkingCapitalSeasonalityRequest(monthly_working_capital=payload.monthly_working_capital)
+    )
+    average = seasonality.annual_average
+    if average <= 0:
+        raise UnderwritingCalculationError(
+            "The seasonal annual average must be positive to scale the monthly profile onto "
+            "projected working capital"
+        )
+    peak_peg = max(entry.peg for entry in seasonality.monthly_pegs)
+    projection = calculate_projection(assumptions)
+    revolver_names = {
+        tranche.name
+        for tranche in assumptions.debt_tranches
+        if tranche.tranche_type == "revolver"
+    }
+
+    years: list[dict] = []
+    for index, group in enumerate(_annual_groups(projection)):
+        last = group[-1]
+        annual_nwc = last["net_working_capital"]
+        existing_draw = _money(
+            sum(
+                row["ending_balance"]
+                for row in last["debt_tranches"]
+                if row["name"] in revolver_names
+            )
+        )
+        year = {
+            "year_label": f"Y{index + 1}",
+            "period_label": last["label"],
+            "months": sum(row["months"] for row in group),
+            "annual_nwc": annual_nwc,
+            "evaluable": True,
+            "reason": None,
+            "peak_month": None,
+            "peak_monthly_nwc": None,
+            "peak_draw": None,
+            "existing_revolver_draw": existing_draw,
+            "commitment": _money(commitment),
+            "headroom": None,
+        }
+        if annual_nwc <= 0:
+            year["evaluable"] = False
+            year["reason"] = (
+                "annual net working capital is not positive; the seasonal profile cannot be "
+                "proportionally scaled"
+            )
+        else:
+            raw_peak = peak_peg * annual_nwc / average
+            peak_draw = _money(max(0.0, raw_peak - annual_nwc))
+            year["peak_month"] = seasonality.peak_month
+            year["peak_monthly_nwc"] = _money(raw_peak)
+            year["peak_draw"] = peak_draw
+            year["headroom"] = _money(commitment - existing_draw - peak_draw)
+        years.append(year)
+
+    evaluable = [year for year in years if year["evaluable"]]
+    peak_year = max(evaluable, key=lambda year: year["peak_draw"]) if evaluable else None
+    return FacilitySizingResult.model_validate(
+        {
+            "status": seasonality.status,
+            "reason": None,
+            "seasonality_missing_months": seasonality.missing_months,
+            "seasonal_annual_average": seasonality.annual_average,
+            "seasonal_peak_month": seasonality.peak_month,
+            "commitment": _money(commitment),
+            "commitment_source": commitment_source,
+            "years": years,
+            "peak_year_label": peak_year["year_label"] if peak_year else None,
+            "peak_draw": peak_year["peak_draw"] if peak_year else None,
+        }
+    )
+
+
+# --- G72 Fund-level Monte Carlo ---------------------------------------------------------------
+#
+# Factor-to-driver mapping: each macro factor draw, scaled by the deal's loading, is applied
+# through the SAME ``_apply_variable`` vocabulary the sensitivity/MC machinery uses:
+#   rate_shift     -> base_rate_shift        (additive)
+#   growth_shift   -> revenue_growth_shift   (additive)
+#   multiple_shift -> exit_multiple          (additive turns on the deal's exit multiple)
+
+_FUND_FACTOR_VARIABLES: dict[str, str] = {
+    "rate_shift": "base_rate_shift",
+    "growth_shift": "revenue_growth_shift",
+    "multiple_shift": "exit_multiple",
+}
+
+
+def _resolve_fund_deals(
+    session: Session, payload: FundMonteCarloRequest
+) -> tuple[list[FundDealSpec], list[dict]]:
+    """Resolve a saved fund construction into simulation deals (G29 sizing discipline).
+
+    A deal enters the simulation only when its sizing case (base-case preference) carries both
+    committed sponsor equity and a valid set of underwriting assumptions; everything else is
+    EXCLUDED with a named reason, never imputed.
+    """
+    from src.models.deal_workflow import Fund
+    from src.models.underwriting_model import UnderwritingCaseVersion
+    from src.services import portfolio_service
+
+    fund = session.get(Fund, payload.fund_id)
+    if fund is None:
+        raise NotFound(f"Fund '{payload.fund_id}' not found")
+    deals = sorted(
+        session.scalars(select(Deal).where(Deal.fund_id == fund.id)),
+        key=lambda deal: deal.code,
+    )
+    workspace_ids = [deal.workspace_id for deal in deals if deal.workspace_id]
+    cases_by_workspace: dict[str, list] = {}
+    if workspace_ids:
+        for case in session.scalars(
+            select(UnderwritingCaseVersion).where(
+                UnderwritingCaseVersion.workspace_id.in_(workspace_ids)
+            )
+        ):
+            cases_by_workspace.setdefault(case.workspace_id, []).append(case)
+
+    resolved: list[FundDealSpec] = []
+    excluded: list[dict] = []
+    for deal in deals:
+        case = portfolio_service._pick_sizing_case(
+            cases_by_workspace.get(deal.workspace_id or "", [])
+        )
+        if case is None:
+            excluded.append({"code": deal.code, "reason": "no underwriting case"})
+            continue
+        committed = portfolio_service._committed_capital(case)
+        if committed is None or committed <= 0:
+            excluded.append(
+                {"code": deal.code, "reason": "case carries no committed sponsor equity"}
+            )
+            continue
+        try:
+            assumptions = UnderwritingAssumptions.model_validate(case.assumptions)
+        except ValidationError:
+            excluded.append(
+                {"code": deal.code, "reason": "case assumptions are not a valid underwriting model"}
+            )
+            continue
+        resolved.append(
+            FundDealSpec(
+                name=deal.code,
+                assumptions=assumptions,
+                commitment=committed,
+                loadings=dict(payload.fund_deal_loadings),
+            )
+        )
+    if not resolved:
+        raise UnderwritingCalculationError(
+            f"Fund '{fund.name}' has no deals with usable underwriting cases"
+        )
+    return resolved, excluded
+
+
+def run_fund_monte_carlo(
+    payload: FundMonteCarloRequest, session: Session | None = None
+) -> FundMonteCarloResult:
+    """Simulate the fund: shared macro factor draws plus per-deal idiosyncratic draws.
+
+    One seeded ``random.Random`` materializes EVERY draw up front (per iteration: factors in
+    request order, then each deal's idiosyncratic draws in order), so the correlated run and the
+    zero-loadings independent re-run consume byte-identical randomness — the reported
+    ``correlation_effect`` isolates the loadings, not sampling noise.
+
+    Per iteration the fund outcome is the commitment-weighted MoIC and the pooled XIRR of every
+    deal's dated sponsor cash flows (scaled by ``commitment / sponsor_equity``). G21 wipeout
+    discipline applies at both levels: a wiped-out deal enters with its computed MoIC and -100%
+    IRR, and a fund whose pooled inflows are non-positive reads as a -100% total loss. An
+    iteration where any deal's assumptions become invalid, or any metric fails to converge, is
+    counted ``failed`` for the whole fund so the sample stays coherent across deals.
+    """
+    if payload.fund_id is not None:
+        if session is None:  # pragma: no cover - the router always passes a session
+            raise UnderwritingCalculationError(
+                "A database session is required to resolve a fund's deals"
+            )
+        deals, excluded = _resolve_fund_deals(session, payload)
+        source = "fund_construction"
+    else:
+        deals, excluded, source = list(payload.deals), [], "request"
+
+    commitments: list[float] = []
+    invested_base: list[float] = []
+    scales: list[float] = []
+    for deal in deals:
+        try:
+            invested = calculate_sources_uses(deal.assumptions)["sponsor_equity"]
+        except UnderwritingCalculationError as exc:
+            raise UnderwritingCalculationError(f"Deal '{deal.name}': {exc}") from exc
+        if invested <= 0:
+            raise UnderwritingCalculationError(
+                f"Deal '{deal.name}' has no positive sponsor equity to scale fund cash flows"
+            )
+        commitment = deal.commitment if deal.commitment is not None else invested
+        commitments.append(commitment)
+        invested_base.append(invested)
+        scales.append(commitment / invested)
+    total_commitment = sum(commitments)
+
+    rng = random.Random(payload.seed)
+    factor_samples: dict[str, list[float]] = {factor.name: [] for factor in payload.factors}
+    draw_plan: list[tuple[dict[str, float], list[list[tuple[str, float]]]]] = []
+    for _ in range(payload.iterations):
+        factor_draws: dict[str, float] = {}
+        for factor in payload.factors:
+            value = _sample_driver(rng, factor)
+            factor_draws[factor.name] = value
+            factor_samples[factor.name].append(value)
+        idiosyncratic = [
+            [
+                (distribution.driver, _sample_driver(rng, distribution))
+                for distribution in deal.distributions
+            ]
+            for deal in deals
+        ]
+        draw_plan.append((factor_draws, idiosyncratic))
+
+    def simulate(apply_loadings: bool) -> dict:
+        fund_irr_values: list[float] = []
+        fund_moic_values: list[float] = []
+        deal_irr_values: list[list[float]] = [[] for _ in deals]
+        deal_moic_values: list[list[float]] = [[] for _ in deals]
+        failed = 0
+        for factor_draws, idiosyncratic in draw_plan:
+            pooled_flows: list[tuple[date, float]] = []
+            weighted_moic = 0.0
+            per_deal: list[tuple[float, float]] = []
+            iteration_ok = True
+            try:
+                for index, deal in enumerate(deals):
+                    scenario = deal.assumptions
+                    for driver, value in idiosyncratic[index]:
+                        scenario = _apply_variable(scenario, driver, value)
+                    if apply_loadings:
+                        for factor_name, draw in factor_draws.items():
+                            shift = deal.loadings.get(factor_name, 1.0) * draw
+                            if shift == 0.0:
+                                continue
+                            variable = _FUND_FACTOR_VARIABLES[factor_name]
+                            if variable in {"entry_multiple", "exit_multiple"}:
+                                scenario = _apply_variable(
+                                    scenario,
+                                    variable,
+                                    getattr(scenario.transaction, variable) + shift,
+                                )
+                            else:
+                                scenario = _apply_variable(scenario, variable, shift)
+                    sources_uses = calculate_sources_uses(scenario)
+                    projection = calculate_projection(scenario)
+                    returns = calculate_returns(scenario, sources_uses, projection)
+                    irr = _returns_metric_with_wipeout(returns, "irr")
+                    moic = returns["moic"]
+                    if irr is None or moic is None:
+                        iteration_ok = False
+                        break
+                    per_deal.append((irr, moic))
+                    weighted_moic += commitments[index] * moic
+                    pooled_flows.append(
+                        (
+                            scenario.transaction.close_date,
+                            -returns["sponsor_invested_capital"] * scales[index],
+                        )
+                    )
+                    pooled_flows.append(
+                        (
+                            projection[-1]["end_date"],
+                            returns["sponsor_exit_proceeds"] * scales[index],
+                        )
+                    )
+            except UnderwritingCalculationError:
+                iteration_ok = False
+            if not iteration_ok:
+                failed += 1
+                continue
+            fund_moic = weighted_moic / total_commitment
+            fund_irr = xirr(pooled_flows)
+            if fund_irr is None:
+                if sum(amount for _, amount in pooled_flows if amount > 0) <= 0:
+                    fund_irr = -1.0  # fund-level wipeout: a total loss, not a failed iteration
+                else:
+                    failed += 1
+                    continue
+            fund_irr_values.append(fund_irr)
+            fund_moic_values.append(fund_moic)
+            for index, (irr, moic) in enumerate(per_deal):
+                deal_irr_values[index].append(irr)
+                deal_moic_values[index].append(moic)
+        if not fund_irr_values:
+            raise UnderwritingCalculationError(
+                "No fund Monte Carlo iteration produced a converged fund IRR and MoIC"
+                + ("" if apply_loadings else " in the independent (zero-loadings) re-run")
+            )
+        converged = len(fund_irr_values)
+        return {
+            "converged": converged,
+            "failed": failed,
+            "fund_irr": _metric_band(fund_irr_values),
+            "fund_moic": _metric_band(fund_moic_values),
+            "probability_fund_moic_below_1": _ratio(
+                sum(1 for value in fund_moic_values if value < 1.0) / converged
+            ),
+            "deal_irr": deal_irr_values,
+            "deal_moic": deal_moic_values,
+        }
+
+    correlated = simulate(apply_loadings=True)
+    independent = simulate(apply_loadings=False)
+
+    deals_out = [
+        {
+            "name": deal.name,
+            "commitment": _money(commitments[index]),
+            "base_invested": _money(invested_base[index]),
+            "irr": _metric_band(correlated["deal_irr"][index]),
+            "moic": _metric_band(correlated["deal_moic"][index]),
+            "probability_moic_below_1": _ratio(
+                sum(1 for value in correlated["deal_moic"][index] if value < 1.0)
+                / len(correlated["deal_moic"][index])
+            ),
+        }
+        for index, deal in enumerate(deals)
+    ]
+    return FundMonteCarloResult.model_validate(
+        {
+            "iterations": payload.iterations,
+            "seed": payload.seed,
+            "converged": correlated["converged"],
+            "failed": correlated["failed"],
+            "source": source,
+            "fund_id": payload.fund_id,
+            "excluded_deals": excluded,
+            "total_commitment": _money(total_commitment),
+            "fund_irr": correlated["fund_irr"],
+            "fund_moic": correlated["fund_moic"],
+            "probability_fund_moic_below_1": correlated["probability_fund_moic_below_1"],
+            "deals": deals_out,
+            "factor_summaries": [
+                {
+                    "name": factor.name,
+                    "kind": factor.kind,
+                    "sampled_mean": _ratio(statistics.fmean(factor_samples[factor.name])),
+                    "sampled_min": _ratio(min(factor_samples[factor.name])),
+                    "sampled_max": _ratio(max(factor_samples[factor.name])),
+                }
+                for factor in payload.factors
+            ],
+            "correlation_effect": {
+                "independent_converged": independent["converged"],
+                "independent_failed": independent["failed"],
+                "independent_irr": independent["fund_irr"],
+                "independent_moic": independent["fund_moic"],
+                "independent_probability_fund_moic_below_1": independent[
+                    "probability_fund_moic_below_1"
+                ],
+                "irr_p5_spread": _ratio(
+                    correlated["fund_irr"]["p5"] - independent["fund_irr"]["p5"]
+                ),
+                "irr_p95_spread": _ratio(
+                    correlated["fund_irr"]["p95"] - independent["fund_irr"]["p95"]
+                ),
+                "moic_p5_spread": _ratio(
+                    correlated["fund_moic"]["p5"] - independent["fund_moic"]["p5"]
+                ),
+                "moic_p95_spread": _ratio(
+                    correlated["fund_moic"]["p95"] - independent["fund_moic"]["p95"]
+                ),
+                "note": (
+                    "Same seed and draws with every loading zeroed. Negative p5 spreads and "
+                    "positive p95 spreads show the shared macro factors widening the fund "
+                    "outcome distribution versus independent deals."
+                ),
+            },
+        }
+    )
+
+
+# --- G73 Year-by-year value-creation waterfall ------------------------------------------------
+
+
+def calculate_annual_value_creation(assumptions: UnderwritingAssumptions) -> AnnualValueCreationResult:
+    """Decompose the G22 bridge per hold year with Decimal-exact reconciliation.
+
+    Conventions (matching G22's exact-reconciliation discipline):
+
+    - The valuation multiple stays at ENTRY for every interim year end; the multiple change is
+      allocated ENTIRELY to the final year (an interim equity value is a mark, not a sale — the
+      exit multiple is only real at exit).
+    - The final-year ``multiple_change`` leg IS G22's leg — (exit - entry) x ENTRY EBITDA — so
+      the multiple column sums exactly to the total bridge's component.
+    - ``ebitda_growth`` is the year's EBITDA change at the entry multiple; ``deleveraging`` is
+      the year's net-debt change; ``cross_term`` is the exact residual per year, so each year's
+      legs sum EXACTLY to that year's equity-value change and (by telescoping) the years sum
+      EXACTLY to the G22 total. For interim years the residual is zero apart from sub-cent leg
+      rounding; the final-year residual carries the multiple x EBITDA interaction.
+    """
+    projection = calculate_projection(assumptions)
+    groups = _annual_groups(projection)
+    attribution = calculate_returns_attribution(ReturnsAttributionRequest(assumptions=assumptions))
+
+    cent = Decimal("0.01")
+    entry_multiple = Decimal(str(assumptions.transaction.entry_multiple))
+    exit_multiple = Decimal(str(assumptions.transaction.exit_multiple))
+    entry_ebitda = Decimal(str(assumptions.historical.ltm_ebitda))
+    entry_net_debt = sum(
+        (Decimal(str(tranche.initial_amount)) for tranche in assumptions.debt_tranches),
+        Decimal("0"),
+    ) - Decimal(str(assumptions.transaction.minimum_cash))
+    entry_equity = (entry_multiple * entry_ebitda - entry_net_debt).quantize(cent)
+
+    previous_ebitda = entry_ebitda
+    previous_net_debt = entry_net_debt
+    previous_equity = entry_equity
+    totals: dict[str, Decimal] = {
+        "ebitda_growth": Decimal("0"),
+        "multiple_change": Decimal("0"),
+        "deleveraging": Decimal("0"),
+        "cross_term": Decimal("0"),
+    }
+    years: list[dict] = []
+    for index, group in enumerate(groups):
+        last = group[-1]
+        is_final = index == len(groups) - 1
+        applied_multiple = exit_multiple if is_final else entry_multiple
+        year_ebitda = Decimal(str(_money(last["ebitda"] / last["year_fraction"])))
+        year_net_debt = Decimal(str(last["total_debt"])) - Decimal(str(last["ending_cash"]))
+        equity_value = (applied_multiple * year_ebitda - year_net_debt).quantize(cent)
+        equity_change = equity_value - previous_equity
+
+        ebitda_growth = (entry_multiple * (year_ebitda - previous_ebitda)).quantize(cent)
+        multiple_change = (
+            ((exit_multiple - entry_multiple) * entry_ebitda).quantize(cent)
+            if is_final
+            else Decimal("0.00")
+        )
+        deleveraging = (previous_net_debt - year_net_debt).quantize(cent)
+        cross_term = equity_change - ebitda_growth - multiple_change - deleveraging
+
+        totals["ebitda_growth"] += ebitda_growth
+        totals["multiple_change"] += multiple_change
+        totals["deleveraging"] += deleveraging
+        totals["cross_term"] += cross_term
+        years.append(
+            {
+                "year_label": f"Y{index + 1}",
+                "period_label": last["label"],
+                "end_date": last["end_date"],
+                "months": sum(row["months"] for row in group),
+                "applied_multiple": _ratio(float(applied_multiple)),
+                "ebitda": float(year_ebitda),
+                "net_debt": float(year_net_debt.quantize(cent)),
+                "equity_value": float(equity_value),
+                "equity_change": float(equity_change),
+                "ebitda_growth": float(ebitda_growth),
+                "multiple_change": float(multiple_change),
+                "deleveraging": float(deleveraging),
+                "cross_term": float(cross_term),
+                "reconciles": ebitda_growth + multiple_change + deleveraging + cross_term
+                == equity_change,
+            }
+        )
+        previous_ebitda = year_ebitda
+        previous_net_debt = year_net_debt
+        previous_equity = equity_value
+
+    exit_equity = previous_equity
+    total = exit_equity - entry_equity
+    reconciles = (
+        sum(totals.values(), Decimal("0")) == total
+        and all(year["reconciles"] for year in years)
+    )
+    return AnnualValueCreationResult.model_validate(
+        {
+            "entry_multiple": _ratio(float(entry_multiple)),
+            "exit_multiple": _ratio(float(exit_multiple)),
+            "entry_ebitda": float(entry_ebitda),
+            "entry_net_debt": float(entry_net_debt.quantize(cent)),
+            "entry_equity": float(entry_equity),
+            "exit_equity": float(exit_equity),
+            "total_value_creation": float(total),
+            "years": years,
+            "totals": {key: float(value) for key, value in totals.items()},
+            "matches_attribution_total": Decimal(str(attribution.total_value_creation)) == total,
+            "reconciles": reconciles,
         }
     )
 

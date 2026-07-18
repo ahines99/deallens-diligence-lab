@@ -261,6 +261,10 @@ class ProjectionPeriodResult(BaseModel):
     revolver_draw: float
     mandatory_amortization: float
     cash_sweep: float
+    # G70 seam: an equity distribution paid through this period's cash waterfall. Always 0.0 in
+    # the base engine; populated only when a caller threads ``special_distributions`` through
+    # ``calculate_projection`` (the dividend-recap solver).
+    special_distribution: float = 0.0
     ending_cash: float
     liquidity_shortfall: float
     total_debt: float
@@ -534,17 +538,13 @@ class ValuationTriangulationResult(BaseModel):
 DistributionKind = Literal["normal", "uniform", "triangular"]
 
 
-class DriverDistribution(BaseModel):
-    """Sampling specification for one Monte Carlo driver.
+class DistributionParameters(BaseModel):
+    """Validated sampling parameters shared by Monte Carlo drivers and fund macro factors.
 
-    Drivers reuse the sensitivity variables: ``entry_multiple`` and ``exit_multiple`` are sampled
-    as absolute EV/EBITDA turns, while ``base_rate_shift``, ``revenue_growth_shift``, and
-    ``ebitda_margin_shift`` are sampled as additive shifts on the deterministic assumptions
-    (``0.01`` = +100 bps). ``normal`` requires ``mean``/``std_dev``; ``uniform`` requires
-    ``low``/``high``; ``triangular`` requires ``low``/``mode``/``high``.
+    ``normal`` requires ``mean``/``std_dev``; ``uniform`` requires ``low``/``high``;
+    ``triangular`` requires ``low``/``mode``/``high``.
     """
 
-    driver: SensitivityVariable
     kind: DistributionKind
     mean: float | None = None
     std_dev: float | None = Field(default=None, ge=0)
@@ -568,6 +568,18 @@ class DriverDistribution(BaseModel):
             if not self.low <= self.mode <= self.high:
                 raise ValueError("Triangular distributions require low <= mode <= high")
         return self
+
+
+class DriverDistribution(DistributionParameters):
+    """Sampling specification for one Monte Carlo driver.
+
+    Drivers reuse the sensitivity variables: ``entry_multiple`` and ``exit_multiple`` are sampled
+    as absolute EV/EBITDA turns, while ``base_rate_shift``, ``revenue_growth_shift``, and
+    ``ebitda_margin_shift`` are sampled as additive shifts on the deterministic assumptions
+    (``0.01`` = +100 bps).
+    """
+
+    driver: SensitivityVariable
 
 
 class MonteCarloRequest(BaseModel):
@@ -920,3 +932,330 @@ class RecapBoltOnResult(BaseModel):
     leverage_delta: float | None
     sources_uses_balanced: bool
     generated_at: datetime
+
+
+# --- G69 One-way sensitivity tornado ----------------------------------------------------------
+
+
+TornadoMetric = Literal["irr", "moic"]
+TornadoConvention = Literal["relative", "absolute"]
+
+
+class SensitivityTornadoRequest(BaseModel):
+    """One-way tornado over the sensitivity-variable vocabulary.
+
+    Shift conventions per variable (see ``_TORNADO_CONVENTIONS`` in the service):
+
+    - ``entry_multiple`` / ``exit_multiple`` are level variables, shifted RELATIVELY:
+      low/high = base multiple x (1 -/+ ``relative_shift``).
+    - ``base_rate_shift`` / ``revenue_growth_shift`` / ``ebitda_margin_shift`` are additive
+      shifts around a base of zero, where a relative shift of a zero base is meaningless; they
+      move ABSOLUTELY by -/+ ``absolute_shift`` (``0.01`` = 100 bps).
+    """
+
+    assumptions: UnderwritingAssumptions
+    metric: TornadoMetric = "irr"
+    relative_shift: float = Field(default=0.10, gt=0, le=0.9)
+    absolute_shift: float = Field(default=0.01, gt=0, le=0.5)
+    variables: list[SensitivityVariable] | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def unique_variables(self):
+        if self.variables is not None and len(self.variables) != len(set(self.variables)):
+            raise ValueError("Tornado variables must be unique")
+        return self
+
+
+class TornadoRow(BaseModel):
+    variable: SensitivityVariable
+    convention: TornadoConvention
+    base_value: float
+    low_value: float
+    high_value: float
+    metric_low: float | None
+    metric_high: float | None
+    delta_low: float | None
+    delta_high: float | None
+    max_abs_delta: float | None
+    evaluable: bool
+    reason: str | None
+
+
+class SensitivityTornadoResult(BaseModel):
+    metric: TornadoMetric
+    base_metric: float
+    relative_shift: float
+    absolute_shift: float
+    rows: list[TornadoRow]
+
+
+# --- G70 Dividend recap solver ----------------------------------------------------------------
+
+
+RecapConstraintName = Literal[
+    "max_total_leverage",
+    "min_interest_coverage",
+    "min_fixed_charge_coverage",
+    "min_liquidity",
+]
+
+
+class DividendRecapSolveRequest(BaseModel):
+    """Solve the maximum special distribution at the end of ``period`` by bisection.
+
+    The distribution flows through that period's cash waterfall (the committed revolver may fund
+    it), and every constraint is tested at the distribution period and every LATER period — the
+    horizon the distribution can affect; earlier periods are unchanged by construction. At least
+    one constraint is required.
+    """
+
+    assumptions: UnderwritingAssumptions
+    period: str = Field(min_length=1, max_length=40)
+    max_total_leverage: float | None = Field(default=None, gt=0)
+    min_interest_coverage: float | None = Field(default=None, gt=0)
+    min_fixed_charge_coverage: float | None = Field(default=None, gt=0)
+    min_liquidity: float | None = None
+    tolerance: float = Field(default=0.01, gt=0, le=1_000_000)
+    max_iterations: int = Field(default=80, ge=1, le=500)
+
+    @model_validator(mode="after")
+    def at_least_one_constraint(self):
+        if (
+            self.max_total_leverage is None
+            and self.min_interest_coverage is None
+            and self.min_fixed_charge_coverage is None
+            and self.min_liquidity is None
+        ):
+            raise ValueError("At least one recap constraint is required")
+        return self
+
+
+class RecapConstraintStatus(BaseModel):
+    name: RecapConstraintName
+    threshold: float
+    actual: float | None
+    binding_period: str | None
+    headroom: float | None
+    satisfied: bool
+    note: str | None
+
+
+class DividendRecapSolveResult(BaseModel):
+    status: Literal["solved", "infeasible", "unbounded"]
+    period: str
+    max_distribution: float | None
+    sponsor_share: float | None
+    binding_constraint: RecapConstraintName | None
+    constraints: list[RecapConstraintStatus]
+    iterations: int
+    note: str | None
+
+
+# --- G71 Working-capital facility sizing ------------------------------------------------------
+
+
+class FacilitySizingRequest(BaseModel):
+    """Size the revolver against intra-year working-capital seasonality (G25 model).
+
+    With no monthly observations the result is an explicit ``unavailable`` — a flat monthly
+    profile is never fabricated. ``commitment_override`` replaces the modeled revolver
+    commitments when provided.
+    """
+
+    assumptions: UnderwritingAssumptions
+    monthly_working_capital: list[MonthlyWorkingCapital] = Field(
+        default_factory=list, max_length=120
+    )
+    commitment_override: float | None = Field(default=None, ge=0)
+
+
+class FacilityYearSizing(BaseModel):
+    year_label: str
+    period_label: str
+    months: int
+    annual_nwc: float
+    evaluable: bool
+    reason: str | None
+    peak_month: int | None
+    peak_monthly_nwc: float | None
+    peak_draw: float | None
+    existing_revolver_draw: float | None
+    commitment: float
+    headroom: float | None
+
+
+class FacilitySizingResult(BaseModel):
+    status: Literal["complete", "partial", "unavailable"]
+    reason: str | None
+    seasonality_missing_months: list[int]
+    seasonal_annual_average: float | None
+    seasonal_peak_month: int | None
+    commitment: float
+    commitment_source: Literal["modeled_revolvers", "override"]
+    years: list[FacilityYearSizing]
+    peak_year_label: str | None
+    peak_draw: float | None
+
+
+# --- G72 Fund-level Monte Carlo ---------------------------------------------------------------
+
+
+FundFactorName = Literal["rate_shift", "growth_shift", "multiple_shift"]
+
+
+class FundFactorSpec(DistributionParameters):
+    """A macro factor sampled ONCE per iteration and shared by every deal.
+
+    Factor-to-driver mapping (applied via ``_apply_variable`` with the deal's loading):
+
+    - ``rate_shift``     -> ``base_rate_shift`` (additive rate shift, ``0.01`` = 100 bps)
+    - ``growth_shift``   -> ``revenue_growth_shift`` (additive growth shift)
+    - ``multiple_shift`` -> ``exit_multiple`` (additive EV/EBITDA turns added to the deal's
+      exit multiple)
+    """
+
+    name: FundFactorName
+
+
+class FundDealSpec(BaseModel):
+    """One deal in the fund simulation.
+
+    ``commitment`` defaults to the deal's own sponsor equity; when it differs, the deal's
+    sponsor cash flows are scaled by ``commitment / sponsor_equity`` in the pooled fund IRR.
+    ``loadings`` maps factor name -> sensitivity (default 1.0 for every requested factor; 0
+    decouples the deal from that factor). ``distributions`` are the deal's idiosyncratic draws,
+    sampled independently per deal per iteration with G21 semantics.
+    """
+
+    name: str = Field(min_length=1, max_length=120)
+    assumptions: UnderwritingAssumptions
+    commitment: float | None = Field(default=None, gt=0)
+    loadings: dict[FundFactorName, float] = Field(default_factory=dict)
+    distributions: list[DriverDistribution] = Field(default_factory=list, max_length=5)
+
+    @model_validator(mode="after")
+    def unique_idiosyncratic_drivers(self):
+        drivers = [distribution.driver for distribution in self.distributions]
+        if len(drivers) != len(set(drivers)):
+            raise ValueError("Each idiosyncratic driver may appear at most once per deal")
+        return self
+
+
+class FundMonteCarloRequest(BaseModel):
+    """Fund-level Monte Carlo over shared macro factor draws plus per-deal idiosyncratic draws.
+
+    Provide EITHER inline ``deals`` OR a ``fund_id`` whose saved fund-construction sizing cases
+    (base-case preference, committed sponsor equity — G29 discipline, never imputed) become the
+    deal set; ``fund_deal_loadings`` applies to every fund-resolved deal (default 1.0).
+    """
+
+    deals: list[FundDealSpec] = Field(default_factory=list, max_length=20)
+    fund_id: str | None = Field(default=None, max_length=64)
+    fund_deal_loadings: dict[FundFactorName, float] = Field(default_factory=dict)
+    iterations: int = Field(default=500, ge=100, le=2_000)
+    seed: int = 42
+    factors: list[FundFactorSpec] = Field(min_length=1, max_length=3)
+
+    @model_validator(mode="after")
+    def validate_sources_and_uniqueness(self):
+        if bool(self.deals) == (self.fund_id is not None):
+            raise ValueError("Provide exactly one of deals or fund_id")
+        names = [deal.name for deal in self.deals]
+        if len(names) != len(set(names)):
+            raise ValueError("Fund deal names must be unique")
+        factor_names = [factor.name for factor in self.factors]
+        if len(factor_names) != len(set(factor_names)):
+            raise ValueError("Each macro factor may appear at most once")
+        return self
+
+
+class ExcludedFundDeal(BaseModel):
+    code: str
+    reason: str
+
+
+class FundFactorSummary(BaseModel):
+    name: FundFactorName
+    kind: DistributionKind
+    sampled_mean: float
+    sampled_min: float
+    sampled_max: float
+
+
+class FundDealOutcome(BaseModel):
+    name: str
+    commitment: float
+    base_invested: float
+    irr: MetricPercentileBand
+    moic: MetricPercentileBand
+    probability_moic_below_1: float
+
+
+class FundCorrelationEffect(BaseModel):
+    """The SAME seed and draws re-run with every factor loading zeroed (independent deals).
+
+    Negative p5 spreads (correlated minus independent) and positive p95 spreads show the shared
+    macro factors widening the fund outcome distribution versus independent deals.
+    """
+
+    independent_converged: int
+    independent_failed: int
+    independent_irr: MetricPercentileBand
+    independent_moic: MetricPercentileBand
+    independent_probability_fund_moic_below_1: float
+    irr_p5_spread: float
+    irr_p95_spread: float
+    moic_p5_spread: float
+    moic_p95_spread: float
+    note: str
+
+
+class FundMonteCarloResult(BaseModel):
+    iterations: int
+    seed: int
+    converged: int
+    failed: int
+    source: Literal["request", "fund_construction"]
+    fund_id: str | None
+    excluded_deals: list[ExcludedFundDeal]
+    total_commitment: float
+    fund_irr: MetricPercentileBand
+    fund_moic: MetricPercentileBand
+    probability_fund_moic_below_1: float
+    deals: list[FundDealOutcome]
+    factor_summaries: list[FundFactorSummary]
+    correlation_effect: FundCorrelationEffect
+
+
+# --- G73 Year-by-year value-creation waterfall ------------------------------------------------
+
+
+class AnnualValueCreationYear(BaseModel):
+    year_label: str
+    period_label: str
+    end_date: date
+    months: int
+    applied_multiple: float
+    ebitda: float
+    net_debt: float
+    equity_value: float
+    equity_change: float
+    ebitda_growth: float
+    multiple_change: float
+    deleveraging: float
+    cross_term: float
+    reconciles: bool
+
+
+class AnnualValueCreationResult(BaseModel):
+    entry_multiple: float
+    exit_multiple: float
+    entry_ebitda: float
+    entry_net_debt: float
+    entry_equity: float
+    exit_equity: float
+    total_value_creation: float
+    years: list[AnnualValueCreationYear]
+    totals: dict[AttributionComponentKey, float]
+    matches_attribution_total: bool
+    reconciles: bool

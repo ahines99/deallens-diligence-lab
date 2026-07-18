@@ -24,6 +24,11 @@ from src.schemas.deal_intelligence import (
     EvaluationRequest,
     ExtractionRequest,
     IntelligenceEvaluationOut,
+    RedactionDecisionRequest,
+    RedactionDecisionResult,
+    RedactionProposalCreate,
+    RedactionProposalOut,
+    RedactionStatus,
     SecFilingComparisonOut,
     SecFilingComparisonRequest,
     StructuredClaimOut,
@@ -174,6 +179,63 @@ def download_document(document_id: str, session: SessionDep, actor: ActorDep) ->
         media_type=document.content_type,
         headers={"Content-Disposition": f'attachment; filename="{document.filename}"'},
     )
+
+
+@router.post(
+    "/deals/{deal_id}/intelligence/documents/{document_id}/redactions",
+    response_model=RedactionProposalOut,
+    status_code=201,
+)
+def propose_redaction(
+    deal_id: str,
+    document_id: str,
+    payload: RedactionProposalCreate,
+    session: SessionDep,
+    actor: ActorDep,
+) -> RedactionProposalOut:
+    return RedactionProposalOut.model_validate(
+        _call(service.propose_redaction, session, deal_id, document_id, payload, actor)
+    )
+
+
+@router.post(
+    "/intelligence/redactions/{proposal_id}/decide", response_model=RedactionDecisionResult
+)
+def decide_redaction(
+    proposal_id: str,
+    payload: RedactionDecisionRequest,
+    session: SessionDep,
+    actor: ActorDep,
+) -> RedactionDecisionResult:
+    proposal, redacted_document = _call(
+        service.decide_redaction, session, proposal_id, payload, actor
+    )
+    return RedactionDecisionResult(
+        proposal=RedactionProposalOut.model_validate(proposal),
+        redacted_document=(
+            DataRoomDocumentOut.model_validate(redacted_document)
+            if redacted_document is not None
+            else None
+        ),
+    )
+
+
+@router.get(
+    "/deals/{deal_id}/intelligence/redactions", response_model=list[RedactionProposalOut]
+)
+def list_redactions(
+    deal_id: str,
+    session: SessionDep,
+    actor: ActorDep,
+    status: RedactionStatus | None = None,
+    limit: Annotated[int, Query(ge=1, le=1_000)] = 100,
+) -> list[RedactionProposalOut]:
+    return [
+        RedactionProposalOut.model_validate(item)
+        for item in _call(
+            service.list_redactions, session, deal_id, actor, status=status, limit=limit
+        )
+    ]
 
 
 @router.post(

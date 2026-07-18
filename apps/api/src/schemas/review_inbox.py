@@ -21,3 +21,31 @@ class ReviewInboxOut(BaseModel):
     items: list[ReviewItem]
     counts_by_plane: dict[str, int]
     total: int
+
+
+class ReviewAgingBreach(BaseModel):
+    """One item whose age exceeds its plane's SLA threshold."""
+
+    id: str
+    title: str
+    age_hours: float
+    sla_hours: float
+
+
+class ReviewAgingPlane(BaseModel):
+    count: int
+    oldest_age_hours: float | None = None
+    sla_hours: float
+    breaches: list[ReviewAgingBreach]
+
+
+class ReviewAgingOut(BaseModel):
+    """G78 — aging report over the same four planes (and exclusions) as the review inbox."""
+
+    organization_id: str
+    actor_id: str
+    as_of: datetime
+    sla_hours: dict[str, float]
+    planes: dict[str, ReviewAgingPlane]
+    total: int
+    total_breaches: int

@@ -207,7 +207,7 @@ def _run_full_analysis(
     import importlib
 
     degraded_sources: list[str] = []
-    for mod_name in ("forensics_service", "sec_feeds_service"):
+    for mod_name in ("forensics_service", "sec_feeds_service", "litigation_service"):
         try:
             module = importlib.import_module(f"src.services.{mod_name}")
             raw_findings += module.risk_flags(session, workspace_id)

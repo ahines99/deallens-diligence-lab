@@ -39,6 +39,11 @@ class Settings(BaseSettings):
     reranker_backend: str = "off"
     reranker_model_path: str = ""
 
+    # G74 — optional Ed25519 export attestation. Base64url-encoded 32-byte private seed; when
+    # unset, exports remain hash-verified only (documented degradation, never a silent skip).
+    # Generate one with: python -c "import base64,os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())"
+    export_signing_key: str = ""
+
     # --- Database ----------------------------------------------------------
     database_url: str = "sqlite:///./data/deallens.sqlite3"
     # "migrate" applies Alembic to head, "external" expects deployment orchestration to do so,
