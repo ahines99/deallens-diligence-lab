@@ -55,6 +55,22 @@ class PolishOutcome:
     prompt_hash: str | None = None
 
 
+def _report_usage(model: str, input_tokens: int | None, output_tokens: int | None) -> None:
+    """Best-effort G80 cost-telemetry hook: token counts from a live response, never raising.
+
+    Persistence (own short session, org attribution via the request contextvar) lives in
+    ``llm_usage_service``; a telemetry failure must never fail the LLM call it measured.
+    """
+    try:
+        from src.services import llm_usage_service
+
+        llm_usage_service.record_call(
+            model=model, input_tokens=input_tokens, output_tokens=output_tokens
+        )
+    except Exception:  # noqa: BLE001 - telemetry is strictly best-effort
+        return
+
+
 class LiveProvider:
     name = "live"
 
@@ -84,6 +100,8 @@ class LiveProvider:
                 resp = client.post(f"{self.base_url}/messages", headers=headers, json=payload)
                 resp.raise_for_status()
                 data = resp.json()
+                usage = data.get("usage") or {}
+                _report_usage(self.model, usage.get("input_tokens"), usage.get("output_tokens"))
                 return "".join(block.get("text", "") for block in data.get("content", []))
         headers = {"Authorization": f"Bearer {settings.llm_api_key}", "content-type": "application/json"}
         payload = {
@@ -96,7 +114,10 @@ class LiveProvider:
         with httpx.Client(timeout=120) as client:
             resp = client.post(f"{self.base_url}/chat/completions", headers=headers, json=payload)
             resp.raise_for_status()
-            return resp.json()["choices"][0]["message"]["content"]
+            data = resp.json()
+            usage = data.get("usage") or {}
+            _report_usage(self.model, usage.get("prompt_tokens"), usage.get("completion_tokens"))
+            return data["choices"][0]["message"]["content"]
 
     def complete_with_tools(self, system: str, messages: list[dict], tools: list[dict]) -> dict:
         """One tool-use turn (G57): returns ``{"stop_reason", "content"}`` in Anthropic block form.
@@ -125,6 +146,8 @@ class LiveProvider:
             resp = client.post(f"{self.base_url}/messages", headers=headers, json=payload)
             resp.raise_for_status()
             data = resp.json()
+            usage = data.get("usage") or {}
+            _report_usage(self.model, usage.get("input_tokens"), usage.get("output_tokens"))
             return {
                 "stop_reason": data.get("stop_reason"),
                 "content": data.get("content", []),

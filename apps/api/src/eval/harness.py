@@ -10,6 +10,16 @@ The committed baseline lives in ``retrieval_metrics.json``. ``tests/test_retriev
 runs ``run_retrieval_eval`` and fails if any ranker slips below the baseline (minus a small
 epsilon) — that failing test is the CI regression gate. Regenerate the baseline intentionally
 with ``python -m src.eval.harness`` after a deliberate retrieval change.
+
+G82 — reranker eval + promotion convention. When a local cross-encoder reranker is configured
+AND loadable (``RERANKER_BACKEND=onnx_local`` with a usable model), the eval computes a fourth
+ranker, ``hybrid+rerank``, next to bm25/vector/hybrid. CI has no reranker (the extra and model
+are deliberately absent), so the committed baseline honestly contains only the three default
+rankers — absence is reported by omission, never by fabricated numbers. ``eval_gate`` is the
+promotion decision: the reranker may ship default-on ONLY by committing a
+``retrieval_metrics.json`` (regenerated via ``python -m src.eval.harness`` with the reranker
+active) in which ``hybrid+rerank`` strictly beats ``hybrid`` on BOTH MRR and recall@5 — i.e.
+the committed metrics file where the gate passes IS the promotion artifact.
 """
 from __future__ import annotations
 
@@ -19,8 +29,9 @@ from pathlib import Path
 
 from sqlalchemy.orm import Session
 
+from src.config import settings
 from src.models import DocumentChunk, Filing, Workspace
-from src.services import embedding_service, retrieval_service
+from src.services import embedding_service, onnx_reranker, retrieval_service
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "golden_set.json"
 _BASELINE = Path(__file__).parent / "retrieval_metrics.json"
@@ -28,6 +39,8 @@ _BASELINE = Path(__file__).parent / "retrieval_metrics.json"
 # k values reported for recall. MRR is computed over the full ranked list.
 RECALL_KS = (1, 3, 5)
 RANKERS = ("bm25", "vector", "hybrid")
+# The opt-in fourth ranker (G82): present in metrics only when a reranker is truly available.
+RERANK_RANKER = "hybrid+rerank"
 
 
 @dataclass(frozen=True)
@@ -108,6 +121,14 @@ def _ranked_keys(
     return [index_to_key[item.chunk.chunk_index] for item in ranked]
 
 
+def _reranker_active() -> bool:
+    """True only when the operator opted in AND the local model actually loads (G82)."""
+    if (settings.reranker_backend or "off").lower() != "onnx_local":
+        return False
+    ok, _note = onnx_reranker.available()
+    return ok
+
+
 def _rank_for(session: Session, ranker: str, workspace_id: str, query: str, k: int):
     if ranker == "bm25":
         return retrieval_service.retrieve(session, workspace_id, query, k=k)
@@ -115,7 +136,14 @@ def _rank_for(session: Session, ranker: str, workspace_id: str, query: str, k: i
         # Read-only use of the vector candidate ranker that hybrid fuses; behavior unchanged.
         return retrieval_service._vector_candidates(session, workspace_id, query, k=k)
     if ranker == "hybrid":
-        return retrieval_service.retrieve_hybrid(session, workspace_id, query, k=k)
+        # The PURE RRF fusion, even when a reranker is active: "hybrid" is the baseline the
+        # G82 gate compares against, so it must never itself be reranked.
+        return retrieval_service._hybrid_fused(session, workspace_id, query, k=k)
+    if ranker == RERANK_RANKER:
+        ranked, _provenance = retrieval_service.retrieve_hybrid_with_provenance(
+            session, workspace_id, query, k=k
+        )
+        return ranked
     raise ValueError(f"unknown ranker {ranker!r}")
 
 
@@ -125,13 +153,21 @@ def run_retrieval_eval(session: Session) -> dict:
     Shape: ``{"num_questions": int, "recall_ks": [1,3,5], "rankers": {ranker: {"recall@1": ...,
     "recall@3": ..., "recall@5": ..., "mrr": ...}}}``. Metrics are means over the answerable
     golden questions (those with at least one relevant chunk), rounded to 4 places.
+
+    When a local reranker is available (G82), ``hybrid+rerank`` appears as a fourth ranker;
+    when it is not — the CI reality — the key is honestly absent rather than duplicated or
+    faked.
     """
     workspace_id, index_to_key = load_corpus(session)
     questions = golden_questions(only_answerable=True)
     corpus_size = len(index_to_key)
 
+    active_rankers = list(RANKERS)
+    if _reranker_active():
+        active_rankers.append(RERANK_RANKER)
+
     rankers: dict[str, dict[str, float]] = {}
-    for ranker in RANKERS:
+    for ranker in active_rankers:
         recall_sums = {k: 0.0 for k in RECALL_KS}
         rr_sum = 0.0
         for gq in questions:
@@ -160,6 +196,35 @@ def run_retrieval_eval(session: Session) -> dict:
     }
 
 
+def eval_gate(metrics: dict) -> dict:
+    """G82 promotion gate: may the reranker ship default-on, given these eval metrics?
+
+    Promote ONLY when ``hybrid+rerank`` strictly beats ``hybrid`` on BOTH MRR and recall@5.
+    Ties do not promote — a reranker that merely matches RRF adds latency and a model
+    dependency for nothing. Metrics without a ``hybrid+rerank`` entry (reranker absent — the
+    CI default) never promote, with the honest reason. The promotion artifact is a committed
+    ``retrieval_metrics.json`` for which this gate returns ``promote=True``.
+    """
+    rankers = metrics.get("rankers", {})
+    reranked = rankers.get(RERANK_RANKER)
+    if reranked is None:
+        return {
+            "promote": False,
+            "reason": "no hybrid+rerank metrics: reranker was not available for this eval run",
+        }
+    hybrid = rankers["hybrid"]
+    for metric_name in ("mrr", "recall@5"):
+        if not reranked[metric_name] > hybrid[metric_name]:
+            return {
+                "promote": False,
+                "reason": (
+                    f"hybrid+rerank {metric_name}={reranked[metric_name]} does not beat "
+                    f"hybrid {metric_name}={hybrid[metric_name]}"
+                ),
+            }
+    return {"promote": True, "reason": "hybrid+rerank beats hybrid on mrr and recall@5"}
+
+
 def load_baseline() -> dict:
     """The committed baseline metrics used as the CI regression floor."""
     return json.loads(_BASELINE.read_text(encoding="utf-8"))
@@ -179,6 +244,9 @@ def _main() -> None:  # pragma: no cover - operator convenience, not part of the
         session.rollback()
     write_baseline(metrics)
     print(json.dumps(metrics, indent=2))
+    if RERANK_RANKER in metrics["rankers"]:
+        # Operator ran with a live reranker: print the promotion verdict alongside the metrics.
+        print(json.dumps(eval_gate(metrics), indent=2))
 
 
 if __name__ == "__main__":  # pragma: no cover

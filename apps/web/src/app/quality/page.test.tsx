@@ -66,7 +66,28 @@ const quality: ModelQuality = {
   },
   extraction_comparison: {
     status: "unavailable",
-    note: "populated when an LLM extraction comparison has been run (G52)",
+    note: "no extraction comparison has been run yet",
+  },
+  prompt_ab: {
+    status: "available",
+    note: null,
+    reports: [
+      {
+        status: "completed",
+        prompt_id: "grounded_synthesis",
+        judge: "mock-faithfulness-v1",
+        a: {
+          prompt_version: "grounded-synth-v1",
+          prompt_hash: "b".repeat(64),
+          faithful: 9,
+          faithful_rate: 0.9,
+          judged: 10,
+        },
+        b: { prompt_hash_candidate: "c".repeat(64), faithful: 6, faithful_rate: 0.6, judged: 10 },
+        winner: "a",
+        generated_at: "2026-07-18T00:00:00Z",
+      },
+    ],
   },
 };
 
@@ -84,11 +105,10 @@ describe("QualityPage", () => {
     expect(screen.getByText("hybrid")).toBeDefined();
     expect(screen.getByText("risk_extraction")).toBeDefined();
     // The unavailable section shows its explanatory note, not empty data.
-    expect(
-      screen.getByText("populated when an LLM extraction comparison has been run (G52)"),
-    ).toBeDefined();
+    expect(screen.getByText("no extraction comparison has been run yet")).toBeDefined();
+    expect(screen.getByText(/winner: a/)).toBeDefined();
     expect(screen.getAllByText("unavailable").length).toBe(1);
-    expect(screen.getAllByText("available").length).toBe(4);
+    expect(screen.getAllByText("available").length).toBe(5);
   });
 
   it("renders an API outage as an explicit warning, never a clean empty dashboard", async () => {

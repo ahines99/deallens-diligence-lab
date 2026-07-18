@@ -87,11 +87,13 @@ jobs:
       # Alembic + the app read the dialect from DATABASE_URL; point it at the service below.
       DATABASE_URL: postgresql+psycopg://deallens:deallens@localhost:5432/deallens
     services:
-      # Mirrors the docker-compose `db` service (user/password/db, port 5432). Plain
-      # postgres:16 is sufficient: nothing in the schema needs the pgvector extension —
-      # embeddings are a JSON column and full-text search uses core to_tsvector/ts_rank.
+      # Mirrors the docker-compose `db` service (image, user/password/db, port 5432). The
+      # pgvector image (Postgres 16 + the vector extension) lets migration d5f2b8c3a1e9
+      # install the extension, so this matrix also exercises the G83 DB-side cosine fast path
+      # and its parity tests; embeddings otherwise remain a JSON column and full-text search
+      # uses core to_tsvector/ts_rank.
       postgres:
-        image: postgres:16
+        image: pgvector/pgvector:pg16
         env:
           POSTGRES_USER: deallens
           POSTGRES_PASSWORD: deallens

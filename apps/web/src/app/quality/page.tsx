@@ -138,10 +138,51 @@ export default async function QualityPage() {
             )}
           </SectionCard>
           <SectionCard
-            eyebrow="Extractor comparison (G52)"
+            eyebrow="Extractor comparison (G52/G79)"
             title="LLM vs deterministic scanner"
             section={quality.extraction_comparison}
-          />
+          >
+            {quality.extraction_comparison.status === "available" && (
+              <div className="space-y-1 text-xs text-body">
+                <p>
+                  Latest comparison ({quality.extraction_comparison.generated_at?.slice(0, 10)}):{" "}
+                  <strong className="text-ink">{(quality.extraction_comparison.both ?? []).length}</strong>{" "}
+                  categories found by both engines,{" "}
+                  <strong className="text-ink">{(quality.extraction_comparison.llm_only ?? []).length}</strong>{" "}
+                  LLM-only,{" "}
+                  <strong className="text-ink">{(quality.extraction_comparison.scanner_only ?? []).length}</strong>{" "}
+                  scanner-only.
+                </p>
+                {(quality.extraction_comparison.llm_only ?? []).length > 0 && (
+                  <p className="text-2xs text-faint">
+                    LLM-only: {(quality.extraction_comparison.llm_only ?? []).join(", ")}
+                  </p>
+                )}
+              </div>
+            )}
+          </SectionCard>
+          <SectionCard
+            eyebrow="Prompt A/B (G81)"
+            title="Registered vs candidate templates"
+            section={quality.prompt_ab}
+          >
+            {quality.prompt_ab.status === "available" && (
+              <ul className="space-y-1 text-2xs">
+                {(quality.prompt_ab.reports ?? []).map((report) => (
+                  <li key={report.prompt_id} className="flex flex-wrap items-baseline gap-2">
+                    <span className="font-semibold text-ink">{report.prompt_id}</span>
+                    <span className="text-muted">
+                      A {Math.round(report.a.faithful_rate * 100)}% vs B{" "}
+                      {Math.round(report.b.faithful_rate * 100)}%
+                    </span>
+                    <Badge tone={report.winner === "b" ? "amber" : "green"}>
+                      winner: {report.winner}
+                    </Badge>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </SectionCard>
         </div>
       )}
     </div>

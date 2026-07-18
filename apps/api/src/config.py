@@ -33,6 +33,11 @@ class Settings(BaseSettings):
     # to feature hashing — never a crash, never silently mixed vector spaces.
     embeddings_backend: str = "feature_hashing"
     embeddings_model_path: str = ""
+    # G82 — optional local cross-encoder reranker over the hybrid top-k. Default OFF; ships
+    # default-on only behind the documented eval-gate convention (must beat RRF on the golden
+    # set). Same optional-extra discipline as the embedding backend.
+    reranker_backend: str = "off"
+    reranker_model_path: str = ""
 
     # --- Database ----------------------------------------------------------
     database_url: str = "sqlite:///./data/deallens.sqlite3"

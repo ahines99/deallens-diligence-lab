@@ -13,6 +13,24 @@ class QuotaBucketOut(BaseModel):
     remaining: int | None
 
 
+class LlmSpendByModelOut(BaseModel):
+    model: str
+    calls: int
+    input_tokens: int
+    output_tokens: int
+
+
+class LlmSpendOut(BaseModel):
+    """G80 rollup of recorded live-call token usage for the org, windowed."""
+
+    window_hours: int
+    total_calls: int
+    input_tokens: int
+    output_tokens: int
+    by_model: list[LlmSpendByModelOut]
+
+
 class QuotaUsageOut(BaseModel):
     organization_id: str
     buckets: list[QuotaBucketOut]
+    llm_spend: LlmSpendOut

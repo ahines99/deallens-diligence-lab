@@ -43,6 +43,7 @@ from src.models.govcon import GovConProfile
 from src.models.integration import WebhookDelivery, WebhookEndpoint
 from src.models.identity import AuthSession, OrganizationMembership, User
 from src.models.job import BackgroundJob
+from src.models.llm_usage import LlmUsageEvent
 from src.models.memo import Memo
 from src.models.notification import Notification
 from src.models.permission import MembershipPermission
@@ -106,6 +107,7 @@ __all__ = [
     "ICPacketExport",
     "IntelligenceEvaluation",
     "JudgeEvalRun",
+    "LlmUsageEvent",
     "Memo",
     "MembershipPermission",
     "Notification",

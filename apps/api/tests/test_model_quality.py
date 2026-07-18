@@ -6,15 +6,26 @@ never be dressed up as a 0% faithful rate.
 """
 from __future__ import annotations
 
+import json
+
 from sqlalchemy import func, select
 
+from src.config import settings
 from src.db.session import SessionLocal
 from src.eval import calibration, harness
 from src.models.eval_run import JudgeEvalRun
+from src.models.underwriting_data import ArtifactVersion
 from src.routers import model_ops
-from src.services import judge_service
+from src.services import judge_service, storage_service
 
-_SECTIONS = ("judge_evals", "retrieval_metrics", "calibration", "prompts", "extraction_comparison")
+_SECTIONS = (
+    "judge_evals",
+    "retrieval_metrics",
+    "calibration",
+    "prompts",
+    "extraction_comparison",
+    "prompt_ab",
+)
 _PROMPT_IDS = {
     "memo_polish",
     "grounded_synthesis",
@@ -118,7 +129,70 @@ def test_prompts_section_lists_the_registered_prompt_ids(client):
     assert all(len(p["prompt_hash"]) == 64 for p in section["prompts"])
 
 
-def test_extraction_comparison_is_an_honest_placeholder_until_g52(client):
+def test_extraction_comparison_serves_the_newest_persisted_comparison(client):
+    """G79: the section mirrors the newest persisted ``extraction_comparison`` artifact across
+    workspaces. Seeds its own (append-only, immutable) artifact so the assertion is order-robust;
+    the honest empty state and the full run+persist path are pinned in
+    test_extraction_comparison.py, which runs before this module ever sees a persisted row."""
+    workspace_id = client.post(
+        "/api/workspaces", json={"name": "Quality comparison", "deal_type": "buyout"}
+    ).json()["id"]
+    content = {
+        "workspace_id": workspace_id,
+        "generated_at": "2026-07-18T00:00:00+00:00",
+        "both": ["customer_concentration"],
+        "llm_only": ["cyber_security"],
+        "scanner_only": ["debt_liquidity"],
+        "llm_provenance": {"engine": "llm", "reason": "applied"},
+        "manifest": {"prompt_id": "risk_extraction"},
+    }
+    with SessionLocal() as session:
+        session.add(
+            ArtifactVersion(
+                workspace_id=workspace_id,
+                artifact_type="extraction_comparison",
+                version=1,
+                input_hash="0" * 64,
+                content_hash="0" * 64,
+                content_json=content,
+                created_by="test",
+            )
+        )
+        session.commit()
+
     section = client.get("/api/model-ops/quality").json()["extraction_comparison"]
+    assert section == {
+        "status": "available",
+        "note": None,
+        "workspace_id": workspace_id,
+        "generated_at": content["generated_at"],
+        "both": ["customer_concentration"],
+        "llm_only": ["cyber_security"],
+        "scanner_only": ["debt_liquidity"],
+    }
+
+
+def test_prompt_ab_reads_unavailable_until_a_report_exists(client, monkeypatch, tmp_path):
+    """G81: an empty report store is an explicit absence with a note, not an empty report list."""
+    monkeypatch.setattr(settings, "storage_backend", "local")
+    monkeypatch.setattr(settings, "storage_root", str(tmp_path))
+    section = client.get("/api/model-ops/quality").json()["prompt_ab"]
     assert section["status"] == "unavailable"
-    assert "G52" in section["note"]
+    assert section["note"] == "no prompt A/B evaluations have been run yet"
+    assert "reports" not in section
+
+
+def test_prompt_ab_serves_the_newest_report_per_prompt(client, monkeypatch, tmp_path):
+    """G81: the section surfaces the newest persisted report per registered prompt id, read
+    straight from the blob envelope's newest-first history."""
+    monkeypatch.setattr(settings, "storage_backend", "local")
+    monkeypatch.setattr(settings, "storage_root", str(tmp_path))
+    newest = {"status": "completed", "prompt_id": "memo_polish", "winner": "a"}
+    storage_service.get_store().put(
+        "model-ops/prompt-ab/memo_polish.json",
+        json.dumps({"history": [newest, {"status": "completed", "winner": "b"}]}).encode("utf-8"),
+    )
+    section = client.get("/api/model-ops/quality").json()["prompt_ab"]
+    assert section["status"] == "available"
+    assert section["note"] is None
+    assert section["reports"] == [newest]

@@ -1661,7 +1661,24 @@ export interface ModelQuality {
     study?: string;
   };
   prompts: QualitySection & { prompts?: PromptManifest[] };
-  extraction_comparison: QualitySection & Record<string, unknown>;
+  extraction_comparison: QualitySection & {
+    workspace_id?: string;
+    generated_at?: string;
+    both?: string[];
+    llm_only?: string[];
+    scanner_only?: string[];
+  };
+  prompt_ab: QualitySection & { reports?: PromptAbReport[] };
+}
+/** G81 — one prompt A/B evaluation report (registered version A vs candidate B). */
+export interface PromptAbReport {
+  status: string;
+  prompt_id: string;
+  judge: string;
+  a: { prompt_version: string; prompt_hash: string; faithful: number; faithful_rate: number; judged: number };
+  b: { prompt_hash_candidate: string; faithful: number; faithful_rate: number; judged: number };
+  winner: "a" | "b" | "tie";
+  generated_at: string;
 }
 
 export interface WorkspaceSearchHit {
@@ -1672,7 +1689,21 @@ export interface WorkspaceSearchResult {
 }
 
 export interface QuotaBucket { name: string; used: number; limit: number; window_seconds: number; remaining: number | null; }
-export interface QuotaUsage { organization_id: string; buckets: QuotaBucket[]; }
+/** G80 — per-org LLM spend rollup surfaced beside the quota buckets. */
+export interface LlmSpendByModel {
+  model: string;
+  calls: number;
+  input_tokens: number;
+  output_tokens: number;
+}
+export interface LlmSpend {
+  window_hours: number;
+  total_calls: number;
+  input_tokens: number;
+  output_tokens: number;
+  by_model: LlmSpendByModel[];
+}
+export interface QuotaUsage { organization_id: string; buckets: QuotaBucket[]; llm_spend: LlmSpend; }
 
 export interface SignalsSection {
   kind: string;

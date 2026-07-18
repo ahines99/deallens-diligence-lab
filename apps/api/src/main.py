@@ -69,7 +69,7 @@ from src.routers import (
     workspaces,
 )
 from src.services.common import NotFound
-from src.services import api_key_service, identity_service
+from src.services import api_key_service, identity_service, request_context
 from src.schemas.identity import PrincipalContext
 
 logger = logging.getLogger("deallens")
@@ -276,8 +276,9 @@ _ORG_QUOTA_WINDOWS: dict[str, float] = {"requests": 60.0, "builds": 3600.0, "llm
 # never calls out, so metering it would throttle free deterministic work for nothing.
 _LLM_CAPABLE_PATHS = re.compile(
     r"^/api/(?:"
-    r"workspaces/[a-zA-Z0-9_-]+/(?:risks/generate|qa|cross-corpus-qa|agent/run)"
+    r"workspaces/[a-zA-Z0-9_-]+/(?:risks/generate|qa|cross-corpus-qa|agent/run|extraction-comparison)"
     r"|deals/[a-zA-Z0-9_-]+/intelligence/extractions"
+    r"|model-ops/prompt-ab"
     r")$"
 )
 
@@ -474,6 +475,11 @@ async def identity_and_tenant_guard(request: Request, call_next):
         return JSONResponse(status_code=401, content={"detail": "Authenticated actor required"})
 
     principal = request.state.principal
+    # G80 — stamp the tenant into the request-scoped contextvar so the LLM cost-telemetry seam
+    # can attribute spend without threading the principal through every call signature.
+    request_context.current_organization_id.set(
+        principal.organization_id if principal is not None else None
+    )
     if (
         principal is not None
         and principal.role == "viewer"
