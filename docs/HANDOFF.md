@@ -197,8 +197,9 @@ remediated at `d63894a`. CI green.
 
 Open items, roughly in priority order:
 
-1. **Hosted public demo** — `docs/deploy-demo.md` is the runbook (VPS/domain/TLS, `DEMO_MODE=true`,
-   EDGAR cache TTL, demo-cleanup worker). Deploy has not happened yet; repo pinning on the GitHub
+1. **Hosted public demo** — `docs/deploy-vps.md` is the copy-paste runbook (single VPS + Caddy
+   auto-HTTPS, via `docker-compose.prod.yml` + `.env.prod.example`); `docs/deploy-demo.md` explains
+   the `DEMO_MODE` posture it configures. Deploy has not happened yet; repo pinning on the GitHub
    profile is also pending.
 2. **Documented security scope-cuts** (fine as portfolio caveats, must not silently regress):
    OIDC signature verification; in-process rate limiters/OIDC state and the agent

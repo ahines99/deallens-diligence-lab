@@ -1,0 +1,17 @@
+# Caddy serves the public demo over automatic HTTPS (Let's Encrypt / ZeroSSL) and reverse-proxies
+# to the Next.js web container on the internal compose network. The API is never exposed directly:
+# the browser talks only to this origin, and the web app proxies to the API server-side.
+#
+# PUBLIC_DOMAIN is injected from .env by docker-compose.prod.yml. Point its DNS A/AAAA record at
+# this host BEFORE starting the stack so the ACME challenge can complete on first boot.
+
+{$PUBLIC_DOMAIN} {
+	encode zstd gzip
+
+	# Forward everything to the web app. Caddy adds X-Forwarded-Proto=https automatically, so the
+	# app knows it is served over TLS even though this hop is plain HTTP inside the network.
+	reverse_proxy web:3000
+
+	# Add an ACME contact email for expiry notices, e.g.:
+	#   tls you@example.com
+}

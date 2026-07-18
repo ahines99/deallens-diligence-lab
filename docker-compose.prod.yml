@@ -1,0 +1,58 @@
+# Production overlay for a single-VPS public demo behind Caddy (automatic HTTPS).
+#
+# Use it *with* the base file — the base defines db/api/workers/web and binds them to
+# 127.0.0.1; this overlay publishes only Caddy (80/443) to the internet and adds the
+# demo-retention worker:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up --build -d
+#
+# All operator settings come from a local .env (copy .env.prod.example). Nothing here is
+# secret; secrets live in .env, which is gitignored.
+
+services:
+  web:
+    # The browser only ever calls the same-origin /backend proxy (see apps/web/src/lib/api.ts:
+    # API_BASE is "/backend" in the browser). The Next.js server reaches the API container over
+    # the compose network via API_URL_INTERNAL. This is also the Dockerfile default; set here
+    # explicitly so the wiring is visible and survives Dockerfile changes.
+    environment:
+      API_URL_INTERNAL: http://api:8000
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      web:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      # Consumed by deploy/Caddyfile via {$PUBLIC_DOMAIN}. Required — the run aborts if unset.
+      PUBLIC_DOMAIN: ${PUBLIC_DOMAIN:?set PUBLIC_DOMAIN in .env (e.g. demo.yourdomain.com)}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data       # ACME account + issued certificates (persist across restarts)
+      - caddy_config:/config
+
+  # Purges Demo Sandbox workspaces/deals and guest identities older than DEMO_RETENTION_HOURS,
+  # plus expired sessions. Runs on its own image built from the same context as the API. It only
+  # ever touches the demo organization; non-demo tenants are never scanned.
+  demo-cleanup:
+    build:
+      context: ./apps/api
+    command: ["python", "-m", "src.workers.demo_cleanup", "--interval", "3600"]
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      # Not present in .env — must match the api service exactly.
+      DATABASE_URL: postgresql+psycopg://deallens:deallens@db:5432/deallens
+      SCHEMA_MANAGEMENT: external
+
+volumes:
+  caddy_data:
+  caddy_config:

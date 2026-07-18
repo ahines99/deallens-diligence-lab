@@ -26,6 +26,7 @@ yarn-error.log*
 .env.local
 .env.*
 !.env.example
+!.env.prod.example
 
 # Local ingestion cache (downloaded filings)
 apps/api/data/filings/

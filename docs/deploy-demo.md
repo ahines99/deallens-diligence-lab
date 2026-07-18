@@ -3,6 +3,11 @@
 The repo ships a hardened demo posture so a public instance is a configuration decision,
 not an engineering project. Everything below is optional and off by default.
 
+> **Looking for step-by-step commands?** [deploy-vps.md](deploy-vps.md) is the copy-paste
+> quickstart (provision a box → DNS → `docker compose up` → register the owner) that puts the
+> configuration below into practice with Caddy auto-HTTPS. This page explains *what* the demo
+> posture does and *why*; that one is the runbook.
+
 ## What DEMO_MODE adds
 
 | Concern | Mechanism |
