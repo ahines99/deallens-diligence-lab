@@ -149,6 +149,28 @@ def test_compute_dcf_degrades_gracefully():
     assert vs.compute_dcf(fcf_base=100.0, wacc=None)["enterprise_value"] is None
 
 
+# --- FCFF base (interest add-back is optional; CFO/capex are required) -------
+
+def test_fcff_base_full_inputs_adds_back_after_tax_interest():
+    val, omitted = vs._fcff_base(cfo=100.0, capex=30.0, interest=10.0)
+    assert omitted is False
+    assert val == pytest.approx(100.0 + 10.0 * (1 - vs.TAX_RATE) - 30.0)
+
+
+def test_fcff_base_omits_untagged_interest_and_flags_it():
+    # A cash-rich issuer that nets interest expense: CFO and capex present, interest untagged.
+    # The add-back is omitted (FCFF = CFO - capex) and flagged for disclosure, not withheld.
+    val, omitted = vs._fcff_base(cfo=100.0, capex=30.0, interest=None)
+    assert omitted is True
+    assert val == pytest.approx(70.0)
+
+
+def test_fcff_base_requires_cfo_and_capex():
+    # Material inputs are never imputed: a missing CFO or capex leaves FCFF n/a.
+    assert vs._fcff_base(cfo=None, capex=30.0, interest=10.0) == (None, False)
+    assert vs._fcff_base(cfo=100.0, capex=None, interest=10.0) == (None, False)
+
+
 # --- Live integration (skipped offline) -------------------------------------
 
 def test_valuation_real(client, live_workspace_id):

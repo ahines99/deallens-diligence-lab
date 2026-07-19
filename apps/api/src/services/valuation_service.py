@@ -80,6 +80,28 @@ def _trusted_headline_debt(target) -> tuple[float | None, str | None]:
     return None, None
 
 
+def _fcff_base(
+    cfo: float | None, capex: float | None, interest: float | None
+) -> tuple[float | None, bool]:
+    """Unlevered FCFF proxy = CFO + after-tax interest add-back - capex.
+
+    CFO and capex are material and required — a missing one leaves FCFF (and the DCF) n/a; we
+    never impute them. Interest expense is only an *adjustment*: CFO is already net of cash
+    interest, and adding back after-tax interest approximates the unlevered figure. Some issuers
+    (typically cash-rich ones) net interest into "other income (expense)" and never tag it on the
+    face, so `interest` is absent. Rather than withhold the whole valuation for a small add-back,
+    we omit it (treat it as 0) and return a flag so the omission is disclosed. The result,
+    FCFF ~= CFO - capex, is a conservative approximation, not an imputed input.
+
+    Returns (fcff_base, interest_addback_omitted).
+    """
+    if cfo is None or capex is None:
+        return None, False
+    interest_omitted = interest is None
+    addback = 0.0 if interest is None else interest * (1.0 - TAX_RATE)
+    return cfo + addback - capex, interest_omitted
+
+
 def _core_inputs(target) -> dict:
     """Pull the latest-fiscal-year figures needed for valuation. Raises NotFound if unavailable."""
     fin = target.financials or {}
@@ -110,12 +132,7 @@ def _core_inputs(target) -> dict:
     cfo = _num(latest.get("cfo"))
     capex = _num(latest.get("capex"))
     interest = _num(latest.get("interest"))
-    # CFO is after cash interest. Add back after-tax interest to approximate unlevered FCFF.
-    fcff_base = (
-        cfo + interest * (1.0 - TAX_RATE) - capex
-        if cfo is not None and interest is not None and capex is not None
-        else None
-    )
+    fcff_base, interest_omitted = _fcff_base(cfo, capex, interest)
 
     return {
         "as_of_year": t,
@@ -126,6 +143,7 @@ def _core_inputs(target) -> dict:
         "net_debt_basis": debt_basis,
         "equity": equity,
         "fcf_base": round(fcff_base, 2) if fcff_base is not None else None,
+        "fcf_interest_omitted": interest_omitted,
     }
 
 
@@ -168,7 +186,7 @@ def compute_dcf(fcf_base: float | None, wacc: float | None,
     assumptions = [
         (
             "Input is FCFF; the service-derived base equals CFO + after-tax interest expense "
-            f"(using a {TAX_RATE:.0%} tax assumption) - capex."
+            f"(when separately tagged; {TAX_RATE:.0%} tax assumption) - capex."
         ),
         f"FCFF grown {growth:.1%}/yr for {DCF_YEARS} years.",
         f"Gordon terminal value at {terminal_growth:.1%} perpetual growth.",
@@ -235,11 +253,17 @@ def compute_valuation(session: Session, workspace_id: str) -> dict:
         notes.append(f"Net debt basis: {core['net_debt_basis']}.")
     if core["fcf_base"] is None:
         notes.append(
-            "FCFF base is n/a (CFO, interest expense, or capex untagged); DCF enterprise value is n/a."
+            "FCFF base is n/a (CFO or capex untagged); DCF enterprise value is n/a."
         )
     elif core["fcf_base"] <= 0:
         notes.append(
             "FCFF base is non-positive; a growing Gordon-model enterprise value is not computed."
+        )
+    elif core.get("fcf_interest_omitted"):
+        notes.append(
+            "Interest expense is not separately tagged (e.g. netted into other income/expense); "
+            "the after-tax interest add-back is omitted, so FCFF ≈ CFO − capex — a "
+            "conservative approximation, disclosed rather than imputed."
         )
 
     return {

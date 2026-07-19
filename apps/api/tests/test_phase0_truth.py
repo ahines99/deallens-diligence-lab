@@ -780,9 +780,20 @@ def test_valuation_core_uses_fcff_and_never_zero_fills_net_debt():
         _ValuationTarget(dict(latest, cash=None), "DebtLongtermAndShorttermCombinedAmount")
     )
     assert no_cash["net_debt"] is None
-    assert valuation_service._core_inputs(
+
+    # Interest expense is only an adjustment: when it is untagged (e.g. netted into other
+    # income/expense) the after-tax add-back is omitted and disclosed via fcf_interest_omitted,
+    # not withheld. CFO and capex, which are material, remain required.
+    interest_untagged = valuation_service._core_inputs(
         _ValuationTarget(dict(latest, interest=None), "DebtLongtermAndShorttermCombinedAmount")
-    )["fcf_base"] is None
+    )
+    assert interest_untagged["fcf_base"] == 70.0  # CFO 100 - capex 30, no interest add-back
+    assert interest_untagged["fcf_interest_omitted"] is True
+    for material_missing in ("cfo", "capex"):
+        assert valuation_service._core_inputs(
+            _ValuationTarget(dict(latest, **{material_missing: None}),
+                             "DebtLongtermAndShorttermCombinedAmount")
+        )["fcf_base"] is None
 
 
 def test_legacy_dcf_assumptions_now_describe_fcff_without_false_unlevered_label():
